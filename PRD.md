@@ -1700,6 +1700,164 @@ Potential backend technology choices:
 * Document AI/OCR services for difficult documents.
 * LLMs for extraction, reasoning, summarization, and agent workflows.
 
+# 27.5 Microservice Architecture and System Design
+
+## 27.5.1 System Overview
+
+The platform follows a **single-tenant, service-oriented architecture** with clear separation between presentation, business logic, data processing, and storage layers. Each customer deployment is completely isolated with dedicated infrastructure.
+
+### Architecture Layers
+
+| Layer | Components | Technology |
+|-------|------------|------------|
+| **Client & Presentation** | Next.js 14+ / React Frontend | Procurement dashboards, AP Audit UI, Ask AI chat, Negotiation workspace |
+| **API Gateway** | Traefik / Kong / AWS ALB + Auth0 | TLS termination, JWT auth, tenant injection, rate limiting |
+| **Core Services (3)** | Procurement Core, Agentic Reasoning, Ingestion API | FastAPI |
+| **Message Broker** | Apache Kafka / Redis | Event-driven communication |
+| **Workers & Engines (4)** | Document OCR, AP Audit, Maverick Spend, Zombie License | Celery, GPU pods, scikit-learn/PyTorch |
+| **Data Persistence** | Object Storage, PostgreSQL, Vector DB | S3/GCS, PostgreSQL 16 + RLS, pgvector/Pinecone/Qdrant |
+| **Deployment** | Docker Compose → Kubernetes | Helm/Terraform, per-customer isolation |
+
+---
+
+## 27.5.2 Core Microservices (Backend Tier)
+
+### Service 1: Procurement Core Service (FastAPI)
+- **Responsibilities**: Tenant & vendor management, manual invoices/POs CRUD, spend analytics aggregation, action & approval workflows
+- **Key Data Stores**: PostgreSQL (tenants, vendors, users, invoices, transactions, licenses, renewal data)
+- **Dependencies**: Message broker, Object Storage, Vector DB
+
+### Service 2: Agentic Reasoning & Ask AI Service (FastAPI)
+- **Responsibilities**: Natural language understanding, tool calling sandbox, RAG orchestration, negotiation copilot, investigation agent
+- **Key Data Stores**: Vector DB, PostgreSQL (read-only via MCP), Object Storage (via MCP)
+- **Dependencies**: Three MCP servers (Procurement Intelligence, Document Knowledge, External Systems)
+
+### Service 3: Ingestion & Document Ingress API (FastAPI)
+- **Responsibilities**: Ramp/Okta webhook handlers, cloud drive connectors (Google Drive, S3, Dropbox), file upload staging, initial document triage
+- **Key Data Stores**: Object Storage, Message broker
+- **Dependencies**: Ramp API, Okta API, Google Drive/S3/Dropbox APIs
+
+---
+
+## 27.5.3 Workers, Engines & ML Pipelines
+
+### Worker 4: Document OCR & Extraction Worker (Celery / GPU Pods)
+- **Responsibilities**: Digital vs scanned triage, Document AI/OCR outsourcing (Google Cloud AI, AWS Textract, Azure AI), schema extraction, provenance tagging
+- **Key Data Stores**: Object Storage, PostgreSQL (artifacts metadata)
+- **Output**: Document chunks + vectors → Vector DB
+
+### Worker 5: AP Audit & Compliance Reconciliation Engine (Deterministic Rule Engine)
+- **Responsibilities**: Line-item 3-way match (invoice vs PO vs contract), temporal pricing validation, price creep & escalation math, audit exception generation
+- **Key Data Stores**: PostgreSQL (contracts, invoices, POs), Message broker
+- **Output**: Discrepancies → Exception log queue → Agentic Reasoning Service
+
+### Worker 6: Maverick Spend ML Detection Worker (scikit-learn / PyTorch)
+- **Responsibilities**: Cadence clustering (DBSCAN / Isolation Forest), merchant resolution, unmanaged SaaS flagging, catalog semantic overlap retrieval
+- **Key Data Stores**: PostgreSQL (transactions), Message broker
+- **Output**: Alerts → Vector DB (context resolution) → Agentic Reasoning Service
+
+### Worker 7: Zombie License Analytics Engine (Deterministic Batch)
+- **Responsibilities**: Inactive threshold scanning (30/60/90 days), license seat vs active Okta user comparison, reclaimable waste cost calculation
+- **Key Data Stores**: Okta, PostgreSQL (licenses, usage), Message broker
+- **Output**: Metrics → PostgreSQL → Agentic Reasoning Service
+
+---
+
+## 27.5.4 Data Persistence & Storage Tier
+
+### Object Storage (S3 / GCS / Azure Blob)
+- Raw invoices & contracts (PDFs)
+- PDF page rasters
+- Extracted OCR artifacts
+- Model weights (artifacts)
+
+### Primary Operational Database (PostgreSQL 16 + RLS)
+- Tenants, vendors, users
+- Versioned contracts & amendments
+- Invoices & transactions
+- Discrepancy & audit logs
+
+### Vector Database (pgvector / Pinecone / Qdrant)
+- Contract chunks + bounding box provenance
+- Approved SaaS capability embeddings
+- Vendor policy embeddings
+
+---
+
+## 27.5.5 Deployment & Operations Tier
+
+### Initial Deployment (Docker Compose per Customer)
+All services run as separate containers within one deployment:
+- Procurement Core Service
+- Agentic Reasoning & Ask AI Service
+- Ingestion & Document Ingress API
+- Message Broker (Redis)
+- Workers (Celery + GPU pods for OCR)
+- Object Storage (MinIO / S3-compatible embedded)
+
+### Scaled Deployment (Kubernetes per Customer)
+Services independently scaled:
+- Procurement Core Service (horizontal pods)
+- Agentic Reasoning Service (horizontal pods, LLM host scaling)
+- Ingestion API (horizontal pods)
+- Workers (separate deployments, auto-scaled by queue depth)
+- Document OCR workers (GPU node pool)
+
+### Infrastructure Components
+| Component | Technology |
+|-----------|------------|
+| Orchestration | Docker Compose (initial) / Kubernetes (scaled) |
+| Service Discovery | Environment variables / Kubernetes DNS |
+| Secret Management | Kubernetes Secrets / HashiCorp Vault per customer |
+| Logging | Structured JSON logs (JSONL) → Elastic / Loki |
+| Monitoring | Prometheus + Grafana per customer deployment |
+| Health Checks | Liveness/Readiness probes per service |
+| Backup | PostgreSQL snapshots, Object Storage versioning |
+
+---
+
+## 27.5.6 Event & Data Flows
+
+| # | Flow | Path |
+|---|------|------|
+| 1 | **Ingestion** | External sources (Ramp, Okta, cloud drives) → Ingestion API → Message broker → Workers (OCR, ML, compliance) → Object Storage → PostgreSQL (canonical model) |
+| 2 | **Reconciliation** | New invoice → Procurement Core → AP Audit Engine → Discrepancies → DB → Message broker → Agentic Reasoning (MCP-1) → Ask AI UI |
+| 3 | **ML Detection** | Transactions → Maverick Spend Worker → Clustering → Unmanaged SaaS flags → Vector DB (context resolution) → Agentic Reasoning (MCP-1) → Ask AI UI |
+| 4 | **License Usage** | Okta data → Zombie License Engine → Utilization metrics → PostgreSQL → Agentic Reasoning (MCP-1) → Ask AI UI |
+| 5 | **Document Processing** | Uploaded docs → Ingestion API → Document Router → OCR/Extraction Workers → Common Schema → Vector DB (chunks + provenance) → MCP-2 → Ask AI UI |
+
+---
+
+## 27.5.7 Tenant Isolation
+
+Each customer deployment is completely isolated:
+- Dedicated PostgreSQL schema/database
+- Dedicated object storage bucket/prefix
+- Dedicated vector store namespace/collection
+- MCP servers scoped per-tenant (authorization enforced at server level)
+- Redis instances per tenant (or partitioned by tenant ID)
+- All inter-service communication carries tenant ID, validated at each hop
+
+---
+
+## 27.5.8 Risk Classification & API Contracts
+
+All microservices expose strictly typed FastAPI endpoints with:
+
+### Read-Only Endpoints
+`get_vendor()`, `get_contract()`, `get_invoice()`, `get_vendor_spend()`, `get_license_usage()`, `find_renewals()`, `search_documents()`, etc.
+
+### Low-Risk Write Endpoints
+`create_procurement_task()`, `create_review_task()`, `create_renewal_reminder()`, `prepare_renewal_brief()`, `start_human_review_workflow()`
+
+### High-Risk Write Endpoints (require human confirmation)
+`approve_invoice()`, `cancel_contract()`, `modify_contract_terms()`, `change_purchase_order()`, `send_external_vendor_communication()`, `commit_financial_spend()`
+
+### Contract Requirements
+- All endpoints enforce tenant scoping via JWT/MCP context
+- All endpoints return provenance metadata for auditability
+- All endpoints use explicit input/output schemas with validation
+
 # 28. Single-Tenant Architecture and Security Model
 
 The platform follows a **dedicated single-tenant deployment architecture**. Each customer organization operates within its own completely isolated compute, data storage, and retrieval boundaries (e.g., dedicated database, dedicated object storage container/bucket, and dedicated vector store or namespace).

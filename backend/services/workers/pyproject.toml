@@ -1,0 +1,41 @@
+[project]
+name = "zellovest-workers"
+version = "0.1.0"
+description = "Zellovest background workers: ingestion, document OCR, AP audit, maverick spend ML, zombie licenses"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "zellovest-shared @ file://../../shared",
+    "celery[redis]>=5.3",
+    "redis>=5.0",
+    "sqlalchemy>=2.0",
+    "psycopg[binary]>=3.2",
+    "httpx>=0.26",
+    "boto3>=1.34",
+    "scikit-learn>=1.4",
+    "numpy>=1.26",
+    "pandas>=2.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.3",
+    "mypy>=1.8",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+select = ["E", "F", "I", "UP", "W", "C4", "C90", "PTH", "RUF"]
+ignore = ["C901", "PTH101"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true

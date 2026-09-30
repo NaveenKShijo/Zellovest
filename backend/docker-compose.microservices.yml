@@ -1,0 +1,114 @@
+# Zellovest microservices — local single-tenant deployment (per PRD 27.5).
+# Usage: docker compose -f docker-compose.microservices.yml --env-file .env up --build
+name: zellovest
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: zellovest
+      POSTGRES_PASSWORD: zellovest
+      POSTGRES_DB: zellovest
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zellovest"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio12345
+    ports: ["9000:9000", "9001:9001"]
+    volumes: [miniodata:/data]
+
+  procurement-core:
+    build:
+      context: .
+      dockerfile: services/procurement-core/Dockerfile
+    env_file: [.env]
+    environment:
+      SERVICE_NAME: procurement-core
+      SERVICE_PORT: 8001
+    ports: ["8001:8001"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  agentic-reasoning:
+    build:
+      context: .
+      dockerfile: services/agentic-reasoning/Dockerfile
+    env_file: [.env]
+    environment:
+      SERVICE_NAME: agentic-reasoning
+      SERVICE_PORT: 8002
+    ports: ["8002:8002"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  ingestion-api:
+    build:
+      context: .
+      dockerfile: services/ingestion-api/Dockerfile
+    env_file: [.env]
+    environment:
+      SERVICE_NAME: ingestion-api
+      SERVICE_PORT: 8003
+    ports: ["8003:8003"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  worker-ingestion:
+    build:
+      context: .
+      dockerfile: services/workers/Dockerfile
+    env_file: [.env]
+    environment:
+      SERVICE_NAME: worker-ingestion
+    command: ["celery", "-A", "zellovest_workers.celery_app.celery_app", "worker", "-Q", "ingestion_tasks", "--loglevel=info", "--concurrency=2"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  worker-documents:
+    build:
+      context: .
+      dockerfile: services/workers/Dockerfile
+    env_file: [.env]
+    environment:
+      SERVICE_NAME: worker-documents
+    command: ["celery", "-A", "zellovest_workers.celery_app.celery_app", "worker", "-Q", "document_tasks", "--loglevel=info", "--concurrency=2"]
+    depends_on:
+      redis: {condition: service_healthy}
+
+  worker-analytics:
+    build:
+      context: .
+      dockerfile: services/workers/Dockerfile
+    env_file: [.env]
+    environment:
+      SERVICE_NAME: worker-analytics
+    command: ["celery", "-A", "zellovest_workers.celery_app.celery_app", "worker", "-Q", "analytics_tasks", "--loglevel=info", "--concurrency=2"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+volumes:
+  pgdata:
+  miniodata:
