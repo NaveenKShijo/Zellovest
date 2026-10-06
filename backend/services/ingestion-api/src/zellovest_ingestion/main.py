@@ -1,9 +1,13 @@
 """Ingestion & Document Ingress API - FastAPI Application.
 
-Handles:
-- Ramp/Okta Webhook Handlers
-- Cloud Drive Connectors (Google Drive, Dropbox, S3)
-- File Upload Staging
+Endpoint groups (Ramp and Drive share the same shape):
+- OAuth: Ramp (``/integrations/ramp``) + Google Drive
+  (``/integrations/google-drive``) connect / callback / status.
+- Webhooks: Ramp + Okta (HMAC) + Google Drive push (``changes.watch``).
+- Pull sync: Ramp (``POST /sync/ramp``) + Google Drive
+  (``POST /sync/google-drive`` via ``changes.list`` cursor). Okta is
+  webhook-only, no pull sync.
+- File Upload Staging (manual fallback to S3/MinIO)
 - Document Triage
 """
 
@@ -15,7 +19,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from zellovest_ingestion.api.routers import connectors, integrations, sync, uploads, webhooks
+from zellovest_ingestion.api.routers import integrations, integrations_drive, sync, uploads, webhooks
 from zellovest_ingestion.config import get_ingestion_api_settings
 from zellovest_shared.logging_conf import configure_logging, get_logger
 
@@ -69,8 +73,8 @@ def create_app(settings=None) -> FastAPI:
 
     prefix = app.state.settings.api_v1_prefix
     app.include_router(integrations.router, prefix=prefix, tags=["integrations"])
+    app.include_router(integrations_drive.router, prefix=prefix, tags=["integrations"])
     app.include_router(webhooks.router, prefix=prefix, tags=["webhooks"])
-    app.include_router(connectors.router, prefix=prefix, tags=["connectors"])
     app.include_router(uploads.router, prefix=prefix, tags=["uploads"])
     app.include_router(sync.router, prefix=prefix, tags=["sync"])
 

@@ -125,7 +125,7 @@ It is primarily used to determine:
 * License utilization
 * Last activity
 * Inactive users
-* Potential zombie licenses
+* Predictive seat forecasting & churn modeling
 * Potentially reclaimable seats
 * Cost associated with unused licenses
 
@@ -136,9 +136,6 @@ It is primarily used to determine:
 Potential sources include:
 
 * Google Drive
-* Amazon S3
-* Dropbox
-* Other cloud storage systems
 * Manual upload as a fallback
 
 Documents may include:
@@ -603,15 +600,17 @@ from recurring SaaS subscriptions that may warrant procurement intervention.
 
 ---
 
-# 15. Stage 1 — Unsupervised Transaction Clustering
+# 15. Stage 1 — Jev AI Transaction Decisions (TypeSafe AI)
 
-The first stage is ML-based detection.
+The first stage is detection powered by **Jev**, TypeSafe AI's System One decision model.
 
 The question is:
 
 > "Is this transaction an unmanaged recurring software subscription that warrants procurement intervention, or is it a normal business expense?"
 
-Potential features include:
+Each transaction is submitted to Jev as structured state together with typed questions declared in advance. Jev evaluates all questions in parallel and returns typed answers (Choice / Score / Boolean) with calibrated probabilities from 0 to 1 that the application can branch on.
+
+Transaction state includes:
 
 * Transaction cadence
 * Recurrence interval
@@ -632,9 +631,17 @@ SaaS merchant
 
 ```
 
-The unsupervised ML system identifies it as a likely recurring SaaS subscription.
+Jev returns typed decisions such as:
 
-This is primarily an **ML/analytical system**, not an autonomous agent.
+```text
+is_unmanaged_saas_subscription: true   (p = 0.96)
+warrants_procurement_review:    true   (p = 0.91)
+
+```
+
+The probability acts as a gate/filter: transactions above a configured threshold are flagged as likely unmanaged recurring SaaS subscriptions for procurement review.
+
+This is primarily a **typed probabilistic decision system**, not an autonomous agent.
 
 ---
 
@@ -732,52 +739,52 @@ Retrieves semantically similar software/products based on capabilities.
 
 ---
 
-# 18. Zombie License Detection
+# 18. Predictive License Seat Forecasting & Churn Modeling
 
-Another major feature is identifying licenses/seats that have been purchased but are not being meaningfully used.
+Another major feature is forecasting optimal seat commitments for upcoming contract renewals to minimize shelfware while avoiding expensive true-up penalties.
 
 Primary source:
 
-**Okta / application usage data**
+**Okta / application usage data** + **Contract renewal data**
 
-The first implementation is intended to be primarily **rule-based/analytical**, not agentic.
+The implementation uses **ML-based survival analysis / gradient boosted trees (LightGBM/XGBoost)** to model seat retention probability per department.
 
-Example logic:
+### Why Heuristics Fail
 
-```text
-License
-   ↓
-Last activity
-   ↓
-Usage frequency
-   ↓
-Utilization
-   ↓
-Inactive threshold
-   ↓
-Potential zombie license
+Simple rules like "Commit to current active seats + 10%" fail because license utilization is not static:
+- Different departments have wildly different seat churn rates (e.g., sales turnover vs. core engineering)
+- Seasonal hiring freezes, post-onboarding abandonment (people who log in during week 1 and never again), and team-specific decay curves cannot be captured by a single formula
 
-```
+### Input Features (from existing data)
 
-Example:
+* Historical Okta login cadence per user and department
+* Days since last login, frequency of logins over 30/60/90 days
+* Department-level tenure, team growth velocity, and historical churn
+* Contract renewal terms and true-up penalty rates
 
-```text
-Purchased licenses: 500
-Active users: 391
-Inactive licenses: 109
+### Model Outputs
+
+* A probability curve of seat retention per department
+* An optimized recommendation: "Commit to 410 seats instead of the current 500. This provides a 95% confidence that you won't trigger true-up penalties while cutting $18,000/yr in shelfware."
+* Risk scenarios: best/worst case seat counts with confidence intervals
+
+### ML Pipeline
 
 ```
+Okta Usage Data
+      ?
+Feature Engineering (per user/department)
+      ?
+Survival Analysis / Gradient Boosted Trees
+      ?
+Seat Retention Probability Curves
+      ?
+Optimization Engine (penalty-aware)
+      ?
+Recommended Seat Commitment + Savings Estimate
+```
 
-The system should calculate:
-
-* Utilization rate
-* Number of inactive seats
-* Cost of inactive seats
-* Potential recoverable spend
-* Potential savings
-
-Agents may later help **investigate why licenses are inactive**, but the basic detection itself should remain deterministic.
-
+The core forecasting is **ML-based**, while the penalty-aware optimization is deterministic.
 ---
 
 # 19. Renewal Intelligence / Renewal Agent
@@ -1062,7 +1069,7 @@ What is the total value of invoice discrepancies this quarter?
 ```text
 How many unused Salesforce licenses do we have?
 
-How much are our zombie licenses costing us?
+How many seats should we commit to at renewal?
 
 Which SaaS applications have the lowest utilization?
 
@@ -1111,7 +1118,7 @@ SQL
 +
 Transactions
 +
-Maverick-spend ML
+Maverick-spend (Jev AI)
 +
 License utilization
 +
@@ -1251,7 +1258,7 @@ PostgreSQL
 
 Analytics / ML Outputs
    │
-   ├── Maverick SaaS detection
+   ├── Maverick SaaS detection (Jev AI)
    ├── License utilization
    ├── Spend trends
    └── Reconciliation exceptions
@@ -1604,7 +1611,7 @@ Examples:
 ```text
 Invoice reconciliation
 Contract price comparison
-License inactivity detection
+License utilization metrics
 Spend calculations
 Renewal date calculations
 Variance calculations
@@ -1714,7 +1721,7 @@ The platform follows a **single-tenant, service-oriented architecture** with cle
 | **API Gateway** | Traefik / Kong / AWS ALB + Auth0 | TLS termination, JWT auth, tenant injection, rate limiting |
 | **Core Services (3)** | Procurement Core, Agentic Reasoning, Ingestion API | FastAPI |
 | **Message Broker** | Apache Kafka / Redis | Event-driven communication |
-| **Workers & Engines (4)** | Document OCR, AP Audit, Maverick Spend, Zombie License | Celery, GPU pods, scikit-learn/PyTorch |
+| **Workers & Engines (4)** | Document OCR, AP Audit, Maverick Spend (Jev AI), Seat Forecasting | Celery, GPU pods, LightGBM, Jev AI API |
 | **Data Persistence** | Object Storage, PostgreSQL, Vector DB | S3/GCS, PostgreSQL 16 + RLS, pgvector/Pinecone/Qdrant |
 | **Deployment** | Docker Compose → Kubernetes | Helm/Terraform, per-customer isolation |
 
@@ -1751,13 +1758,13 @@ The platform follows a **single-tenant, service-oriented architecture** with cle
 - **Key Data Stores**: PostgreSQL (contracts, invoices, POs), Message broker
 - **Output**: Discrepancies → Exception log queue → Agentic Reasoning Service
 
-### Worker 6: Maverick Spend ML Detection Worker (scikit-learn / PyTorch)
-- **Responsibilities**: Cadence clustering (DBSCAN / Isolation Forest), merchant resolution, unmanaged SaaS flagging, catalog semantic overlap retrieval
+### Worker 6: Maverick Spend Detection Worker (Jev AI)
+- **Responsibilities**: Build transaction state features, submit typed decision questions to Jev (TypeSafe AI), flag unmanaged SaaS subscriptions above calibrated probability thresholds, merchant resolution, catalog semantic overlap retrieval
 - **Key Data Stores**: PostgreSQL (transactions), Message broker
 - **Output**: Alerts → Vector DB (context resolution) → Agentic Reasoning Service
 
-### Worker 7: Zombie License Analytics Engine (Deterministic Batch)
-- **Responsibilities**: Inactive threshold scanning (30/60/90 days), license seat vs active Okta user comparison, reclaimable waste cost calculation
+### Worker 7: Seat Forecasting & Churn Worker (ML Batch)
+- **Responsibilities**: Okta login feature engineering (30/60/90-day cadence, department tenure), survival analysis / LightGBM seat-retention modeling, penalty-aware seat commitment optimization
 - **Key Data Stores**: Okta, PostgreSQL (licenses, usage), Message broker
 - **Output**: Metrics → PostgreSQL → Agentic Reasoning Service
 
@@ -1822,8 +1829,8 @@ Services independently scaled:
 |---|------|------|
 | 1 | **Ingestion** | External sources (Ramp, Okta, cloud drives) → Ingestion API → Message broker → Workers (OCR, ML, compliance) → Object Storage → PostgreSQL (canonical model) |
 | 2 | **Reconciliation** | New invoice → Procurement Core → AP Audit Engine → Discrepancies → DB → Message broker → Agentic Reasoning (MCP-1) → Ask AI UI |
-| 3 | **ML Detection** | Transactions → Maverick Spend Worker → Clustering → Unmanaged SaaS flags → Vector DB (context resolution) → Agentic Reasoning (MCP-1) → Ask AI UI |
-| 4 | **License Usage** | Okta data → Zombie License Engine → Utilization metrics → PostgreSQL → Agentic Reasoning (MCP-1) → Ask AI UI |
+| 3 | **ML Detection** | Transactions → Maverick Spend Worker → Jev AI typed decisions → Unmanaged SaaS flags → Vector DB (context resolution) → Agentic Reasoning (MCP-1) → Ask AI UI |
+| 4 | **License Usage** | Okta data → Seat Forecasting Engine → Retention probabilities + recommended seat commitments → PostgreSQL → Agentic Reasoning (MCP-1) → Ask AI UI |
 | 5 | **Document Processing** | Uploaded docs → Ingestion API → Document Router → OCR/Extraction Workers → Common Schema → Vector DB (chunks + provenance) → MCP-2 → Ask AI UI |
 
 ---
@@ -1962,7 +1969,7 @@ Identify employee-purchased software that bypasses procurement and determine whe
 
 ### License optimization
 
-Identify inactive/zombie licenses and quantify potentially recoverable spend.
+Forecast the optimal seat commitment per renewal and quantify shelfware and true-up risk.
 
 ### Contract compliance
 
@@ -2079,7 +2086,7 @@ When proposing architecture, technologies, ML approaches, AI models, agent desig
           │                                            │
           ├── Reconciliation                          ├── Ask AI
           ├── Maverick spend detection                 ├── Renewal Agent
-          ├── Zombie-license detection                 ├── Negotiation Copilot
+          ├── Seat forecasting / churn                 ├── Negotiation Copilot
           ├── Spend calculations                       ├── Investigation Agent
           └── Contract rule evaluation                 └── Vendor research / RAG
 
@@ -2129,9 +2136,9 @@ The following requirements summarize the product capabilities with the MCP layer
 * Maintain unified vendor identity across transactions, contracts, invoices, POs, licenses, and documents.
 * Maintain contract versions and amendment lineage.
 * Reconcile invoices against applicable contract versions deterministically.
-* Detect maverick SaaS spend using ML/analytical methods.
+* Detect maverick SaaS spend using Jev AI (TypeSafe AI) typed probabilistic decisions.
 * Match unmanaged software capabilities against approved software using embeddings/vector retrieval.
-* Detect zombie licenses using utilization data and rules.
+* Forecast seat commitments at renewal using Okta usage features and churn models.
 * Track upcoming renewals and renewal notice periods.
 
 ## A.4 Agentic capabilities

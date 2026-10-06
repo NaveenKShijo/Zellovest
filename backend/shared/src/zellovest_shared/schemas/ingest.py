@@ -17,7 +17,6 @@ class SyncRequest(BaseModel):
 
 class SyncResponse(BaseModel):
     """Response with sync ticket metadata."""
-
     sync_id: str
     task_id: str
     status: Literal["PENDING", "RUNNING", "SUCCESS", "FAILED"]

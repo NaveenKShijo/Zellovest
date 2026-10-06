@@ -1,4 +1,10 @@
-"""Control-plane dispatcher for webhooks: checkpoint + enqueue (metadata only)."""
+"""Control-plane dispatcher for webhooks: checkpoint + enqueue (metadata only).
+
+Okta is webhook-only (``POST /api/v1/webhooks/okta`` -> ``sync_okta_license_usage``
+worker task); Okta has no pull-sync endpoint. Pull sync exists only for Ramp
+(``POST /api/v1/sync/ramp``) and Google Drive (``POST /api/v1/sync/google-drive``,
+see ``sync_dispatcher.dispatch_drive_sync``).
+"""
 
 import json
 from uuid import UUID

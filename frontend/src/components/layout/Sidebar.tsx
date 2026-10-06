@@ -6,6 +6,7 @@ import Image from 'next/image';
 import { usePathname } from 'next/navigation';
 import { useLayout } from '@/contexts/LayoutContext';
 import { useAuth } from '@/contexts/AuthContext';
+import { ORGANIZATION_NAME, useDisplayIdentity } from '@/components/auth/AsgardeoAuth';
 import { NavSection, NavItem } from '@/types';
 
 /**
@@ -104,6 +105,9 @@ const NAVIGATION_SECTIONS: NavSection[] = [
 export function Sidebar() {
   const pathname = usePathname();
   const { user } = useAuth();
+  // Single-tenant branding: the card leads with the organization name and
+  // the signed-in username beneath it (never demo placeholders).
+  const { name: displayUsername } = useDisplayIdentity();
   const {
     isSidebarCollapsed,
     toggleSidebar,
@@ -334,16 +338,16 @@ export function Sidebar() {
                 flexShrink: 0,
               }}
             >
-              {user ? user.name.charAt(0) : 'U'}
+              {ORGANIZATION_NAME.charAt(0).toUpperCase()}
             </div>
 
             {!isSidebarCollapsed && (
               <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
                 <span style={{ fontSize: '12.5px', fontWeight: 600, color: '#FFFFFF', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {user?.name || 'Sarah Chen'}
+                  {ORGANIZATION_NAME}
                 </span>
-                <span style={{ fontSize: '10.5px', color: 'var(--text-sidebar)', whiteSpace: 'nowrap' }}>
-                  Procurement
+                <span style={{ fontSize: '10.5px', color: 'var(--text-sidebar)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {displayUsername || user?.name || 'Procurement'}
                 </span>
               </div>
             )}

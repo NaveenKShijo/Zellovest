@@ -4,8 +4,9 @@ Tables:
 - ``tenant_integrations``: AES-256-GCM encrypted OAuth tokens per tenant.
 - ``ingestion_sync_checkpoints``: sync execution state + pagination cursors.
 
-Single-tenant isolation: each deployment owns its database; ``tenant_id``
-uniqueness guards against duplicate rows within the instance.
+Single-tenant isolation: each deployment owns its database; the
+(``tenant_id``, ``provider``) uniqueness guards against duplicate rows
+within the instance.
 """
 
 import enum
@@ -67,12 +68,20 @@ class SyncMode(str, enum.Enum):
 
 
 class TenantIntegration(Base):
-    """Encrypted OAuth credentials for one tenant deployment."""
+    """Encrypted OAuth credentials for one tenant deployment.
+
+    One row per (tenant, provider): ``tenant_id`` alone is NOT unique so a
+    single-tenant deployment can hold both ``ramp`` and ``google_drive``
+    credentials side by side (see ``uq_integrations_tenant_provider``).
+    """
 
     __tablename__ = "tenant_integrations"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "provider", name="uq_integrations_tenant_provider"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     provider: Mapped[str] = mapped_column(String(64), nullable=False, default="ramp")
     encrypted_access_token: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     encrypted_refresh_token: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)

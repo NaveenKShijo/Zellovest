@@ -36,13 +36,24 @@ class IngestionAPISettings(BaseSettings):
     # Okta API
     okta_domain: str = Field(default="", alias="OKTA_DOMAIN")
     okta_api_token: str = Field(default="", alias="OKTA_API_TOKEN")
+    okta_webhook_secret: str = Field(alias="OKTA_WEBHOOK_SECRET")
 
-    # Cloud Drive Connectors
+    # Google Drive ingestion: OAuth (polling setup), push webhook, pull sync.
+    # Mirrors the Ramp endpoint groups (integrations / webhooks / sync).
     google_drive_client_id: str = Field(default="", alias="GOOGLE_DRIVE_CLIENT_ID")
     google_drive_client_secret: str = Field(default="", alias="GOOGLE_DRIVE_CLIENT_SECRET")
+    google_drive_auth_url: str = Field(
+        default="https://accounts.google.com/o/oauth2/v2/auth",
+        alias="GOOGLE_DRIVE_AUTH_URL",
+    )
+    google_drive_token_url: str = Field(
+        default="https://oauth2.googleapis.com/token", alias="GOOGLE_DRIVE_TOKEN_URL"
+    )
     google_drive_redirect_uri: str = Field(default="", alias="GOOGLE_DRIVE_REDIRECT_URI")
-    dropbox_client_id: str = Field(default="", alias="DROPBOX_CLIENT_ID")
-    dropbox_client_secret: str = Field(default="", alias="DROPBOX_CLIENT_SECRET")
+    google_drive_webhook_token: str = Field(default="", alias="GOOGLE_DRIVE_WEBHOOK_TOKEN")
+    google_drive_webhook_callback_url: str = Field(
+        default="", alias="GOOGLE_DRIVE_WEBHOOK_CALLBACK_URL"
+    )
 
     # Token encryption
     credentials_encryption_key: str = Field(alias="CREDENTIALS_ENCRYPTION_KEY")

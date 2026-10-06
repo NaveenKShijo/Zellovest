@@ -127,31 +127,48 @@ class OAuthStateStore:
 STATE_PREFIX = "oauth:state:"
 
 
-def create_state(redis_client: redis.Redis, tenant_id: str, ttl_seconds: int = 600) -> str:
+def create_state(
+    redis_client: redis.Redis,
+    tenant_id: str,
+    ttl_seconds: int = 600,
+    provider: str = "ramp",
+) -> str:
     """Generate a secure state token and persist it in Redis.
+
+    The payload binds the state to both tenant and provider so concurrent
+    Ramp and Google Drive OAuth flows cannot consume each other's states.
 
     Args:
         redis_client: Redis client.
         tenant_id: Tenant that initiated the OAuth flow.
         ttl_seconds: Expiry window for the state token.
+        provider: Provider namespace (``"ramp"`` or ``"google_drive"``).
 
     Returns:
         URL-safe state string to embed in the authorization URL.
     """
     state = secrets.token_urlsafe(32)
-    redis_client.setex(f"{STATE_PREFIX}{state}", ttl_seconds, tenant_id)
+    payload = json.dumps({"tenant_id": tenant_id, "provider": provider})
+    redis_client.setex(f"{STATE_PREFIX}{state}", ttl_seconds, payload)
     return state
 
 
-def consume_state(redis_client: redis.Redis, state: str) -> str | None:
+def consume_state(
+    redis_client: redis.Redis,
+    state: str,
+    expected_provider: str | None = None,
+) -> str | None:
     """Atomically consume a state token, returning its tenant_id.
 
     Args:
         redis_client: Redis client.
         state: State token from the OAuth callback.
+        expected_provider: When set, states bound to a different provider
+            are rejected (returns None) instead of being consumed.
 
     Returns:
-        The bound tenant_id, or None if unknown/expired/reused.
+        The bound tenant_id, or None if unknown/expired/reused (or bound to
+        a different provider than ``expected_provider``).
     """
     key = f"{STATE_PREFIX}{state}"
     tenant_raw = redis_client.getdel(key) if hasattr(redis_client, "getdel") else None
@@ -161,4 +178,14 @@ def consume_state(redis_client: redis.Redis, state: str) -> str | None:
         redis_client.delete(key)
     if tenant_raw is None:
         return None
-    return tenant_raw.decode("utf-8") if isinstance(tenant_raw, bytes) else str(tenant_raw)
+    raw = tenant_raw.decode("utf-8") if isinstance(tenant_raw, bytes) else str(tenant_raw)
+    try:
+        payload = json.loads(raw)
+        tenant_id = str(payload["tenant_id"])
+        provider = str(payload.get("provider") or "ramp")
+    except (ValueError, KeyError, AttributeError, TypeError):
+        # Legacy plain-tenant states (pre-provider-namespacing).
+        tenant_id, provider = raw, "ramp"
+    if expected_provider is not None and provider != expected_provider:
+        return None
+    return tenant_id

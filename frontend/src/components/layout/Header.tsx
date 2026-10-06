@@ -1,12 +1,33 @@
 'use client';
 
 import React, { useState } from 'react';
+import { useAsgardeo } from '@asgardeo/nextjs';
+import { AsgardeoUserInfo, ORGANIZATION_NAME } from '@/components/auth/AsgardeoAuth';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLayout } from '@/contexts/LayoutContext';
 import { useToast } from '@/contexts/ToastContext';
 
 export function Header() {
   const { user, logout } = useAuth();
+  const { isSignedIn: isAsgardeoSignedIn, signOut: asgardeoSignOut } = useAsgardeo();
+  const [isSigningOut, setIsSigningOut] = useState(false);
+
+  /**
+   * Sign out via the SDK session when present (server action clears the
+   * session cookie and navigates to the post-logout URL), falling back
+   * to the legacy local logout. NOTE: the SDK's <SignOutButton>
+   * render-prop path is intentionally NOT used — like <SignInButton>,
+   * it renders children with no click handler attached.
+   */
+  const handleSignOut = () => {
+    setIsUserMenuOpen(false);
+    if (isAsgardeoSignedIn && asgardeoSignOut) {
+      setIsSigningOut(true);
+      void asgardeoSignOut().catch(() => logout());
+    } else {
+      void logout();
+    }
+  };
   const { toggleMobileSidebar } = useLayout();
   const { toasts, notify } = useToast();
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
@@ -169,10 +190,12 @@ export function Header() {
                 justifyContent: 'center',
               }}
             >
-              {user ? user.name.charAt(0) : 'S'}
+              {ORGANIZATION_NAME.charAt(0).toUpperCase()}
             </div>
+            {/* Single-tenant branding: the badge carries the company name;
+                the signed-in user is shown inside the dropdown menu. */}
             <span style={{ fontSize: '12.5px', fontWeight: 600, color: 'var(--text-primary)' }}>
-              {user?.name || 'Sarah Chen'}
+              {ORGANIZATION_NAME}
             </span>
           </button>
 
@@ -193,27 +216,54 @@ export function Header() {
               }}
             >
               <div style={{ padding: '8px', borderBottom: '1px solid var(--border-subtle)', marginBottom: '4px' }}>
-                <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>{user?.name}</div>
-                <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{user?.role}</div>
+                <AsgardeoUserInfo
+                  signedOutFallback={
+                    <>
+                      <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)' }}>{user?.name}</div>
+                      <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{user?.role}</div>
+                    </>
+                  }
+                />
+                <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                  {ORGANIZATION_NAME} · {user?.role || 'Procurement Team Member'}
+                </div>
               </div>
-              <button
-                onClick={() => {
-                  logout();
-                  setIsUserMenuOpen(false);
-                }}
-                style={{
-                  width: '100%',
-                  textAlign: 'left',
-                  padding: '7px 8px',
-                  borderRadius: 'var(--radius-sm)',
-                  fontSize: '12px',
-                  color: 'var(--color-danger)',
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--color-danger-subtle)')}
-                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
-              >
-                Sign Out
-              </button>
+              {isAsgardeoSignedIn ? (
+                <button
+                  onClick={handleSignOut}
+                  disabled={isSigningOut}
+                  style={{
+                    width: '100%',
+                    textAlign: 'left',
+                    padding: '7px 8px',
+                    borderRadius: 'var(--radius-sm)',
+                    fontSize: '12px',
+                    color: 'var(--color-danger)',
+                    opacity: isSigningOut ? 0.6 : 1,
+                    cursor: isSigningOut ? 'wait' : 'pointer',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--color-danger-subtle)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+                >
+                  {isSigningOut ? 'Signing out…' : 'Sign Out'}
+                </button>
+              ) : (
+                <button
+                  onClick={handleSignOut}
+                  style={{
+                    width: '100%',
+                    textAlign: 'left',
+                    padding: '7px 8px',
+                    borderRadius: 'var(--radius-sm)',
+                    fontSize: '12px',
+                    color: 'var(--color-danger)',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = 'var(--color-danger-subtle)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+                >
+                  Sign Out
+                </button>
+              )}
             </div>
           )}
         </div>

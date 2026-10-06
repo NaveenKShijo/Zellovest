@@ -4,8 +4,13 @@ import os
 import sys
 from logging.config import fileConfig
 
+# Ensure shared package is importable when alembic is run directly
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared", "src"))
+
+import zellovest_shared.db.models  # noqa: F401
 from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool
+from zellovest_shared.db.base import Base
 
 from alembic import context
 
@@ -14,14 +19,6 @@ from alembic import context
 # variables still take precedence over .env values.
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared", "src"))
-
-from dotenv import load_dotenv
-
-import zellovest_shared.db.models  # noqa: F401
-from zellovest_shared.db.base import Base
-
-load_dotenv()
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

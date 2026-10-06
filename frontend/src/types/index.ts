@@ -55,14 +55,27 @@ export interface UserSession {
   avatarUrl?: string;
   organizationName: string; // Single-tenant organization boundary
   accessToken?: string; // Bearer token from WSO2 for API authorization
+  idToken?: string; // OIDC ID token (sent as id_token_hint at logout)
+  expiresAt?: number; // Access token expiry (epoch ms)
 }
 
+/**
+ * Authentication state driven by WSO2 Identity Server (OIDC).
+ * - startLogin(): redirect to WSO2 hosted login (Authorization Code + PKCE).
+ * - completeLogin(): called by /auth/callback to exchange the code for tokens;
+ *   resolves to true when a session was established, false on failure.
+ * - logout(): clears the local session and invokes WSO2 RP-initiated logout.
+ */
 export interface AuthContextType {
   user: UserSession | null;
   isAuthenticated: boolean;
-  isLoading: boolean;
-  login: (email?: string) => Promise<void>;
-  logout: () => void;
+  isLoading: boolean; // session restore in progress (on app mount)
+  isLoggingIn: boolean; // token exchange in progress (on callback)
+  error: string | null; // last authentication error, if any
+  startLogin: () => Promise<void>;
+  completeLogin: (code: string, state: string | null) => Promise<boolean>;
+  logout: () => Promise<void>;
+  clearError: () => void;
 }
 
 // ==========================================

@@ -1,7 +1,8 @@
 """Idempotent repository helpers for integrations and checkpoints.
 
 All writers are safe under duplicate webhook/manual-sync delivery:
-- ``upsert_integration`` keyed on ``tenant_id`` (single-tenant: one row).
+- ``upsert_integration`` keyed on (``tenant_id``, ``provider``)
+  (single-tenant: one row per provider).
 - ``create_pending_checkpoint`` returns the existing open checkpoint when a
   duplicate arrives instead of creating a race (checked via ``event_id``
   for webhooks, via open PENDING/RUNNING row for manual syncs).
@@ -32,6 +33,7 @@ def upsert_integration_sync(
     session: Session,
     *,
     tenant_id: str,
+    provider: str = "ramp",
     encrypted_access_token: bytes,
     encrypted_refresh_token: bytes,
     encryption_nonce: bytes,
@@ -41,7 +43,7 @@ def upsert_integration_sync(
     """Insert or update the tenant's encrypted credentials (sync)."""
     stmt = pg_insert(TenantIntegration).values(
         tenant_id=tenant_id,
-        provider="ramp",
+        provider=provider,
         encrypted_access_token=encrypted_access_token,
         encrypted_refresh_token=encrypted_refresh_token,
         encryption_nonce=encryption_nonce,
@@ -50,7 +52,7 @@ def upsert_integration_sync(
         scopes=scopes or [],
     )
     stmt = stmt.on_conflict_do_update(
-        index_elements=["tenant_id"],
+        index_elements=["tenant_id", "provider"],
         set_={
             "encrypted_access_token": stmt.excluded.encrypted_access_token,
             "encrypted_refresh_token": stmt.excluded.encrypted_refresh_token,
@@ -63,7 +65,10 @@ def upsert_integration_sync(
     )
     session.execute(stmt)
     row = session.execute(
-        select(TenantIntegration).where(TenantIntegration.tenant_id == tenant_id)
+        select(TenantIntegration).where(
+            TenantIntegration.tenant_id == tenant_id,
+            TenantIntegration.provider == provider,
+        )
     ).scalar_one()
     logger.info("integration_upserted", tenant_id=tenant_id)
     return row
@@ -73,6 +78,7 @@ async def aupsert_integration(
     session: AsyncSession,
     *,
     tenant_id: str,
+    provider: str = "ramp",
     encrypted_access_token: bytes,
     encrypted_refresh_token: bytes,
     encryption_nonce: bytes,
@@ -82,7 +88,7 @@ async def aupsert_integration(
     """Insert or update the tenant's encrypted credentials (async)."""
     stmt = pg_insert(TenantIntegration).values(
         tenant_id=tenant_id,
-        provider="ramp",
+        provider=provider,
         encrypted_access_token=encrypted_access_token,
         encrypted_refresh_token=encrypted_refresh_token,
         encryption_nonce=encryption_nonce,
@@ -91,7 +97,7 @@ async def aupsert_integration(
         scopes=scopes or [],
     )
     stmt = stmt.on_conflict_do_update(
-        index_elements=["tenant_id"],
+        index_elements=["tenant_id", "provider"],
         set_={
             "encrypted_access_token": stmt.excluded.encrypted_access_token,
             "encrypted_refresh_token": stmt.excluded.encrypted_refresh_token,
@@ -105,7 +111,10 @@ async def aupsert_integration(
     await session.execute(stmt)
     row = (
         await session.execute(
-            select(TenantIntegration).where(TenantIntegration.tenant_id == tenant_id)
+            select(TenantIntegration).where(
+                TenantIntegration.tenant_id == tenant_id,
+                TenantIntegration.provider == provider,
+            )
         )
     ).scalar_one()
     logger.info("integration_upserted", tenant_id=tenant_id)
@@ -230,3 +239,30 @@ async def amark_checkpoint(
         checkpoint.finished_at = now
     session.add(checkpoint)
     await session.flush()
+
+
+async def aget_latest_success_cursor(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    entity: EntityType,
+) -> str | None:
+    """Return the most recent SUCCESS cursor for (tenant, entity), if any.
+
+    Used by pull-sync triggers (e.g. Drive ``changes.list``) to resume from
+    the last completed cursor when the     caller does not pass one explicitly.
+    """
+    row = (
+        await session.execute(
+            select(IngestionSyncCheckpoint.last_success_cursor)
+            .where(
+                IngestionSyncCheckpoint.tenant_id == tenant_id,
+                IngestionSyncCheckpoint.entity_type == entity,
+                IngestionSyncCheckpoint.status == SyncStatus.SUCCESS,
+                IngestionSyncCheckpoint.last_success_cursor.is_not_none(),
+            )
+            .order_by(IngestionSyncCheckpoint.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return str(row) if row else None
