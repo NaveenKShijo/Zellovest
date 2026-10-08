@@ -1,12 +1,14 @@
 """Ingestion & Document Ingress API - FastAPI Application.
 
-Endpoint groups (Ramp and Drive share the same shape):
+Endpoint groups (Ramp, Drive and Okta share the same shape):
 - OAuth: Ramp (``/integrations/ramp``) + Google Drive
-  (``/integrations/google-drive``) connect / callback / status.
-- Webhooks: Ramp + Okta (HMAC) + Google Drive push (``changes.watch``).
+  (``/integrations/google-drive``) + Okta (``/integrations/okta``)
+  connect / callback / status.
+- Webhooks: Ramp + Okta (hook-secret) + Google Drive push (``changes.watch``).
 - Pull sync: Ramp (``POST /sync/ramp``) + Google Drive
-  (``POST /sync/google-drive`` via ``changes.list`` cursor). Okta is
-  webhook-only, no pull sync.
+  (``POST /sync/google-drive`` via ``changes.list`` cursor) + Okta batch
+  (``POST /sync/okta`` for ``users``/``apps``/``logs``; backfill path
+  alongside the ``/webhooks/okta`` real-time path).
 - File Upload Staging (manual fallback to S3/MinIO)
 - Document Triage
 """
@@ -19,7 +21,8 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from zellovest_ingestion.api.routers import integrations, integrations_drive, sync, uploads, webhooks
+from zellovest_ingestion.api.routers import integrations, integrations_drive, integrations_okta, sync, uploads, webhooks
+from zellovest_ingestion.api.routers.integrations_okta import alias_router as integrations_okta_alias_router
 from zellovest_ingestion.config import get_ingestion_api_settings
 from zellovest_shared.logging_conf import configure_logging, get_logger
 
@@ -74,6 +77,10 @@ def create_app(settings=None) -> FastAPI:
     prefix = app.state.settings.api_v1_prefix
     app.include_router(integrations.router, prefix=prefix, tags=["integrations"])
     app.include_router(integrations_drive.router, prefix=prefix, tags=["integrations"])
+    app.include_router(integrations_okta.router, prefix=prefix, tags=["integrations"])
+    # Unprefixed legacy alias: GET /okta/callback (already whitelisted on
+    # tenants whose Okta app registered the short URL).
+    app.include_router(integrations_okta_alias_router, tags=["integrations"])
     app.include_router(webhooks.router, prefix=prefix, tags=["webhooks"])
     app.include_router(uploads.router, prefix=prefix, tags=["uploads"])
     app.include_router(sync.router, prefix=prefix, tags=["sync"])

@@ -14,8 +14,10 @@ interface IntegrationStatusState {
 
 export default function IntegrationsPage() {
   const [rampStatus, setRampStatus] = useState<IntegrationStatusState | null>(null);
+  const [oktaStatus, setOktaStatus] = useState<IntegrationStatusState | null>(null);
   const [isLoadingStatus, setIsLoadingStatus] = useState<boolean>(true);
   const [isConnecting, setIsConnecting] = useState<boolean>(false);
+  const [connectingProvider, setConnectingProvider] = useState<'ramp' | 'okta' | null>(null);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
   const [bannerNotice, setBannerNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -30,48 +32,45 @@ export default function IntegrationsPage() {
     const providerParam = params.get('provider');
     const messageParam = params.get('message');
 
-    if (statusParam === 'connected' && providerParam === 'ramp') {
+    const providerLabel =
+      providerParam === 'okta' ? 'Okta' : providerParam === 'google-drive' ? 'Google Drive' : 'Ramp';
+    if (statusParam === 'connected' && providerParam) {
       setBannerNotice({
         type: 'success',
-        message: 'Ramp successfully connected! Your access tokens are securely stored and encrypted.',
+        message: `${providerLabel} successfully connected! Your access tokens are securely stored and encrypted.`,
       });
       // Clean up the URL query params without reloading
       window.history.replaceState({}, document.title, window.location.pathname);
     } else if (statusParam === 'error') {
       setBannerNotice({
         type: 'error',
-        message: `Failed to complete Ramp connection: ${messageParam || 'unknown error'}. Please try again.`,
+        message: `Failed to complete ${providerLabel} connection: ${messageParam || 'unknown error'}. Please try again.`,
       });
       window.history.replaceState({}, document.title, window.location.pathname);
     }
   }, []);
 
-  // Fetch current integration status
+  const disconnectedState = (provider: string): IntegrationStatusState => ({
+    connected: false,
+    provider,
+    tenant_id: tenantId,
+    status: 'DISCONNECTED',
+    scopes: [],
+  });
+
+  // Fetch current integration statuses (Ramp + Okta)
   const checkStatus = async () => {
     setIsLoadingStatus(true);
     try {
-      const res = await fetch(`/api/v1/integrations/ramp/status?tenant_id=${tenantId}`);
-      if (res.ok) {
-        const data = await res.json();
-        setRampStatus(data);
-      } else {
-        // Fallback default state
-        setRampStatus({
-          connected: false,
-          provider: 'ramp',
-          tenant_id: tenantId,
-          status: 'DISCONNECTED',
-          scopes: [],
-        });
-      }
+      const [rampRes, oktaRes] = await Promise.all([
+        fetch(`/api/v1/integrations/ramp/status?tenant_id=${tenantId}`),
+        fetch(`/api/v1/integrations/okta/status?tenant_id=${tenantId}`),
+      ]);
+      setRampStatus(rampRes.ok ? await rampRes.json() : disconnectedState('ramp'));
+      setOktaStatus(oktaRes.ok ? await oktaRes.json() : disconnectedState('okta'));
     } catch {
-      setRampStatus({
-        connected: false,
-        provider: 'ramp',
-        tenant_id: tenantId,
-        status: 'DISCONNECTED',
-        scopes: [],
-      });
+      setRampStatus(disconnectedState('ramp'));
+      setOktaStatus(disconnectedState('okta'));
     } finally {
       setIsLoadingStatus(false);
     }
@@ -81,12 +80,31 @@ export default function IntegrationsPage() {
     checkStatus();
   }, []);
 
-  // Handle Connect to Ramp
+  // Handle Connect to Ramp: fetch the authorization URL, then go
+  // straight to Ramp (same as Okta below).
   const handleConnectRamp = async () => {
+    await handleConnectProvider('ramp', '/api/v1/integrations/ramp/connect', 'Ramp');
+  };
+
+  // Handle Connect to Okta: fetch the authorization URL, then go straight
+  // to Okta's hosted authorize page (login + consent), like Ramp.
+  const handleConnectOkta = async () => {
+    await handleConnectProvider('okta', '/api/v1/integrations/okta/connect', 'Okta');
+  };
+
+  // Shared OAuth-connect flow: POST connect -> redirect to the provider's
+  // real authorize page. No intermediate step: the provider itself asks
+  // the user to sign in and approve access.
+  const handleConnectProvider = async (
+    provider: 'ramp' | 'okta',
+    connectUrl: string,
+    label: string
+  ) => {
     setIsConnecting(true);
+    setConnectingProvider(provider);
     setBannerNotice(null);
     try {
-      const res = await fetch('/api/v1/integrations/ramp/connect', {
+      const res = await fetch(connectUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tenant_id: tenantId }),
@@ -99,7 +117,7 @@ export default function IntegrationsPage() {
 
       const data = await res.json();
       if (data.authorization_url) {
-        // Redirect browser to Ramp OAuth page
+        // Go straight to the provider's authorize page.
         window.location.href = data.authorization_url;
       } else {
         throw new Error('No authorization URL returned from ingestion service');
@@ -107,29 +125,61 @@ export default function IntegrationsPage() {
     } catch (err: any) {
       setBannerNotice({
         type: 'error',
-        message: `Unable to initiate Ramp connection: ${err.message}`,
+        message: `Unable to initiate ${label} connection: ${err.message}`,
       });
       setIsConnecting(false);
+      setConnectingProvider(null);
     }
   };
 
-  // Trigger manual sync for bills and transactions
-  const handleTriggerSync = async (entity: 'card_transactions' | 'bills') => {
+  // Single Sync Now for Ramp: schedules both entities sequentially and
+  // reports one combined result instead of two separate buttons.
+  const handleSyncRampNow = async () => {
+    setIsSyncing(true);
+    setSyncFeedback(null);
+    const outcomes: string[] = [];
+    try {
+      for (const entity of ['card_transactions', 'bills'] as const) {
+        const res = await fetch('/api/v1/sync/ramp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tenant_id: tenantId, entity }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          outcomes.push(`${entity.replace('_', ' ')} (Job: ${data.sync_id || 'queued'})`);
+        } else {
+          const err = await res.json().catch(() => ({}));
+          outcomes.push(`${entity.replace('_', ' ')} failed: ${err.detail || res.statusText}`);
+        }
+      }
+      setSyncFeedback(`Ramp sync scheduled: ${outcomes.join('; ')}`);
+      void checkStatus();
+    } catch (err: any) {
+      setSyncFeedback(`Sync error: ${err.message}`);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  // Single Sync Now for Okta: pulls users/apps/logs in one batch request.
+  const handleSyncOktaNow = async () => {
     setIsSyncing(true);
     setSyncFeedback(null);
     try {
-      const res = await fetch('/api/v1/sync/ramp', {
+      const res = await fetch('/api/v1/sync/okta', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tenant_id: tenantId, entity }),
+        body: JSON.stringify({ tenant_id: tenantId, entities: ['users', 'apps', 'logs'] }),
       });
       if (res.ok) {
         const data = await res.json();
-        setSyncFeedback(`Sync scheduled for ${entity.replace('_', ' ')} (Job: ${data.sync_id || 'queued'})`);
+        setSyncFeedback(`Okta sync scheduled for users, apps, logs (Job: ${data.sync_id || 'queued'})`);
       } else {
         const err = await res.json().catch(() => ({}));
-        setSyncFeedback(`Sync failed: ${err.detail || res.statusText}`);
+        setSyncFeedback(`Okta sync failed: ${err.detail || res.statusText}`);
       }
+      void checkStatus();
     } catch (err: any) {
       setSyncFeedback(`Sync error: ${err.message}`);
     } finally {
@@ -297,12 +347,12 @@ export default function IntegrationsPage() {
                     transition: 'background-color 0.15s ease',
                   }}
                 >
-                  {isConnecting ? 'Redirecting to Ramp...' : 'Connect Ramp'}
+                  {isConnecting && connectingProvider === 'ramp' ? 'Redirecting to Ramp...' : 'Connect Ramp'}
                 </button>
               ) : (
                 <>
                   <button
-                    onClick={() => handleTriggerSync('card_transactions')}
+                    onClick={handleSyncRampNow}
                     disabled={isSyncing}
                     style={{
                       padding: '7px 12px',
@@ -315,23 +365,7 @@ export default function IntegrationsPage() {
                       cursor: isSyncing ? 'wait' : 'pointer',
                     }}
                   >
-                    Sync Transactions
-                  </button>
-                  <button
-                    onClick={() => handleTriggerSync('bills')}
-                    disabled={isSyncing}
-                    style={{
-                      padding: '7px 12px',
-                      fontSize: '12px',
-                      fontWeight: 600,
-                      color: 'var(--text-primary)',
-                      backgroundColor: 'var(--bg-surface)',
-                      border: '1px solid var(--border-strong)',
-                      borderRadius: 'var(--radius-md)',
-                      cursor: isSyncing ? 'wait' : 'pointer',
-                    }}
-                  >
-                    Sync Bills
+                    {isSyncing ? 'Syncing...' : 'Sync Now'}
                   </button>
                   <button
                     onClick={handleConnectRamp}
@@ -360,10 +394,11 @@ export default function IntegrationsPage() {
               padding: '20px',
               borderRadius: 'var(--radius-md)',
               backgroundColor: 'var(--bg-surface-warm, #FFF9FA)',
-              border: '1px solid var(--border-subtle)',
+              border: oktaStatus?.connected ? '1px solid var(--color-success-border)' : '1px solid var(--border-subtle)',
               display: 'flex',
               flexDirection: 'column',
               justifyContent: 'space-between',
+              gap: '14px',
             }}
           >
             <div>
@@ -377,17 +412,85 @@ export default function IntegrationsPage() {
                     fontWeight: 700,
                     padding: '3px 9px',
                     borderRadius: 'var(--radius-full)',
-                    backgroundColor: 'var(--bg-surface-tint)',
-                    color: 'var(--text-secondary)',
-                    border: '1px solid var(--border-subtle)',
+                    backgroundColor: oktaStatus?.connected ? 'var(--color-success-subtle)' : 'var(--bg-surface-tint)',
+                    color: oktaStatus?.connected ? 'var(--color-success)' : 'var(--text-secondary)',
+                    border: `1px solid ${oktaStatus?.connected ? 'var(--color-success-border)' : 'var(--border-subtle)'}`,
                   }}
                 >
-                  Configured
+                  {isLoadingStatus ? 'Loading...' : oktaStatus?.connected ? 'Connected' : 'Not Connected'}
                 </span>
               </div>
-              <p style={{ fontSize: '12.5px', color: 'var(--text-secondary)', lineHeight: '1.45', margin: 0 }}>
+              <p style={{ fontSize: '12.5px', color: 'var(--text-secondary)', lineHeight: '1.45', margin: '0 0 12px 0' }}>
                 Synchronizing employee application assignments and user seat provisioning for zombie license detection.
               </p>
+
+              {oktaStatus?.connected && (
+                <div style={{ marginBottom: '12px', fontSize: '11.5px', color: 'var(--text-muted)' }}>
+                  <div>Scopes: <strong style={{ color: 'var(--text-primary)' }}>{oktaStatus.scopes.join(', ') || 'openid, okta.users.read, okta.apps.read, okta.logs.read'}</strong></div>
+                  {oktaStatus.updated_at && (
+                    <div style={{ marginTop: '2px' }}>
+                      Last synced: {new Date(oktaStatus.updated_at).toLocaleDateString()} {new Date(oktaStatus.updated_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              {!oktaStatus?.connected ? (
+                <button
+                  onClick={handleConnectOkta}
+                  disabled={isConnecting}
+                  style={{
+                    padding: '8px 16px',
+                    fontSize: '13px',
+                    fontWeight: 700,
+                    color: '#FFFFFF',
+                    backgroundColor: 'var(--color-brand)',
+                    border: 'none',
+                    borderRadius: 'var(--radius-md)',
+                    cursor: isConnecting ? 'wait' : 'pointer',
+                    transition: 'background-color 0.15s ease',
+                  }}
+                >
+                  {isConnecting && connectingProvider === 'okta' ? 'Redirecting to Okta...' : 'Connect Okta'}
+                </button>
+              ) : (
+                <>
+                  <button
+                    onClick={handleSyncOktaNow}
+                    disabled={isSyncing}
+                    style={{
+                      padding: '7px 12px',
+                      fontSize: '12px',
+                      fontWeight: 600,
+                      color: 'var(--text-primary)',
+                      backgroundColor: 'var(--bg-surface)',
+                      border: '1px solid var(--border-strong)',
+                      borderRadius: 'var(--radius-md)',
+                      cursor: isSyncing ? 'wait' : 'pointer',
+                    }}
+                  >
+                    {isSyncing ? 'Syncing...' : 'Sync Now'}
+                  </button>
+                  <button
+                    onClick={handleConnectOkta}
+                    disabled={isConnecting}
+                    style={{
+                      padding: '7px 12px',
+                      fontSize: '12px',
+                      fontWeight: 600,
+                      color: 'var(--text-secondary)',
+                      backgroundColor: 'transparent',
+                      border: '1px solid var(--border-subtle)',
+                      borderRadius: 'var(--radius-md)',
+                      cursor: isConnecting ? 'wait' : 'pointer',
+                    }}
+                  >
+                    Reconnect
+                  </button>
+                </>
+              )}
             </div>
           </div>
 

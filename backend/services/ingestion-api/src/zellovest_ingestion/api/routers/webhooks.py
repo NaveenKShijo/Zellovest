@@ -13,17 +13,24 @@
 import json
 
 import redis
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
+from fastapi.exceptions import RequestValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from zellovest_ingestion.api.deps import get_app_settings, get_db_session, get_redis_client
 from zellovest_ingestion.config import IngestionAPISettings
-from zellovest_ingestion.services.dispatcher import dispatch_okta_webhook, dispatch_ramp_webhook
+from zellovest_ingestion.services.dispatcher import dispatch_ramp_webhook
 from zellovest_ingestion.services.drive_watch import resolve_watch_tenant
 from zellovest_shared.db.session import async_session_scope
 from zellovest_shared.logging_conf import get_logger
-from zellovest_shared.schemas.webhooks import RampWebhookEnvelope, WebhookAck
+from zellovest_shared.schemas.webhooks import (
+    RampWebhookEnvelope,
+    WebhookAck,
+    OktaEventHookEnvelope,
+)
 from zellovest_shared.security.webhook import InvalidSignatureError, verify_signature
+from zellovest_ingestion.services.dispatcher import dispatch_okta_signal
+from zellovest_ingestion.services.okta_events import extract_okta_signal
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
@@ -125,30 +132,37 @@ async def ramp_webhook(
     return WebhookAck(received=True, sync_id=str(sync_id), deduped=not created)
 
 
-@router.post("/okta", response_model=WebhookAck, status_code=200)
+@router.post("/okta", status_code=204, response_class=Response)
 async def okta_webhook(
     request: Request,
     session: AsyncSession = Depends(get_db_session),
-) -> WebhookAck:
-    """Handle Okta webhook events (user lifecycle, app assignments)."""
-    raw_body = await request.body()
+    settings: IngestionAPISettings = Depends(get_app_settings),
+) -> Response:
+    """Okta Event Hook delivery. Verifies secret → validates envelope → fans out by event.eventType. Returns empty 204."""
+    # 1. secret (same header GET verify uses)
+    expected = (settings.okta_webhook_secret or "").strip()
+    if expected and request.headers.get("X-Okta-Hook-Secret") != expected:
+        raise HTTPException(status_code=401, detail="invalid hook secret")
+    # 2. envelope validation (422 on malformed, not 400)
     try:
-        payload = json.loads(raw_body.decode("utf-8") or "{}")
-    except (ValueError, UnicodeDecodeError) as exc:
-        logger.error("okta_webhook_invalid_payload", error_class=type(exc).__name__)
-        raise HTTPException(status_code=400, detail="malformed JSON body") from exc
-
-    tenant_id = (
-        request.headers.get("X-Tenant-Id")
-        or (payload.get("tenant_id") if isinstance(payload, dict) else None)
-        or "default"
-    )
-    sync_id, _task_id, created = await dispatch_okta_webhook(
-        session, tenant_id=str(tenant_id), payload=payload
-    )
+        envelope = OktaEventHookEnvelope.model_validate(await request.json())
+    except Exception as exc:
+        raise RequestValidationError(errors=[{"loc": ("body",), "msg": str(exc), "type": "value_error"}])
+    # 3. tenant
+    tenant_id = str(request.headers.get("X-Tenant-Id") or "default")
+    # 4. per-type fan-out
+    processed, deduped, unsupported = 0, 0, 0
+    for event in envelope.data.events:
+        signal = extract_okta_signal(event)
+        if signal is None:
+            unsupported += 1
+            logger.info("okta_event_unsupported", event_type=event.eventType, uuid=event.uuid)
+            continue
+        _, _, created = await dispatch_okta_signal(session, tenant_id=tenant_id, signal=signal)
+        processed += created; deduped += (not created)
     await session.commit()
-    logger.info("okta_webhook_accepted", event_type=payload.get("eventType"), created=created)
-    return {}
+    logger.info("okta_webhook_accepted", tenant_id=tenant_id, processed=processed, deduped=deduped, unsupported=unsupported)
+    return Response(status_code=204)
 
 
 @router.get("/okta")

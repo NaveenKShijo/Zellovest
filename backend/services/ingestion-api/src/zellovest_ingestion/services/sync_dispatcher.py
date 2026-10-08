@@ -1,4 +1,4 @@
-"""Pull-sync task dispatcher (Ramp + Google Drive; Okta is webhook-only).
+"""Pull-sync task dispatcher (Ramp + Google Drive + Okta batch).
 
 - Ramp pull sync (``POST /api/v1/sync/ramp``): PENDING checkpoint + enqueue a
   Celery polling task (``dispatch_sync_task``).
@@ -7,9 +7,11 @@
   ``sync_drive_changes`` worker task (``dispatch_drive_sync``). The worker
   data plane pages ``changes.list`` from the cursor (or a fresh
   ``startPageToken`` on full sync) and fans files out to ``document_tasks``.
-- Okta has no pull-sync endpoint; Okta events arrive via
-  ``POST /api/v1/webhooks/okta`` (see ``dispatcher``), whose worker task
-  (``sync_okta_license_usage``) remains the webhook handler.
+- Okta batch pull (``POST /api/v1/sync/okta``): PENDING checkpoint on the
+  ``events`` entity (cursor = System Log ``after`` cursor) + enqueue the
+  ``sync_okta_batch`` worker task (``dispatch_okta_sync``). Webhook delivery
+  (``POST /api/v1/webhooks/okta``, see ``dispatcher``) stays the real-time
+  path; batch pull is the backfill/reconciliation path.
 """
 
 from uuid import UUID
@@ -25,6 +27,10 @@ logger = get_logger(__name__)
 _RAMP_ENTITIES = frozenset({"card_transactions", "bills"})
 
 DRIVE_SYNC_TASK_NAME = "zellovest.workers.tasks.ingestion.sync_drive_changes"
+
+OKTA_SYNC_TASK_NAME = "zellovest.workers.tasks.ingestion.sync_okta_batch"
+
+_OKTA_ENTITIES = frozenset({"users", "apps", "logs"})
 
 
 def _enqueue(source: str, entity: str, kwargs: dict) -> str:
@@ -178,6 +184,83 @@ async def dispatch_drive_sync(
     })
     logger.info(
         "dispatch_drive_sync_enqueued",
+        tenant_id=tenant_id,
+        sync_id=str(checkpoint.sync_id),
+        task_id=task_id,
+    )
+    return checkpoint.sync_id, task_id, True
+
+
+def _enqueue_okta(kwargs: dict) -> str:
+    """Enqueue the Okta batch-pull task by name (no hard worker import)."""
+    from zellovest_workers.celery_app import celery_app
+
+    async_result = celery_app.send_task(OKTA_SYNC_TASK_NAME, kwargs=kwargs)
+    return str(async_result.id)
+
+
+async def dispatch_okta_sync(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    entities: list[str] | None = None,
+    cursor: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    page_size: int = 200,
+) -> tuple[UUID, str, bool]:
+    """Write a PENDING checkpoint and enqueue an Okta batch-pull task.
+
+    Checkpoints reuse the ``events`` entity (no schema migration); the cursor
+    is the System Log ``after`` cursor. Explicit ``cursor`` wins, otherwise
+    the latest SUCCESS cursor resumes the stream.
+
+    Raises:
+        ValueError: On unknown entity names.
+    """
+    from zellovest_shared.db.repository import aget_latest_success_cursor
+
+    wanted = entities or ["users", "apps", "logs"]
+    unknown = [e for e in wanted if e not in _OKTA_ENTITIES]
+    if unknown:
+        raise ValueError(f"Unknown Okta entities: {unknown}")
+
+    effective_cursor = cursor
+    if effective_cursor is None:
+        effective_cursor = await aget_latest_success_cursor(
+            session, tenant_id=tenant_id, entity=EntityType.EVENTS
+        )
+
+    mode = SyncMode.BACKFILL if (since or until or cursor) else SyncMode.INCREMENTAL
+
+    checkpoint, created = await acreate_pending_checkpoint(
+        session,
+        tenant_id=tenant_id,
+        entity=EntityType.EVENTS,
+        mode=mode,
+        cursor_token=effective_cursor,
+        date_from=since,
+        date_to=until,
+    )
+    if not created:
+        logger.info(
+            "dispatch_okta_sync_deduped",
+            tenant_id=tenant_id,
+            sync_id=str(checkpoint.sync_id),
+        )
+        return checkpoint.sync_id, f"existing:{checkpoint.sync_id}", False
+
+    task_id = _enqueue_okta({
+        "tenant_id": tenant_id,
+        "entities": wanted,
+        "cursor": effective_cursor,
+        "since": since,
+        "until": until,
+        "page_size": min(max(page_size, 1), 200),
+        "sync_id": str(checkpoint.sync_id),
+    })
+    logger.info(
+        "dispatch_okta_sync_enqueued",
         tenant_id=tenant_id,
         sync_id=str(checkpoint.sync_id),
         task_id=task_id,

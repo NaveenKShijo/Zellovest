@@ -1,18 +1,23 @@
-"""Manual/scheduled pull-sync router (Ramp + Google Drive; Okta is webhook-only).
+"""Manual/scheduled pull-sync router (Ramp + Google Drive + Okta batch).
 
 Sync matrix:
 - Ramp: ``POST /api/v1/sync/ramp`` (pull ``card_transactions`` / ``bills``).
 - Google Drive: ``POST /api/v1/sync/google-drive`` (pull via ``changes.list``
   from the checkpoint cursor; worker fans files out to ``document_tasks``).
-- Okta: webhook-only (``POST /api/v1/webhooks/okta``); no pull-sync endpoint.
+- Okta: ``POST /api/v1/sync/okta`` (batch pull ``users`` / ``apps`` / ``logs``;
+  backfill + reconciliation path alongside the ``/webhooks/okta`` real-time path).
 """
 
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from zellovest_ingestion.api.deps import get_db_session
-from zellovest_ingestion.schemas.sync import DriveSyncRequest, SyncRequest, SyncResponse
-from zellovest_ingestion.services.sync_dispatcher import dispatch_drive_sync, dispatch_sync_task
+from zellovest_ingestion.schemas.sync import DriveSyncRequest, OktaSyncRequest, SyncRequest, SyncResponse
+from zellovest_ingestion.services.sync_dispatcher import (
+    dispatch_drive_sync,
+    dispatch_okta_sync,
+    dispatch_sync_task,
+)
 from zellovest_shared.logging_conf import get_logger
 
 logger = get_logger(__name__)
@@ -35,8 +40,10 @@ async def trigger_ramp_sync(
         date_to=body.date_to,
     )
     await session.commit()
-    logger.info("ramp_sync_triggered", tenant_id=body.tenant_id, entity=body.entity, created=created)
-    return SyncResponse(sync_id=str(sync_id), task_id=task_id, status="PENDING", deduped=not created)
+    logger.info("ramp_sync_triggered", tenant_id=body.tenant_id,
+        entity=body.entity, created=created)
+    return SyncResponse(sync_id=str(sync_id), task_id=task_id,
+        status="PENDING", deduped=not created)
 
 
 @router.post("/google-drive", response_model=SyncResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -57,6 +64,38 @@ async def trigger_drive_sync(
         "drive_sync_triggered",
         tenant_id=body.tenant_id,
         full_sync=body.full_sync,
+        created=created,
+    )
+    return SyncResponse(sync_id=str(sync_id), task_id=task_id, status="PENDING", deduped=not created)
+
+
+@router.post("/okta", response_model=SyncResponse, status_code=status.HTTP_202_ACCEPTED)
+async def trigger_okta_sync(
+    body: OktaSyncRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> SyncResponse:
+    """Enqueue an Okta batch pull (``users`` / ``apps`` / ``logs``).
+
+    Real-time events keep arriving via ``POST /webhooks/okta``; use this
+    endpoint for initial backfill, scheduled reconciliation, or recovery
+    after an outage. Requires ``OKTA_DOMAIN`` plus an SSWS token
+    (per-tenant ``okta`` integration row or ``OKTA_API_TOKEN`` fallback)
+    with ``okta.users.read``, ``okta.apps.read``, ``okta.logs.read``.
+    """
+    sync_id, task_id, created = await dispatch_okta_sync(
+        session,
+        tenant_id=body.tenant_id,
+        entities=list(body.entities),
+        cursor=body.cursor,
+        since=body.since,
+        until=body.until,
+        page_size=body.page_size,
+    )
+    await session.commit()
+    logger.info(
+        "okta_sync_triggered",
+        tenant_id=body.tenant_id,
+        entities=body.entities,
         created=created,
     )
     return SyncResponse(sync_id=str(sync_id), task_id=task_id, status="PENDING", deduped=not created)

@@ -55,7 +55,7 @@ export function TransactionTable({ transactions, isLoading }: TransactionTablePr
         <p style={{ fontSize: '16px', fontWeight: 500, color: 'var(--text-secondary)', marginBottom: '8px' }}>
           No card transactions found
         </p>
-        <p style={{ fontSize: '13px' }}>Connect Ramp or upload transactions to analyze spend.</p>
+        <p style={{ fontSize: '13px' }}>Connect Ramp to analyze spend.</p>
       </div>
     );
   }

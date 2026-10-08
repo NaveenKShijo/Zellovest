@@ -38,6 +38,18 @@ class IngestionAPISettings(BaseSettings):
     okta_api_token: str = Field(default="", alias="OKTA_API_TOKEN")
     okta_webhook_secret: str = Field(alias="OKTA_WEBHOOK_SECRET")
 
+    # Okta OAuth (per-tenant Connect button, mirrors Ramp groups).
+    # Endpoints are derived from OKTA_DOMAIN against the ORG authorization
+    # server (https://{domain}/oauth2/v1/...) — Okta API scopes
+    # (okta.users.read, ...) only mint there, never on a custom
+    # (/oauth2/default/...) authorization server.
+    okta_client_id: str = Field(default="", alias="OKTA_CLIENT_ID")
+    okta_client_secret: str = Field(default="", alias="OKTA_CLIENT_SECRET")
+    okta_redirect_uri: str = Field(
+        default="http://localhost:8003/api/v1/integrations/okta/callback",
+        alias="OKTA_REDIRECT_URI",
+    )
+
     # Google Drive ingestion: OAuth (polling setup), push webhook, pull sync.
     # Mirrors the Ramp endpoint groups (integrations / webhooks / sync).
     google_drive_client_id: str = Field(default="", alias="GOOGLE_DRIVE_CLIENT_ID")

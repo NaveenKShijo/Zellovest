@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     # Okta API
     okta_domain: str = Field(default="", alias="OKTA_DOMAIN")
     okta_api_token: str = Field(default="", alias="OKTA_API_TOKEN")
+    # Okta OAuth app (per-tenant Connect flow; also used by workers to
+    # refresh expiring Bearer tokens without asking the user to reconnect).
+    okta_client_id: str = Field(default="", alias="OKTA_CLIENT_ID")
+    okta_client_secret: str = Field(default="", alias="OKTA_CLIENT_SECRET")
 
     # Token encryption: base64-encoded 32-byte key for AES-256-GCM.
     credentials_encryption_key: str = Field(alias="CREDENTIALS_ENCRYPTION_KEY")
@@ -49,10 +53,24 @@ class Settings(BaseSettings):
     # OAuth state TTL (seconds)
     oauth_state_ttl_seconds: int = Field(default=600, alias="OAUTH_STATE_TTL_SECONDS")
 
-    # S3 bronze lake
-    s3_raw_bucket: str = Field(alias="S3_RAW_BUCKET")
+    # Object storage — S3 bronze lake (legacy, kept for backward compat
+    # with workers/tests referencing `settings.s3_raw_bucket`).
+    s3_raw_bucket: str = Field(default="tenant-bucket", alias="S3_RAW_BUCKET")
     s3_endpoint_url: str | None = Field(default=None, alias="S3_ENDPOINT_URL")
     aws_region: str = Field(default="us-east-1", alias="AWS_REGION")
+
+    # Object storage — GCS raw bucket (signed-URL direct upload path).
+    gcs_raw_bucket: str = Field(default="", alias="GCS_RAW_BUCKET")
+    google_cloud_project: str = Field(default="", alias="GOOGLE_CLOUD_PROJECT")
+    gcs_signed_url_expiry_secs: int = Field(
+        default=900, alias="GCS_SIGNED_URL_EXPIRY_SECS"
+    )
+    gcs_max_upload_bytes: int = Field(
+        default=52428800, alias="GCS_MAX_UPLOAD_BYTES"
+    )
+    google_application_credentials: str | None = Field(
+        default=None, alias="GOOGLE_APPLICATION_CREDENTIALS"
+    )
 
     # Vector DB
     vector_db_url: str = Field(default="", alias="VECTOR_DB_URL")
@@ -77,6 +95,22 @@ class Settings(BaseSettings):
     jwt_secret_key: str = Field(alias="JWT_SECRET_KEY")
     jwt_algorithm: str = Field(default="HS256", alias="JWT_ALGORITHM")
     jwt_expire_minutes: int = Field(default=60, alias="JWT_EXPIRE_MINUTES")
+
+    @field_validator("gcs_signed_url_expiry_secs")
+    @classmethod
+    def _validate_expiry_secs(cls, value: int) -> int:
+        """Ensure signed-URL expiry is a positive duration."""
+        if value <= 0:
+            raise ValueError("GCS_SIGNED_URL_EXPIRY_SECS must be positive")
+        return value
+
+    @field_validator("gcs_max_upload_bytes")
+    @classmethod
+    def _validate_max_upload_bytes(cls, value: int) -> int:
+        """Ensure max upload size is a positive byte count."""
+        if value <= 0:
+            raise ValueError("GCS_MAX_UPLOAD_BYTES must be positive")
+        return value
 
     @field_validator("credentials_encryption_key")
     @classmethod

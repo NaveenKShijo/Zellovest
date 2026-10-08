@@ -56,7 +56,7 @@ const NAVIGATION_SECTIONS: NavSection[] = [
       },
       {
         id: 'licenses',
-        label: 'Zombie Licenses',
+        label: 'Liscence forecasting',
         href: '/licenses',
         iconName: 'users',
         badge: '109',

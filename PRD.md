@@ -1900,6 +1900,24 @@ For remote MCP deployments, production systems should use the current MCP HTTP t
 
 For any externally reachable MCP endpoint, MCP authorization/security controls must be treated as part of the deployment boundary. MCP documentation specifies authorization discovery and token validation requirements for protected servers, including restricting tokens to the intended resource server.
 
+## 28.1 V2 Multi-Tenancy Decision: DB-per-Tenant (Pool Rejected)
+
+V2 remains **dedicated DB-per-tenant** (one PostgreSQL database/schema, one object-storage bucket/prefix, one vector namespace/collection, one Redis namespace per customer). A shared pooled model (shared tables + RLS) is explicitly rejected for V2 because: (a) physical isolation eliminates missing-`WHERE`-clause cross-tenant leaks, (b) LLM/RAG retrieval cannot be trusted to always apply logical filters, (c) enterprise buyers require per-tenant KMS keys, backup/restore, and tenant delete, (d) 500–1,000 users per deployment creates noisy-neighbor risk in a pool.
+
+## 28.2 V1 Engineering Rules for V2 Readiness (Normative for Coding Agents)
+
+Even though V1 `tenant_id` = deployment/instance ID with no tenant switching and no RLS, all new code MUST be written so V2 multi-tenancy requires provisioning, not refactoring:
+
+1. **DB:** every operational table carries non-null `tenant_id TEXT`; composite indexes lead with `tenant_id` (e.g. `(tenant_id, vendor_id)`); reserve nullable `org_id UUID` for future use only; never rely on a global unique constraint where `(tenant_id, key)` is correct (e.g. `(tenant_id, provider)` for integrations).
+2. **Auth/API:** never trust client-supplied `tenant_id` query/body params for authorization; JWT `sub` = tenant/instance ID in V1; propagate server-verified tenant context through API → service → worker → MCP; design schemas so `sub=user_id` + `org_id` can replace it in V2 without endpoint renames.
+3. **Object storage:** S3/GCS keys MUST embed tenant (`{tenant_id}/{entity}/{uuid}/{file}`); presigned URLs scoped to tenant prefix.
+4. **Vector store:** every chunk/embedding carries `tenant_id` metadata; all retrieval filters by tenant even when the index is currently dedicated.
+5. **Queues/workers/Redis:** every Celery task signature carries `tenant_id` first; Redis keys namespaced (`{tenant_id}:oauth:state:{s}`, `{tenant_id}:drive:watch:{c}`); idempotency keys scoped as `{tenant_id}:{event_id}`; per-tenant rate limits/quotas assumed.
+6. **Integrations:** one `tenant_integrations` row per `(tenant_id, provider)`; per-tenant OAuth tokens, webhook secrets, sync cursors, Drive watch channels; single global `CREDENTIALS_ENCRYPTION_KEY` is V1-only — code MUST support per-tenant KMS key ID lookup.
+7. **MCP:** all three MCP servers are tenant-scoped; LLM never supplies tenant; every tool validates tenant context and logs `tenant_id, actor, tool, auth_result, latency, correlation_id`.
+8. **Observability/billing/lifecycle:** structured logs, metrics, audit events, and usage metering (doc-AI pages, LLM tokens, storage) include `tenant_id`; tenant delete/export MUST be implementable as drop-database + delete-bucket/prefix + delete-namespace.
+9. **Frontend:** no cross-tenant state in caches/stores; tenant is a deployment-level setting, not a user-selectable switch in V1 — keep it behind a single `tenantId` config so a V2 switcher can be added later.
+
 # 29. Core Design Principles
 
 The system should follow these principles:

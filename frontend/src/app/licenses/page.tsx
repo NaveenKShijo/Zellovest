@@ -7,7 +7,7 @@ export default function LicensesPage() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
       <div>
         <h1 style={{ fontSize: '24px', fontWeight: 700, color: 'var(--text-primary)', letterSpacing: '-0.4px' }}>
-          Zombie License Detection
+          Predictive Liscence Seat Forecasting
         </h1>
         <p style={{ color: 'var(--text-secondary)', fontSize: '13.5px', marginTop: '3px' }}>
           Okta activity analysis identifying provisioned SaaS seats that have been inactive for &gt;60 days.

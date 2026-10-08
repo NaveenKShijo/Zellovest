@@ -209,7 +209,7 @@ def test_webhook_rejects_bad_signature(client):  # type: ignore[no-untyped-def]
 
 
 def test_webhook_accepts_valid_signature_with_mocks(client, monkeypatch):  # type: ignore[no-untyped-def]
-    """Valid HMAC + mocked dispatch returns 200 with sync ticket."""
+    """Valid HMAC + mocked dispatch returns 200 with sync ticket (Ramp keeps WebhookAck)."""
     import zellovest_ingestion.api.routers.webhooks as webhooks_module
 
     payload = {"event_id": "evt_9", "type": "transaction.created", "data": {"id": "obj_1"}}
@@ -237,7 +237,10 @@ def test_webhook_accepts_valid_signature_with_mocks(client, monkeypatch):  # typ
     finally:
         client.app.dependency_overrides.clear()
     assert response.status_code == 200
-    assert response.json()["received"] is True
+    body = response.json()
+    assert body["received"] is True
+    assert body["sync_id"]
+    assert body["deduped"] is False
 
 
 def test_healthz(client):  # type: ignore[no-untyped-def]

@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 class RampWebhookEnvelope(BaseModel):
     """Smallest viable Ramp event envelope; extra fields are ignored."""
@@ -71,6 +71,14 @@ class OktaEvent(BaseModel):
     actor: OktaActor | None = None
     target: list[OktaTarget] = Field(default_factory=list)
     model_config = ConfigDict(extra="allow")
+
+    @field_validator("target", mode="before")
+    @classmethod
+    def _coerce_null_target(cls, v: object) -> object:
+        """Okta sends `"target": null` when there is no target (e.g. delete initiated)."""
+        if v is None:
+            return []
+        return v
 
 class OktaEventsData(BaseModel):
     events: list[OktaEvent] = Field(min_length=1)

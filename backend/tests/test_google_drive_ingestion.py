@@ -203,10 +203,34 @@ def test_drive_status_connected_with_watch(client):
 # --- Pull sync ---------------------------------------------------------------
 
 
-def test_sync_okta_endpoint_removed(client):
-    """Okta has no pull-sync endpoint (webhook-only)."""
-    resp = client.post("/api/v1/sync/okta", json={"tenant_id": "t1", "entity": "license_usage"})
-    assert resp.status_code == 404
+def test_sync_okta_enqueues_batch(client, monkeypatch):
+    """POST /sync/okta enqueues an Okta batch pull (users/apps/logs)."""
+    import zellovest_ingestion.api.routers.sync as sync_module
+
+    seen: dict = {}
+
+    async def fake_dispatch(session, **kwargs):
+        seen.update(kwargs)
+        return (str(_uuid.uuid4()), "task-okta-1", True)
+
+    monkeypatch.setattr(sync_module, "dispatch_okta_sync", fake_dispatch)
+    resp = client.post("/api/v1/sync/okta", json={"tenant_id": "t1"})
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["deduped"] is False
+    assert seen["tenant_id"] == "t1"
+    assert seen["entities"] == ["users", "apps", "logs"]
+
+
+def test_sync_okta_validates_entities(client):
+    """POST /sync/okta rejects unknown entities with 422."""
+    resp = client.post("/api/v1/sync/okta", json={"tenant_id": "t1", "entities": ["nope"]})
+    assert resp.status_code == 422
+
+
+def test_sync_okta_validates_page_size(client):
+    """POST /sync/okta rejects out-of-range page sizes."""
+    resp = client.post("/api/v1/sync/okta", json={"tenant_id": "t1", "page_size": 0})
+    assert resp.status_code == 422
 
 
 def test_sync_ramp_rejects_non_ramp_entities(client):

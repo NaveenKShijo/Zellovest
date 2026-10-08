@@ -1,4 +1,4 @@
-"""Sync schemas (pull sync: Ramp + Google Drive; Okta is webhook-only)."""
+"""Sync schemas (pull sync: Ramp + Google Drive + Okta batch)."""
 
 from typing import Literal
 
@@ -10,8 +10,9 @@ class SyncRequest(BaseModel):
 
     Pull sync is supported for Ramp (``card_transactions``, ``bills``) via
     ``POST /api/v1/sync/ramp`` and for Google Drive via
-    ``POST /api/v1/sync/google-drive`` (see ``DriveSyncRequest``).
-    Okta is webhook-only and has no pull-sync endpoint.
+    ``POST /api/v1/sync/google-drive`` (see ``DriveSyncRequest``), and Okta
+    batch pull (``users``, ``apps``, ``logs``) via
+    ``POST /api/v1/sync/okta`` (see ``OktaSyncRequest``).
     """
 
     tenant_id: str = Field(..., min_length=1, max_length=128)
@@ -45,3 +46,25 @@ class SyncResponse(BaseModel):
     task_id: str
     status: Literal["PENDING", "RUNNING", "SUCCESS", "FAILED"]
     deduped: bool
+
+
+class OktaSyncRequest(BaseModel):
+    """Request to trigger an Okta batch pull (users / apps / System Log).
+
+    Cursor resolution: explicit ``cursor`` wins; otherwise the latest SUCCESS
+    checkpoint cursor for the ``events`` entity resumes the System Log stream.
+    ``since``/``until`` bound the ``/logs`` window (ISO-8601); ``users`` and
+    ``apps`` ignore them.
+    """
+
+    tenant_id: str = Field(..., min_length=1, max_length=128)
+    entities: list[Literal["users", "apps", "logs"]] = Field(
+        default_factory=lambda: ["users", "apps", "logs"],
+        description="Okta collections to pull",
+    )
+    cursor: str | None = Field(
+        default=None, description="System Log `after` cursor override"
+    )
+    since: str | None = Field(default=None, description="ISO-8601 lower bound for /logs")
+    until: str | None = Field(default=None, description="ISO-8601 upper bound for /logs")
+    page_size: int = Field(default=200, ge=1, le=200)

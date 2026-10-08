@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from zellovest_shared.db.models import EntityType, SyncMode
 from zellovest_shared.db.repository import acreate_pending_checkpoint
 from zellovest_shared.logging_conf import get_logger
+from zellovest_shared.schemas.webhooks import OktaSignal
 
 logger = get_logger(__name__)
 
@@ -71,31 +72,18 @@ async def dispatch_ramp_webhook(
     return checkpoint.sync_id, task_id, True
 
 
-async def dispatch_okta_webhook(
-    session: AsyncSession,
-    *,
-    tenant_id: str,
-    payload: dict,
-) -> tuple[UUID, str, bool]:
-    """Write a checkpoint and enqueue Okta webhook handler."""
-    event_id = payload.get("uuid", "unknown")
+async def dispatch_okta_signal(session: AsyncSession, *, tenant_id: str,
+    signal: OktaSignal) -> tuple[UUID, str, bool]:
+    """One checkpoint per event.uuid — preserves idempotency on batched retries."""
     checkpoint, created = await acreate_pending_checkpoint(
-        session,
-        tenant_id=tenant_id,
-        entity=EntityType.EVENTS,
-        mode=SyncMode.EVENT_TRIGGERED,
-        event_id=f"okta:{event_id}",
+        session, tenant_id=tenant_id, entity=EntityType.EVENTS,
+        mode=SyncMode.EVENT_TRIGGERED, event_id=f"okta:{signal.event_uuid}",
     )
     if not created:
         return checkpoint.sync_id, f"existing:{checkpoint.sync_id}", False
-
-    task_id = _enqueue(
-        "okta_license_usage",
-        {
-            "tenant_id": tenant_id,
-            "payload": json.dumps(payload),
-            "sync_id": str(checkpoint.sync_id),
-        },
-    )
-    logger.info("dispatch_okta_webhook_enqueued", tenant_id=tenant_id, event_id=event_id, task_id=task_id)
+    task_id = _enqueue("okta_license_usage", {
+        "tenant_id": tenant_id,
+        "payload": signal.model_dump_json(),  # normalized, not raw blob
+        "sync_id": str(checkpoint.sync_id),
+    })
     return checkpoint.sync_id, task_id, True

@@ -12,6 +12,7 @@ def get_app_settings(request: Request) -> IngestionAPISettings:
     settings = getattr(request.app.state, "settings", None)
     return settings if settings is not None else get_ingestion_api_settings()
 
+
 def get_redis_client(request: Request) -> redis.Redis:
     """Return Redis client attached to the app state (test-overridable)."""
     client = getattr(request.app.state, "redis", None)

@@ -144,3 +144,57 @@ class IngestionSyncCheckpoint(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+
+
+class UploadStatus(enum.StrEnum):
+    """Manual-upload staging lifecycle for direct-to-GCS flow."""
+
+    PENDING = "pending"        # init signed, PUT not yet verified
+    STAGED = "staged"          # complete verified, Celery enqueued
+    PROCESSING = "processing"  # worker picked up
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class Upload(Base):
+    """Staging lease for one direct-to-GCS manual upload.
+
+    One row per file: frontend calls one ``POST /uploads/init`` per
+    ``File`` (see ``UploadProvider.tsx``), so 10 simultaneous drops =
+    10 rows, no locking — uniqueness comes from server-generated
+    ``id`` + ``gcs_key`` (uuid embedded in path).
+    ``complete`` must look up this row and use *its* ``gcs_key``/
+    ``tenant_id`` — never a client-supplied key.
+    """
+
+    __tablename__ = "uploads"
+    __table_args__ = (
+        UniqueConstraint("gcs_key", name="uq_uploads_gcs_key"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    vendor_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    gcs_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    mime_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    size_expected: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    document_type: Mapped[str] = mapped_column(String(32), nullable=False, default="other")
+    status: Mapped[UploadStatus] = mapped_column(
+        Enum(UploadStatus, name="upload_status",
+             values_callable=lambda x: [e.value for e in x]),
+        nullable=False, default=UploadStatus.PENDING, index=True,
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        server_default=func.now(), onupdate=func.now(),
+    )

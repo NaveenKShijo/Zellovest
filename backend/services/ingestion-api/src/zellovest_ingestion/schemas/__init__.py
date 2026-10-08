@@ -7,7 +7,7 @@ from zellovest_ingestion.schemas.uploads import (
     UploadResponse,
     UploadStatus,
 )
-from zellovest_ingestion.schemas.sync import DriveSyncRequest, SyncRequest, SyncResponse
+from zellovest_ingestion.schemas.sync import DriveSyncRequest, OktaSyncRequest, SyncRequest, SyncResponse
 
 __all__ = [
     "RampWebhookEnvelope",
@@ -17,6 +17,7 @@ __all__ = [
     "UploadResponse",
     "UploadStatus",
     "DriveSyncRequest",
+    "OktaSyncRequest",
     "SyncRequest",
     "SyncResponse",
 ]

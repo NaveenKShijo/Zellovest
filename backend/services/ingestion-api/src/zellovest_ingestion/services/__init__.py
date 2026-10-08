@@ -1,6 +1,6 @@
 """Services package exports."""
 
-from zellovest_ingestion.services.dispatcher import dispatch_okta_webhook, dispatch_ramp_webhook
+from zellovest_ingestion.services.dispatcher import dispatch_okta_signal, dispatch_ramp_webhook
 from zellovest_ingestion.services.drive_client import (
     GoogleDriveClient,
     GoogleDriveError,
@@ -25,7 +25,9 @@ from zellovest_ingestion.services.ramp_oauth import (
 )
 from zellovest_ingestion.services.sync_dispatcher import (
     DRIVE_SYNC_TASK_NAME,
+    OKTA_SYNC_TASK_NAME,
     dispatch_drive_sync,
+    dispatch_okta_sync,
     dispatch_sync_task,
 )
 from zellovest_ingestion.services.upload_manager import UploadManager
@@ -34,6 +36,7 @@ __all__ = [
     "DEFAULT_DRIVE_SCOPES",
     "DRIVE_PROVIDER",
     "DRIVE_SYNC_TASK_NAME",
+    "OKTA_SYNC_TASK_NAME",
     "DriveOAuthExchangeError",
     "GoogleDriveClient",
     "GoogleDriveError",
@@ -41,7 +44,8 @@ __all__ = [
     "build_authorize_url",
     "build_drive_authorize_url",
     "dispatch_drive_sync",
-    "dispatch_okta_webhook",
+    "dispatch_okta_signal",
+    "dispatch_okta_sync",
     "dispatch_ramp_webhook",
     "dispatch_sync_task",
     "ensure_drive_watch",
