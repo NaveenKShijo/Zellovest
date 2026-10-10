@@ -14,7 +14,7 @@ import redis
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from zellovest_procurement.api.routers import tenants, vendors, invoices, purchase_orders, analytics, workflows
+from zellovest_procurement.api.routers import tenants, vendors, invoices, purchase_orders, analytics, workflows, auth
 from zellovest_procurement.config import get_procurement_core_settings
 from zellovest_shared.logging_conf import configure_logging, get_logger
 
@@ -66,6 +66,7 @@ def create_app(settings=None) -> FastAPI:
         return JSONResponse(status_code=500, content={"detail": "internal server error"})
 
     prefix = app.state.settings.api_v1_prefix
+    app.include_router(auth.router, prefix=prefix, tags=["auth"])
     app.include_router(tenants.router, prefix=prefix, tags=["tenants"])
     app.include_router(vendors.router, prefix=prefix, tags=["vendors"])
     app.include_router(invoices.router, prefix=prefix, tags=["invoices"])

@@ -7,6 +7,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from zellovest_shared.db.models import TenantIntegration
+from zellovest_shared.db.repository import aupsert_integration
+from zellovest_shared.logging_conf import get_logger
+from zellovest_shared.schemas.integrations import ConnectRequest, ConnectResponse
+from zellovest_shared.security.crypto import encrypt_token, generate_nonce
+from zellovest_shared.security.oauth_state import consume_state, create_state
 
 from zellovest_ingestion.api.deps import get_app_settings, get_db_session, get_redis_client
 from zellovest_ingestion.config import IngestionAPISettings
@@ -16,12 +22,6 @@ from zellovest_ingestion.services.ramp_oauth import (
     build_authorize_url,
     exchange_code_for_tokens,
 )
-from zellovest_shared.db.models import ConnectionStatus, TenantIntegration
-from zellovest_shared.db.repository import aupsert_integration
-from zellovest_shared.logging_conf import get_logger
-from zellovest_shared.schemas.integrations import ConnectRequest, ConnectResponse
-from zellovest_shared.security.crypto import encrypt_token
-from zellovest_shared.security.oauth_state import consume_state, create_state
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/integrations/ramp", tags=["integrations"])
@@ -110,16 +110,20 @@ async def callback(
 
     now = datetime.now(UTC)
     expires_at = now + timedelta(seconds=tokens.expires_in) if tokens.expires_in else None
-    # Encrypt both tokens under one fresh nonce (stored once per row).
-    access_ct, nonce = encrypt_token(tokens.access_token, settings.credentials_encryption_key)
-    refresh_ct, _ = encrypt_token(tokens.refresh_token or "", settings.credentials_encryption_key)
+    # Each token gets its own fresh nonce; both are stored (migration 0009)
+    # so access renewal via the refresh token keeps working.
+    key = settings.credentials_encryption_key
+    access_nonce = generate_nonce()
+    access_ct, _ = encrypt_token(tokens.access_token, key, access_nonce)
+    refresh_ct, refresh_nonce = encrypt_token(tokens.refresh_token or "", key)
     await aupsert_integration(
         session,
         tenant_id=tenant_id,
         provider="ramp",
         encrypted_access_token=access_ct,
         encrypted_refresh_token=refresh_ct,
-        encryption_nonce=nonce,
+        access_nonce=access_nonce,
+        refresh_nonce=refresh_nonce,
         token_expires_at=expires_at,
         scopes=tokens.scopes,
     )

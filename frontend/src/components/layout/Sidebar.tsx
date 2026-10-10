@@ -6,8 +6,9 @@ import Image from 'next/image';
 import { usePathname } from 'next/navigation';
 import { useLayout } from '@/contexts/LayoutContext';
 import { useAuth } from '@/contexts/AuthContext';
-import { ORGANIZATION_NAME, useDisplayIdentity } from '@/components/auth/AsgardeoAuth';
 import { NavSection, NavItem } from '@/types';
+
+const ORGANIZATION_NAME = process.env.NEXT_PUBLIC_ORGANIZATION_NAME || 'Zellovest';
 
 /**
  * Sidebar styled after the Velvet Burgundy aesthetic:
@@ -107,7 +108,7 @@ export function Sidebar() {
   const { user } = useAuth();
   // Single-tenant branding: the card leads with the organization name and
   // the signed-in username beneath it (never demo placeholders).
-  const { name: displayUsername } = useDisplayIdentity();
+  const displayUsername = user?.name;
   const {
     isSidebarCollapsed,
     toggleSidebar,

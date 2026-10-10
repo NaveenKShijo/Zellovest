@@ -1,6 +1,6 @@
 /**
  * TypeScript Data Contracts for Zellovest Frontend
- * 
+ *
  * Think of this file like Pydantic models in FastAPI:
  * It enforces static schema validation across UI components,
  * API requests, and global application state.
@@ -44,36 +44,63 @@ export interface BreadcrumbItem {
  * - Finance Stakeholder
  * - IT & SaaS Administrator
  */
-export type UserRole = 'Procurement Team Member';
+export type UserRole = 'Procurement Team Member' | 'procurement_member';
 
 export interface UserSession {
-  id: string; // OIDC Subject (sub)
+  id: string; // user id (users.id)
   name: string;
   email: string;
   role: UserRole;
   department: string;
   avatarUrl?: string;
   organizationName: string; // Single-tenant organization boundary
-  accessToken?: string; // Bearer token from WSO2 for API authorization
-  idToken?: string; // OIDC ID token (sent as id_token_hint at logout)
+  accessToken?: string; // Custom JWT from POST /api/v1/auth/login
   expiresAt?: number; // Access token expiry (epoch ms)
 }
 
+export interface AuthUser {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  tenant_id: string;
+}
+
+export interface AuthResponse {
+  access_token: string;
+  token_type: string;
+  expires_in_minutes: number;
+  user: AuthUser;
+}
+
+export interface InviteResponse {
+  email: string;
+  invite_token: string;
+  expires_at: string;
+}
+
+export interface InviteStatus {
+  email: string;
+  expires_at: string;
+}
+
 /**
- * Authentication state driven by WSO2 Identity Server (OIDC).
- * - startLogin(): redirect to WSO2 hosted login (Authorization Code + PKCE).
- * - completeLogin(): called by /auth/callback to exchange the code for tokens;
- *   resolves to true when a session was established, false on failure.
- * - logout(): clears the local session and invokes WSO2 RP-initiated logout.
+ * Authentication state driven by the custom email/password backend
+ * (POST /api/v1/auth/login|/me — HS256 JWT, PBKDF2 passwords).
+ * Invite-only onboarding: accounts are created by the seed script or by
+ * claiming an invite link — there is no public signup.
+ * - login(email, password): verify credentials, persist JWT session.
+ * - acceptInvite(token, name, password): claim an invite, persist session.
+ * - logout(): clears the local session (stateless JWT, nothing to revoke).
  */
 export interface AuthContextType {
   user: UserSession | null;
   isAuthenticated: boolean;
   isLoading: boolean; // session restore in progress (on app mount)
-  isLoggingIn: boolean; // token exchange in progress (on callback)
+  isLoggingIn: boolean; // login/invite-accept in progress
   error: string | null; // last authentication error, if any
-  startLogin: () => Promise<void>;
-  completeLogin: (code: string, state: string | null) => Promise<boolean>;
+  login: (email: string, password: string) => Promise<boolean>;
+  acceptInvite: (token: string, name: string, password: string) => Promise<boolean>;
   logout: () => Promise<void>;
   clearError: () => void;
 }

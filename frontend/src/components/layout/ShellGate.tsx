@@ -5,7 +5,7 @@ import { usePathname } from 'next/navigation';
 import { LayoutShell } from '@/components/layout/LayoutShell';
 
 /** Standalone pages that render without the sidebar/header application shell. */
-const SHELL_LESS_ROUTES = ['/login', '/auth/callback'];
+const SHELL_LESS_ROUTES = ['/login', '/invite'];
 
 /**
  * ShellGate: renders the application shell (sidebar, header, breadcrumbs)

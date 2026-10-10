@@ -1,102 +1,38 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
-import { useAsgardeo } from '@asgardeo/nextjs';
+import React, { useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { useAuth } from '@/contexts/AuthContext';
+import { DEMO_EMAIL, DEMO_PASSWORD } from '@/lib/auth';
 
 /**
- * Login page: standalone sign-in screen (no app sidebar/header — see ShellGate).
+ * Login page: custom email/password sign-in (invite-only onboarding —
+ * there is no public signup; members join via an invite link).
  *
- * Zellovest uses a single enterprise identity provider, so this page
- * redirects straight to the Asgardeo hosted sign-in instead of asking the
- * user to click through. The card below is the fallback: it shows while
- * the redirect is prepared, and stays (with a plain "Sign in" button) if
- * the automatic redirect fails, is blocked, or the previous attempt was
- * cancelled — the session flag prevents an endless redirect loop.
+ * Flows:
+ * - Member: POST /api/v1/auth/login → JWT + profile → AuthContext
+ *   persists the session → route to `/`. Errors render inline (401 shows
+ *   the backend's enumeration-safe "Invalid email or password.").
+ * - Visitor: "Explore the live demo" signs in with the public demo
+ *   account (seeded server-side via scripts/seed_user.py --demo), which
+ *   lands on the same mock-data frontend — no integrations needed.
  */
-
-const SIGN_IN_TIMEOUT_MS = 25000;
-const ATTEMPT_KEY = 'zellovest_sso_attempted';
-
 export default function LoginPage() {
-  const { signIn } = useAsgardeo();
-  const [isRedirecting, setIsRedirecting] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const autoAttempted = useRef(false);
-  // Grace timer after the redirect is triggered: navigation away from this
-  // page takes a moment (server round-trip), during which no error may show.
-  const graceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const router = useRouter();
+  const { login, isLoggingIn, error } = useAuth();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
 
-  useEffect(() => {
-    return () => {
-      if (graceTimer.current) {
-        clearTimeout(graceTimer.current);
-      }
-    };
-  }, []);
-
-  const startSignIn = async () => {
-    setError(null);
-    if (!signIn) {
-      setError('Authentication service is not ready. Please refresh the page and try again.');
-      setIsRedirecting(false);
-      return;
-    }
-    setIsRedirecting(true);
-    try {
-      await Promise.race([
-        signIn({}),
-        new Promise<never>((_, reject) =>
-          setTimeout(
-            () =>
-              reject(
-                new Error(
-                  'Could not reach the sign-in service. Check your connection and try again.'
-                )
-              ),
-            SIGN_IN_TIMEOUT_MS
-          )
-        ),
-      ]);
-      // The redirect was triggered; the browser needs a moment to unload.
-      // Only if we are STILL here after the grace window did it not happen.
-      await new Promise((resolve) => {
-        graceTimer.current = setTimeout(resolve, 6000);
-      });
-      setIsRedirecting(false);
-      setError('Sign-in did not start. Please try again.');
-    } catch (err) {
-      setIsRedirecting(false);
-      setError(err instanceof Error ? err.message : 'Sign-in failed. Please try again.');
-    } finally {
-      try {
-        sessionStorage.removeItem(ATTEMPT_KEY);
-      } catch {
-        // Storage unavailable: nothing to clean up.
-      }
-    }
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const ok = await login(email.trim(), password);
+    if (ok) router.replace('/');
   };
 
-  useEffect(() => {
-    if (autoAttempted.current) return;
-    autoAttempted.current = true;
-
-    // A previous automatic attempt already bounced back (cancelled/failed
-    // at the identity provider) — do NOT loop; let the user click instead.
-    try {
-      if (sessionStorage.getItem(ATTEMPT_KEY)) {
-        sessionStorage.removeItem(ATTEMPT_KEY);
-        setIsRedirecting(false);
-        return;
-      }
-      sessionStorage.setItem(ATTEMPT_KEY, '1');
-    } catch {
-      // Storage unavailable: proceed with the redirect anyway.
-    }
-
-    void startSignIn();
-    // startSignIn is stable for this mount; run once.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const onDemo = async () => {
+    const ok = await login(DEMO_EMAIL, DEMO_PASSWORD);
+    if (ok) router.replace('/');
+  };
 
   return (
     <div
@@ -110,7 +46,6 @@ export default function LoginPage() {
         padding: '24px',
       }}
     >
-      {/* Decorative background wash */}
       <div
         aria-hidden="true"
         style={{
@@ -137,7 +72,6 @@ export default function LoginPage() {
           textAlign: 'center',
         }}
       >
-        {/* Brand mark */}
         <div
           style={{
             width: '56px',
@@ -168,92 +102,74 @@ export default function LoginPage() {
         >
           Welcome to Zellovest
         </h1>
-        <p
-          style={{
-            fontSize: '13px',
-            color: 'var(--text-secondary)',
-            lineHeight: 1.5,
-            marginBottom: '28px',
-          }}
-        >
-          {isRedirecting && !error
-            ? 'Taking you to your organization’s secure sign-in…'
-            : 'Sign in with your organization account to continue.'}
+        <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: '24px' }}>
+          Sign in with your procurement account to continue.
         </p>
 
         {error && (
           <div
             role="alert"
             style={{
-              display: 'flex',
-              alignItems: 'flex-start',
-              gap: '10px',
               textAlign: 'left',
               backgroundColor: 'var(--color-danger-subtle)',
               border: '1px solid var(--color-danger-border)',
               borderRadius: 'var(--radius-sm)',
               padding: '12px 14px',
               marginBottom: '20px',
+              fontSize: '12.5px',
+              fontWeight: 600,
+              color: 'var(--color-danger)',
+              lineHeight: 1.45,
             }}
           >
-            <div style={{ flex: 1 }}>
-              <div
-                style={{
-                  fontSize: '12.5px',
-                  fontWeight: 600,
-                  color: 'var(--color-danger)',
-                  lineHeight: 1.45,
-                }}
-              >
-                {error}
-              </div>
-              <button
-                onClick={() => setError(null)}
-                style={{
-                  marginTop: '6px',
-                  fontSize: '11.5px',
-                  fontWeight: 600,
-                  color: 'var(--color-danger)',
-                  textDecoration: 'underline',
-                }}
-              >
-                Dismiss
-              </button>
-            </div>
+            {error}
           </div>
         )}
 
-        {isRedirecting && !error ? (
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '10px',
-              padding: '13px 16px',
-            }}
-          >
-            <span
-              aria-hidden="true"
+        <form onSubmit={onSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '12px', textAlign: 'left' }}>
+          <label style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)' }}>
+            Work email
+            <input
+              type="email"
+              required
+              autoComplete="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@company.com"
               style={{
-                width: '16px',
-                height: '16px',
-                border: '2px solid var(--border-tint)',
-                borderTopColor: 'var(--color-brand)',
-                borderRadius: 'var(--radius-full)',
-                display: 'inline-block',
-                animation: 'loginSpinner 0.7s linear infinite',
+                marginTop: '6px',
+                width: '100%',
+                padding: '11px 12px',
+                borderRadius: 'var(--radius-sm)',
+                border: '1px solid var(--border-subtle)',
+                fontSize: '14px',
               }}
             />
-            <span style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-secondary)' }}>
-              Redirecting…
-            </span>
-          </div>
-        ) : (
+          </label>
+          <label style={{ fontSize: '12px', fontWeight: 700, color: 'var(--text-primary)' }}>
+            Password
+            <input
+              type="password"
+              required
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="••••••••"
+              style={{
+                marginTop: '6px',
+                width: '100%',
+                padding: '11px 12px',
+                borderRadius: 'var(--radius-sm)',
+                border: '1px solid var(--border-subtle)',
+                fontSize: '14px',
+              }}
+            />
+          </label>
           <button
-            onClick={startSignIn}
-            disabled={isRedirecting}
+            type="submit"
+            disabled={isLoggingIn}
             style={{
+              marginTop: '8px',
               width: '100%',
               padding: '13px 16px',
               borderRadius: 'var(--radius-md)',
@@ -261,32 +177,45 @@ export default function LoginPage() {
               color: '#FFFFFF',
               fontSize: '14px',
               fontWeight: 700,
-              letterSpacing: '0.1px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '10px',
-              opacity: isRedirecting ? 0.7 : 1,
-              cursor: isRedirecting ? 'wait' : 'pointer',
+              opacity: isLoggingIn ? 0.7 : 1,
+              cursor: isLoggingIn ? 'wait' : 'pointer',
             }}
           >
-            {isRedirecting && (
-              <span
-                aria-hidden="true"
-                style={{
-                  width: '14px',
-                  height: '14px',
-                  border: '2px solid rgba(255, 255, 255, 0.35)',
-                  borderTopColor: '#FFFFFF',
-                  borderRadius: 'var(--radius-full)',
-                  display: 'inline-block',
-                  animation: 'loginSpinner 0.7s linear infinite',
-                }}
-              />
-            )}
-            {isRedirecting ? 'Redirecting…' : 'Sign in'}
+            {isLoggingIn ? 'Signing in…' : 'Sign in'}
           </button>
-        )}
+        </form>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '20px' }}>
+          <span style={{ flex: 1, height: '1px', backgroundColor: 'var(--border-subtle)' }} />
+          <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+            or
+          </span>
+          <span style={{ flex: 1, height: '1px', backgroundColor: 'var(--border-subtle)' }} />
+        </div>
+
+        <button
+          onClick={onDemo}
+          disabled={isLoggingIn}
+          style={{
+            marginTop: '14px',
+            width: '100%',
+            padding: '13px 16px',
+            borderRadius: 'var(--radius-md)',
+            backgroundColor: 'transparent',
+            border: '1px solid var(--border-subtle)',
+            color: 'var(--text-primary)',
+            fontSize: '14px',
+            fontWeight: 700,
+            opacity: isLoggingIn ? 0.7 : 1,
+            cursor: isLoggingIn ? 'wait' : 'pointer',
+          }}
+        >
+          {isLoggingIn ? 'Signing in…' : 'Explore the live demo'}
+        </button>
+
+        <p style={{ marginTop: '18px', fontSize: '12.5px', color: 'var(--text-secondary)' }}>
+          New to the team? Ask a member for an invite link.
+        </p>
 
         <p
           style={{
@@ -298,15 +227,9 @@ export default function LoginPage() {
             lineHeight: 1.5,
           }}
         >
-          Protected by single sign-on · Authorized procurement team members only.
+          Protected by local authentication · Authorized procurement team members only.
         </p>
       </div>
-
-      <style>{`
-        @keyframes loginSpinner {
-          to { transform: rotate(360deg); }
-        }
-      `}</style>
     </div>
   );
 }

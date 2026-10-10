@@ -4,8 +4,12 @@ import base64
 import os
 
 import pytest
-
-from zellovest_shared.security.crypto import DecryptionError, decrypt_token, encrypt_token
+from zellovest_shared.security.crypto import (
+    DecryptionError,
+    decrypt_token,
+    encrypt_token,
+    generate_nonce,
+)
 
 KEY = base64.b64encode(os.urandom(32)).decode()
 WRONG_KEY = base64.b64encode(os.urandom(32)).decode()
@@ -39,3 +43,19 @@ def test_nonce_unique_per_encryption() -> None:
     _, nonce1 = encrypt_token("same", KEY)
     _, nonce2 = encrypt_token("same", KEY)
     assert nonce1 != nonce2
+
+
+def test_token_pair_nonces_roundtrip() -> None:
+    """Access + refresh tokens under separate nonces both decrypt.
+
+    Regression test for the pre-0009 bug where the refresh call's nonce
+    was discarded, making the stored refresh token unrecoverable.
+    """
+    access_nonce = generate_nonce()
+    access_ct, _ = encrypt_token("access-123", KEY, access_nonce)
+    refresh_ct, refresh_nonce = encrypt_token("refresh-456", KEY)
+    assert decrypt_token(access_ct, access_nonce, KEY) == "access-123"
+    assert decrypt_token(refresh_ct, refresh_nonce, KEY) == "refresh-456"
+    # Cross-nonce decryption must fail (wrong nonce per ciphertext).
+    with pytest.raises(DecryptionError):
+        decrypt_token(refresh_ct, access_nonce, KEY)

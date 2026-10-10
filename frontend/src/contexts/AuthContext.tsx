@@ -1,47 +1,42 @@
 'use client';
 
 import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
-import { UserSession, AuthContextType } from '@/types';
-import {
-  buildAuthorizeUrl,
-  consumeState,
-  decodeIdToken,
-  discoverOidcEndpoints,
-  exchangeCodeForTokens,
-  getOidcConfig,
-} from '@/lib/oidc';
+import { UserSession, AuthContextType, AuthResponse } from '@/types';
+import { acceptInviteRequest, loginRequest } from '@/lib/auth';
 
 /**
- * AuthContext: Manages user authentication and session state via WSO2 Identity
- * Server (OIDC Authorization Code + PKCE).
+ * AuthContext: custom email/password session (invite-only onboarding).
  *
- * Per PRD specifications:
- * - Single-tenant deployment per enterprise; authentication outsourced to WSO2.
- * - Single role across all users: 'Procurement Team Member'.
- *
- * Flow:
- * 1. startLogin() redirects the browser to the WSO2 hosted login page (PKCE).
- * 2. WSO2 authenticates the user and redirects back to the Authorized Redirect
- *    URL (/auth/callback) with an authorization `code` + `state`.
- * 3. completeLogin() validates `state`, exchanges the code for ID/Access
- *    tokens, derives the UserSession from ID token claims and persists it.
- * 4. API requests to FastAPI carry `Authorization: Bearer <accessToken>`.
+ * Concepts for the reader:
+ * - The backend owns passwords (PBKDF2 hash in `users.password_hash`).
+ * - On login (or invite claim) it returns a short-lived HS256 JWT
+ *   (access_token). The JWT is just a signed JSON blob:
+ *   header.payload.signature — the server verifies the signature with
+ *   JWT_SECRET_KEY on every call.
+ * - The browser keeps the JWT + profile in localStorage (simple and
+ *   visible for learning; production-hardening would move it to an
+ *   httpOnly cookie to block XSS exfiltration).
+ * - Single role in V1: every authenticated user is Procurement Team Member.
+ * - No public signup: accounts come from the seed script (first/demo
+ *   user) or from claiming an invite link.
  */
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const AUTH_STORAGE_KEY = 'zellovest_auth_session';
+const ORGANIZATION_NAME = process.env.NEXT_PUBLIC_ORGANIZATION_NAME || 'Zellovest';
 
-/** Fallback display name when WSO2 claims carry no usable name. */
-function deriveDisplayName(claims: Record<string, unknown>, email: string): string {
-  if (typeof claims.name === 'string' && claims.name.trim()) return claims.name;
-  const given = typeof claims.given_name === 'string' ? claims.given_name : '';
-  const family = typeof claims.family_name === 'string' ? claims.family_name : '';
-  if (given || family) return `${given} ${family}`.trim();
-  if (typeof claims.preferred_username === 'string' && claims.preferred_username.trim()) {
-    return claims.preferred_username;
-  }
-  return email.split('@')[0]?.replace(/[._-]/g, ' ') || 'Procurement User';
+function toSession(data: AuthResponse): UserSession {
+  return {
+    id: data.user.id,
+    name: data.user.name || data.user.email.split('@')[0]?.replace(/[._-]/g, ' ') || 'Procurement User',
+    email: data.user.email,
+    role: 'Procurement Team Member',
+    department: 'Procurement & Strategic Sourcing',
+    organizationName: ORGANIZATION_NAME,
+    accessToken: data.access_token,
+    expiresAt: Date.now() + data.expires_in_minutes * 60 * 1000,
+  };
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -53,15 +48,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    // Deferred so hydration completes with the server-rendered default first
-    // (avoids cascading renders and SSR/client hydration mismatches).
+    // Deferred so hydration completes with the server-rendered default first.
     const timer = setTimeout(() => {
       try {
         const stored = localStorage.getItem(AUTH_STORAGE_KEY);
         if (stored) {
           const session = JSON.parse(stored) as UserSession;
-          // Drop expired sessions (access token expiry); silent refresh via
-          // the WSO2 refresh token is a follow-up concern.
           if (session.expiresAt && Date.now() >= session.expiresAt) {
             localStorage.removeItem(AUTH_STORAGE_KEY);
           } else {
@@ -84,58 +76,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const clearError = useCallback(() => setError(null), []);
 
-  /**
-   * Redirect the browser to the WSO2 hosted login page.
-   * The Authorized Redirect URL (/auth/callback) receives the result.
-   */
-  const startLogin = useCallback(async () => {
-    setError(null);
-    try {
-      const authorizeUrl = await buildAuthorizeUrl();
-      window.location.assign(authorizeUrl);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not start the login flow.');
-    }
-  }, []);
-
-  /**
-   * Complete the OIDC Authorization Code flow on /auth/callback.
-   * Returns true when a session was established; on failure the error is
-   * exposed via `error` and false is returned (never throws).
-   */
-  const completeLogin = useCallback(async (code: string, state: string | null): Promise<boolean> => {
+  /** Authenticate with email + password; persists the JWT session. */
+  const login = useCallback(async (email: string, password: string): Promise<boolean> => {
     setIsLoggingIn(true);
     setError(null);
     try {
-      // CSRF protection: the state must match the one generated at /login.
-      if (!consumeState(state)) {
-        throw new Error('Invalid or expired login state. Please try signing in again.');
-      }
-
-      const tokens = await exchangeCodeForTokens(code);
-      const claims = decodeIdToken(tokens.id_token);
-
-      const email =
-        (typeof claims.email === 'string' && claims.email) ||
-        (typeof claims.preferred_username === 'string' ? claims.preferred_username : '') ||
-        '';
-
-      const session: UserSession = {
-        id: claims.sub,
-        name: deriveDisplayName(claims as Record<string, unknown>, email),
-        email,
-        role: 'Procurement Team Member',
-        department: 'Procurement & Strategic Sourcing',
-        organizationName:
-          (typeof claims.organization_name === 'string' && claims.organization_name) ||
-          process.env.NEXT_PUBLIC_ORGANIZATION_NAME ||
-          '',
-        avatarUrl: typeof claims.picture === 'string' ? claims.picture : '',
-        accessToken: tokens.access_token,
-        idToken: tokens.id_token,
-        expiresAt: Date.now() + tokens.expires_in * 1000,
-      };
-
+      const data = await loginRequest(email, password);
+      const session = toSession(data);
       setUser(session);
       localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(session));
       return true;
@@ -147,34 +94,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  /** Clear the local session and invoke WSO2 RP-initiated logout. */
-  const logout = useCallback(async () => {
-    let session: UserSession | null = null;
+  /** Claim an invite link; creates the account and persists the JWT session. */
+  const acceptInvite = useCallback(async (token: string, name: string, password: string): Promise<boolean> => {
+    setIsLoggingIn(true);
+    setError(null);
     try {
-      const stored = localStorage.getItem(AUTH_STORAGE_KEY);
-      if (stored) session = JSON.parse(stored) as UserSession;
+      const data = await acceptInviteRequest(token, name, password);
+      const session = toSession(data);
+      setUser(session);
+      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(session));
+      return true;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not accept the invite. Please try again.');
+      return false;
+    } finally {
+      setIsLoggingIn(false);
+    }
+  }, []);
+
+  /** Clear the local session (stateless JWT — nothing server-side to revoke). */
+  const logout = useCallback(async () => {
+    try {
       localStorage.removeItem(AUTH_STORAGE_KEY);
     } catch {
       // Ignore storage errors; the local session is being discarded anyway.
     }
     setUser(null);
-
-    try {
-      // RP-initiated logout: clear the WSO2 SSO session and return to the app.
-      const { end_session_endpoint } = await discoverOidcEndpoints(getOidcConfig().authority);
-      const params = new URLSearchParams({
-        post_logout_redirect_uri: process.env.NEXT_PUBLIC_REDIRECT_URI || window.location.origin,
-        state: 'logout',
-      });
-      if (session?.idToken) {
-        params.set('id_token_hint', session.idToken);
-      }
-      if (end_session_endpoint) {
-        window.location.assign(`${end_session_endpoint}?${params.toString()}`);
-      }
-    } catch {
-      // OIDC config missing or discovery unreachable: local logout already done.
-    }
   }, []);
 
   return (
@@ -185,8 +130,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isLoading,
         isLoggingIn,
         error,
-        startLogin,
-        completeLogin,
+        login,
+        acceptInvite,
         logout,
         clearError,
       }}

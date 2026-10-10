@@ -408,7 +408,7 @@ def test_resolve_okta_auth_marks_oauth_rows_bearer():
     oauth_row = MagicMock()
     oauth_row.encrypted_access_token = access_ct
     oauth_row.encrypted_refresh_token = b""
-    oauth_row.encryption_nonce = nonce
+    oauth_row.access_nonce = nonce
     oauth_row.token_expires_at = None
     oauth_row.scopes = ["okta.users.read", "offline_access"]
 
@@ -416,7 +416,7 @@ def test_resolve_okta_auth_marks_oauth_rows_bearer():
     ssws_ct, ssws_nonce = encrypt_token("ssws-token", key)
     ssws_row.encrypted_access_token = ssws_ct
     ssws_row.encrypted_refresh_token = b""
-    ssws_row.encryption_nonce = ssws_nonce
+    ssws_row.access_nonce = ssws_nonce
     ssws_row.token_expires_at = None
     ssws_row.scopes = []
 

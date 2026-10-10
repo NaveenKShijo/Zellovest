@@ -1,12 +1,19 @@
-"""PostgreSQL metadata/credential schema (SQLAlchemy 2.0 typed ORM).
+"""PostgreSQL operational schema (SQLAlchemy 2.0 typed ORM).
 
-Tables:
-- ``tenant_integrations``: AES-256-GCM encrypted OAuth tokens per tenant.
-- ``ingestion_sync_checkpoints``: sync execution state + pagination cursors.
+Tables live in split modules re-exported here so ``alembic/env.py`` keeps a
+single ``Base.metadata`` import:
+- ``core`` (migration 0006): tenants, departments, locations,
+  business_entities, merchants, vendors, employees, ramp_cards,
+  software_catalog.
+- ``transact`` (migration 0007): documents, contracts, POs, invoices,
+  card transactions.
+- ``intelligence`` (migration 0008): Okta apps/groups, licenses, usage,
+  reconciliation, maverick alerts, forecasts, workflows, savings, audit.
+- Below (migrations 0001-0005): tenant_integrations,
+  ingestion_sync_checkpoints, users, invitations, uploads.
 
-Single-tenant isolation: each deployment owns its database; the
-(``tenant_id``, ``provider``) uniqueness guards against duplicate rows
-within the instance.
+Single-tenant isolation: each deployment owns its database; every table
+leads with ``tenant_id`` (see ``PRD.md`` 28.1/28.2).
 """
 
 import enum
@@ -15,6 +22,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     DateTime,
     Enum,
     LargeBinary,
@@ -56,6 +64,12 @@ class EntityType(str, enum.Enum):
     INVOICES = "invoices"
     CONTRACTS = "contracts"
     DOCUMENTS = "documents"
+    RAMP_USERS = "ramp_users"
+    RAMP_DEPARTMENTS = "ramp_departments"
+    RAMP_MERCHANTS = "ramp_merchants"
+    RAMP_VENDORS = "ramp_vendors"
+    OKTA_APPS = "okta_apps"
+    OKTA_GROUPS = "okta_groups"
 
 
 class SyncMode(str, enum.Enum):
@@ -85,8 +99,13 @@ class TenantIntegration(Base):
     provider: Mapped[str] = mapped_column(String(64), nullable=False, default="ramp")
     encrypted_access_token: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     encrypted_refresh_token: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
-    # 12-byte GCM nonce stored alongside ciphertext
-    encryption_nonce: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    # 12-byte GCM nonce for the ACCESS token (column renamed from
+    # encryption_nonce in migration 0009). The refresh token has its own
+    # nonce (refresh_nonce): pre-0009 rows stored only one nonce, so their
+    # refresh ciphertext is undecryptable and those tenants must Reconnect
+    # once the access token expires.
+    access_nonce: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    refresh_nonce: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     token_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -146,6 +165,64 @@ class IngestionSyncCheckpoint(Base):
     )
 
 
+class User(Base):
+    """Local user identity for custom email/password authentication.
+
+    Replaces the outsourced WSO2/Asgardeo user store. V1 is deliberately
+    minimal: single-tenant deployment, single role
+    (``procurement_member``) for every row. Passwords are never stored —
+    only the bcrypt PHC hash (salt + cost embedded).
+    """
+
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    tenant_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
+    email: Mapped[str] = mapped_column(String(320), nullable=False, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(256), nullable=False, default="")
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    role: Mapped[str] = mapped_column(String(64), nullable=False, default="procurement_member")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class Invitation(Base):
+    """Single-use invitation for onboarding without public signup.
+
+    Flow: an authenticated member creates an invite for an email; the
+    server generates a 256-bit random token, stores only its SHA-256
+    hash, and returns one invite link. The invitee opens the link and
+    sets name + password, which creates their ``users`` row and marks
+    the invite accepted. Expiry + single-use bound the window.
+    """
+
+    __tablename__ = "invitations"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="default", index=True
+    )
+    email: Mapped[str] = mapped_column(String(320), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    invited_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class UploadStatus(enum.StrEnum):
     """Manual-upload staging lifecycle for direct-to-GCS flow."""
 
@@ -198,3 +275,56 @@ class Upload(Base):
         DateTime(timezone=True), nullable=False,
         server_default=func.now(), onupdate=func.now(),
     )
+
+
+# --- Split modules (migrations 0006-0008). Imported for side effect so the
+# tables register on Base.metadata; re-exported for convenient imports. ---
+from zellovest_shared.db.core import (  # noqa: E402,F401
+    BusinessEntity,
+    Department,
+    Employee,
+    Location,
+    Merchant,
+    RampCard,
+    SoftwareCatalog,
+    Tenant,
+    Vendor,
+)
+from zellovest_shared.db.intelligence import (  # noqa: E402,F401
+    AlertStatus,
+    AuditEvent,
+    ExceptionRule,
+    ExceptionStatus,
+    LicenseAssignment,
+    MaverickAlert,
+    OktaApp,
+    OktaGroup,
+    OktaGroupMembership,
+    ReconciliationException,
+    RiskClass,
+    SavingsKind,
+    SavingsLedgerEntry,
+    SavingsStatus,
+    SeatForecast,
+    UsageEvent,
+    Workflow,
+    WorkflowStatus,
+    WorkflowType,
+)
+from zellovest_shared.db.transact import (  # noqa: E402,F401
+    CardTransaction,
+    Contract,
+    ContractStatus,
+    ContractTermsVersion,
+    DocStatus,
+    DocType,
+    Document,
+    ExtractionProvenance,
+    Invoice,
+    InvoiceLineItem,
+    InvoiceStatus,
+    POLineItem,
+    POStatus,
+    PurchaseOrder,
+    TxnSource,
+)

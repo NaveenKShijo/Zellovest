@@ -1,6 +1,6 @@
 """Database session management for async and sync contexts."""
 
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from typing import AsyncGenerator, Generator
 
 from sqlalchemy import create_engine
@@ -97,6 +97,7 @@ async def async_session_context() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
+@contextmanager
 def sync_session_scope(database_url: str) -> Generator[Session, None, None]:
     """Yield a sync session bound to an explicit database URL (worker usage).
 

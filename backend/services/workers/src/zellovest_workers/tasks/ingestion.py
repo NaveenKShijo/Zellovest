@@ -13,24 +13,31 @@ from typing import Any
 import httpx
 from celery import Task
 from sqlalchemy import select
-
 from zellovest_shared.config import get_settings
-from zellovest_shared.db.models import EntityType, IngestionSyncCheckpoint, SyncStatus, TenantIntegration
+from zellovest_shared.db.models import (
+    EntityType,
+    IngestionSyncCheckpoint,
+    SyncStatus,
+    TenantIntegration,
+)
 from zellovest_shared.db.repository import mark_checkpoint, upsert_integration_sync
 from zellovest_shared.db.session import get_session_factory
 from zellovest_shared.logging_conf import get_logger
-from zellovest_shared.security.crypto import decrypt_token, encrypt_token
-from zellovest_shared.workers.ramp_client import RampClient, RateLimitError, TransientRampError
+from zellovest_shared.schemas.webhooks import OktaSignal
+from zellovest_shared.security.crypto import decrypt_token, encrypt_token, generate_nonce
 from zellovest_shared.workers.okta_client import (
     OktaClient,
     PermanentOktaError,
     TransientOktaError,
     refresh_access_token,
+)
+from zellovest_shared.workers.okta_client import (
     RateLimitError as OktaRateLimitError,
 )
+from zellovest_shared.workers.ramp_client import RampClient, RateLimitError, TransientRampError
 from zellovest_shared.workers.s3_writer import ENTITY_FOLDERS, write_records_gz
+
 from zellovest_workers.celery_app import QUEUE_INGESTION, celery_app
-from zellovest_shared.schemas.webhooks import OktaSignal
 
 logger = get_logger(__name__)
 
@@ -71,7 +78,7 @@ def _load_access_token(session: Any, tenant_id: str, key_b64: str, provider: str
     ).scalar_one_or_none()
     if row is None:
         raise ValueError(f"no {provider} integration for tenant {tenant_id}")
-    return decrypt_token(row.encrypted_access_token, row.encryption_nonce, key_b64)
+    return decrypt_token(row.encrypted_access_token, row.access_nonce, key_b64)
 
 
 def _load_okta_credentials(session: Any, tenant_id: str, settings: Any) -> tuple[str, str]:
@@ -112,15 +119,17 @@ def _resolve_okta_auth(session: Any, tenant_id: str, settings: Any) -> dict[str,
     ).scalar_one_or_none()
     if row is not None and settings is not None:
         token = decrypt_token(
-            row.encrypted_access_token, row.encryption_nonce, settings.credentials_encryption_key
+            row.encrypted_access_token, row.access_nonce, settings.credentials_encryption_key
         )
         if token and "offline_access" in (row.scopes or []):
             scheme = "Bearer"
-        if row.encrypted_refresh_token:
+        # Pre-0009 rows have refresh_nonce NULL (nonce was discarded at
+        # connect time): their refresh token is unrecoverable → Reconnect.
+        if row.encrypted_refresh_token and row.refresh_nonce:
             try:
                 refresh_token = decrypt_token(
                     row.encrypted_refresh_token,
-                    row.encryption_nonce,
+                    row.refresh_nonce,
                     settings.credentials_encryption_key,
                 )
             except Exception:
@@ -175,15 +184,17 @@ def _refresh_okta_bearer_token(session: Any, tenant_id: str, settings: Any, auth
     )
     new_refresh = tokens["refresh_token"] or auth["refresh_token"]
     key = settings.credentials_encryption_key
-    access_ct, nonce = encrypt_token(tokens["access_token"], key)
-    refresh_ct, _ = encrypt_token(new_refresh, key)
+    access_nonce = generate_nonce()
+    access_ct, _ = encrypt_token(tokens["access_token"], key, access_nonce)
+    refresh_ct, refresh_nonce = encrypt_token(new_refresh, key)
     upsert_integration_sync(
         session,
         tenant_id=tenant_id,
         provider="okta",
         encrypted_access_token=access_ct,
         encrypted_refresh_token=refresh_ct,
-        encryption_nonce=nonce,
+        access_nonce=access_nonce,
+        refresh_nonce=refresh_nonce,
         token_expires_at=datetime.now(UTC) + timedelta(seconds=tokens["expires_in"]),
         scopes=auth["scopes"] or None,
     )

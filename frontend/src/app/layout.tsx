@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import { Plus_Jakarta_Sans } from "next/font/google";
 import "./globals.css";
-import { AsgardeoProvider } from "@asgardeo/nextjs/server";
 import { AppProviders } from "@/contexts/AppProviders";
 import { ShellGate } from "@/components/layout/ShellGate";
 import { ToastContainer } from "@/components/ui/ToastContainer";
@@ -20,23 +19,16 @@ export const metadata: Metadata = {
 };
 
 /**
- * All routes are session-dependent (AsgardeoProvider reads request headers
- * to resolve the app origin/session), so static prerendering is disabled.
+ * All routes are session-dependent (custom AuthContext restores the local
+ * JWT session from localStorage), so static prerendering is disabled.
  */
 export const dynamic = "force-dynamic";
 
 /**
- * Root layout — authentication is provided by the official @asgardeo/nextjs
- * SDK (Asgardeo "Big Regions" application). All credentials resolve from
- * environment variables (see .env.local / .env.example); nothing is
- * hardcoded. Scopes are exactly `openid profile` per the app spec.
- *
- * NOTE: afterSignInUrl/afterSignOutUrl are intentionally NOT set. The SDK
- * then falls back to the raw request origin (`http://localhost:3000`,
- * no trailing slash) as the OAuth redirect_uri — matching the Redirect
- * URL registered on the Asgardeo application exactly. Passing an explicit
- * URL would make the SDK normalize it to `http://localhost:3000/`
- * (trailing slash), which Asgardeo rejects as a callback-URL mismatch.
+ * Root layout — authentication is the custom email/password flow:
+ * POST /api/v1/auth/login on the backend issues a short-lived
+ * HS256 JWT; AuthContext persists it and AuthGuard gates the app shell.
+ * No external identity provider (WSO2/Asgardeo) is involved.
  */
 export default function RootLayout({
   children,
@@ -46,21 +38,12 @@ export default function RootLayout({
   return (
     <html lang="en" className={plusJakarta.variable}>
       <body className={plusJakarta.className}>
-        <AsgardeoProvider
-          baseUrl={process.env.NEXT_PUBLIC_ASGARDEO_BASE_URL}
-          clientId={process.env.NEXT_PUBLIC_ASGARDEO_CLIENT_ID}
-          clientSecret={process.env.ASGARDEO_CLIENT_SECRET}
-          scopes={["openid", "profile"]}
-        >
-          <AppProviders>
-            <AuthGuard>
-              <ShellGate>
-                {children}
-              </ShellGate>
-            </AuthGuard>
-            <ToastContainer />
-          </AppProviders>
-        </AsgardeoProvider>
+        <AppProviders>
+          <AuthGuard>
+            <ShellGate>{children}</ShellGate>
+          </AuthGuard>
+          <ToastContainer />
+        </AppProviders>
       </body>
     </html>
   );

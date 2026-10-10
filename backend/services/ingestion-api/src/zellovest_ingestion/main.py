@@ -21,7 +21,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from zellovest_ingestion.api.routers import integrations, integrations_drive, integrations_okta, sync, uploads, webhooks
+from zellovest_ingestion.api.routers import integrations, integrations_drive, integrations_okta, sync, uploads, webhooks, auth
 from zellovest_ingestion.api.routers.integrations_okta import alias_router as integrations_okta_alias_router
 from zellovest_ingestion.config import get_ingestion_api_settings
 from zellovest_shared.logging_conf import configure_logging, get_logger
@@ -75,6 +75,7 @@ def create_app(settings=None) -> FastAPI:
         return JSONResponse(status_code=500, content={"detail": "internal server error"})
 
     prefix = app.state.settings.api_v1_prefix
+    app.include_router(auth.router, prefix=prefix, tags=["auth"])
     app.include_router(integrations.router, prefix=prefix, tags=["integrations"])
     app.include_router(integrations_drive.router, prefix=prefix, tags=["integrations"])
     app.include_router(integrations_okta.router, prefix=prefix, tags=["integrations"])
