@@ -94,6 +94,7 @@ def main() -> int:
             role="procurement_member",
             tenant_id="default",
             is_active=True,
+            is_demo=bool(args.demo),
         )
         session.add(user)
         session.commit()

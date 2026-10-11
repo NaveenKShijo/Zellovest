@@ -187,6 +187,8 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
     role: Mapped[str] = mapped_column(String(64), nullable=False, default="procurement_member")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Sandbox flag: the public demo account explores but may not invite.
+    is_demo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

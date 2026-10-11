@@ -18,6 +18,7 @@ class UserResponse(BaseModel):
     name: str
     role: str
     tenant_id: str
+    is_demo: bool = False
 
 
 class AuthResponse(BaseModel):

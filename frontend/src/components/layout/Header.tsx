@@ -189,6 +189,22 @@ export function Header() {
             <span style={{ fontSize: '12.5px', fontWeight: 600, color: 'var(--text-primary)' }}>
               {ORGANIZATION_NAME}
             </span>
+            {user?.isDemo && (
+              <span
+                title="Sandbox session — explore freely, invites disabled"
+                style={{
+                  fontSize: '10px',
+                  fontWeight: 800,
+                  letterSpacing: '0.06em',
+                  padding: '2px 8px',
+                  borderRadius: 'var(--radius-full)',
+                  backgroundColor: 'var(--color-brand)',
+                  color: '#FFFFFF',
+                }}
+              >
+                DEMO
+              </span>
+            )}
           </button>
 
           {/* User Dropdown */}

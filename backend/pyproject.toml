@@ -22,11 +22,10 @@ dependencies = [
     "structlog>=24.1",
     "google-cloud-storage>=2.18",
     "python-dotenv",
-    # NOTE: python-jose is intentionally NOT a root dependency. Its wheel
-    # (and its pyasn1 transitive dep) is unavailable offline, and nothing in
-    # the test path calls JWT functions (zellovest_shared.security.jwt imports
-    # jose lazily with a clear error). Service Docker images install
-    # python-jose via services/*/pyproject.toml, where it is declared.
+    # NOTE: JWT is implemented on the standard library
+    # (zellovest_shared.security.jwt uses hmac/hashlib only), so no JWT
+    # package is needed anywhere — this previously required python-jose,
+    # whose absence turned every successful login into a 500.
     # NOTE: pinned to the version vendored in backend/wheels/ (this env has
     # no PyPI access to fetch newer wheels). Relax once network is back.
     "python-multipart==0.0.21",

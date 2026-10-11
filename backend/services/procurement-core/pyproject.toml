@@ -12,8 +12,6 @@ dependencies = [
     "sqlalchemy>=2.0",
     "asyncpg>=0.29",
     "psycopg[binary]>=3.2",
-    "python-jose[cryptography]>=3.3",
-    "passlib[bcrypt]>=1.7",
 ]
 
 [project.optional-dependencies]

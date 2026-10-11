@@ -386,3 +386,98 @@ def test_invite_token_hash_roundtrip():  # type: ignore[no-untyped-def]
     assert len(digest) == 64
     assert digest != raw
     assert hash_invite_token(raw) == digest
+
+
+# --- Frictionless demo entry ---------------------------------------------------
+
+
+def test_demo_login_auto_creates_account(client, monkeypatch):  # type: ignore[no-untyped-def]
+    """POST /auth/demo with an empty DB creates the sandbox account (no credentials)."""
+    monkeypatch.setattr(auth_module, "create_user_access_token", lambda *a, **k: "demo-jwt")
+    session = FakeSession(execute_value=None)
+    cleanup = _override_db(client, session)
+    try:
+        response = client.post("/api/v1/auth/demo")
+    finally:
+        cleanup()
+    assert response.status_code == 200
+    body = response.json()
+    assert body["access_token"] == "demo-jwt"
+    assert body["user"]["is_demo"] is True
+    assert len(session.added) == 1
+    assert session.added[0].email == "demo@zellovest.ai"
+    assert session.added[0].is_demo is True
+
+
+def test_demo_login_reuses_existing_account(client, monkeypatch):  # type: ignore[no-untyped-def]
+    """Second demo click returns the existing row without inserting."""
+    existing = _member(email="demo@zellovest.ai")
+    existing.is_demo = True
+    monkeypatch.setattr(auth_module, "create_user_access_token", lambda *a, **k: "demo-jwt")
+    session = FakeSession(execute_value=existing)
+    cleanup = _override_db(client, session)
+    try:
+        response = client.post("/api/v1/auth/demo")
+    finally:
+        cleanup()
+    assert response.status_code == 200
+    assert session.added == []
+
+
+def test_demo_account_cannot_invite(client):  # type: ignore[no-untyped-def]
+    """Sandbox explores but cannot onboard: invites are 403 for demo sessions."""
+    demo_user = _member(email="demo@zellovest.ai")
+    demo_user.is_demo = True
+    _override_user(client, demo_user)
+    session = FakeSession()
+    cleanup = _override_db(client, session)
+    try:
+        response = client.post(
+            "/api/v1/auth/invites",
+            json={"email": "new@company.com"},
+            headers={"Authorization": "Bearer demo-jwt"},
+        )
+    finally:
+        cleanup()
+    assert response.status_code == 403
+    assert session.added == []
+
+
+# --- stdlib HS256 JWT ------------------------------------------------------------
+
+
+def test_jwt_matches_reference_vector():  # type: ignore[no-untyped-def]
+    """Our signer reproduces the jwt.io HS256 reference signature exactly."""
+    from zellovest_shared.security.jwt import _sign
+
+    signing_input = (
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+        ".eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ"
+    )
+    expected = "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+    assert _sign(signing_input, "your-256-bit-secret") == expected
+
+
+def test_jwt_roundtrip_and_tamper_rejection():  # type: ignore[no-untyped-def]
+    """Issued tokens verify; any alteration or malformed input yields None."""
+    from zellovest_shared.security.jwt import create_user_access_token, decode_token
+
+    token = create_user_access_token("uid-1", "ada@example.com")
+    payload = decode_token(token)
+    assert payload is not None
+    assert (payload.sub, payload.user_id, payload.email) == ("uid-1", "uid-1", "ada@example.com")
+    assert decode_token(token + "tamper") is None
+    assert decode_token("not.a.token") is None
+    assert decode_token("") is None
+
+
+def test_jwt_expired_token_rejected():  # type: ignore[no-untyped-def]
+    """Tokens past exp (+30s leeway) are rejected; fresh ones accepted."""
+    from datetime import timedelta
+
+    from zellovest_shared.security.jwt import create_user_access_token, decode_token
+
+    fresh = create_user_access_token("uid-1", "a@b.co", expires_delta=timedelta(minutes=5))
+    assert decode_token(fresh) is not None
+    stale = create_user_access_token("uid-1", "a@b.co", expires_delta=timedelta(seconds=-120))
+    assert decode_token(stale) is None

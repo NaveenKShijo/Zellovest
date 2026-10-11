@@ -64,7 +64,42 @@ def _to_user_response(user: User) -> UserResponse:
         name=user.name,
         role=user.role,
         tenant_id=user.tenant_id,
+        is_demo=bool(getattr(user, "is_demo", False)),
     )
+
+
+def _demo_email() -> str:
+    """Sandbox identity (env-overridable, documented default)."""
+    from zellovest_shared.security.auth import normalize_email as _normalize
+
+    return _normalize(os.environ.get("DEMO_EMAIL", "demo@zellovest.ai"))
+
+
+async def _get_or_create_demo_user(session: AsyncSession) -> User:
+    """Find the demo account, auto-creating it on first sandbox entry.
+
+    The password is a random untyped secret: nobody logs in *as* the demo
+    with credentials — entry is only via ``POST /auth/demo``, which needs
+    no password. A pre-existing row with the demo email (e.g. seeded by
+    ``scripts/seed_user.py --demo``) is adopted and flagged ``is_demo``.
+    """
+    import secrets as _secrets
+
+    email = _demo_email()
+    user = await get_user_by_email(session, email)
+    if user is None:
+        user = await create_user(
+            session,
+            email=email,
+            password=_secrets.token_urlsafe(32),
+            name="Demo Explorer",
+        )
+        await session.commit()
+        await session.refresh(user)
+    if not getattr(user, "is_demo", False):
+        user.is_demo = True  # type: ignore[attr-defined]
+        await session.commit()
+    return user
 
 
 def _expiry_minutes() -> int:
@@ -102,6 +137,25 @@ async def login(
     )
 
 
+@router.post("/demo", response_model=AuthResponse)
+async def demo_login(
+    session: AsyncSession = Depends(get_db_session),
+) -> AuthResponse:
+    """One-click sandbox entry (public, no credentials, no friction).
+
+    Finds or auto-creates the demo account and returns its JWT, so the
+    frontend demo button never needs an email, a password, or a seeded
+    row to exist beforehand. The demo account itself is fenced by the
+    ``is_demo`` invite guard below.
+    """
+    user = await _get_or_create_demo_user(session)
+    logger.info("demo_session_issued", email=user.email)
+    token = create_user_access_token(str(user.id), user.email, user.tenant_id, user.role)
+    return AuthResponse(
+        access_token=token, expires_in_minutes=_expiry_minutes(), user=_to_user_response(user)
+    )
+
+
 @router.get("/me", response_model=UserResponse)
 async def me(current_user: User = Depends(get_current_user)) -> UserResponse:
     """Return the profile for the presented Bearer token."""
@@ -115,6 +169,11 @@ async def create_invite(
     session: AsyncSession = Depends(get_db_session),
 ) -> InviteResponse:
     """Invite a teammate: any authenticated member may invite (single role)."""
+    if getattr(current_user, "is_demo", False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Demo accounts cannot invite members.",
+        )
     email = normalize_email(body.email)
     if not validate_email(email):
         raise HTTPException(

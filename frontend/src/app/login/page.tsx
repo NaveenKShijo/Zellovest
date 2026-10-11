@@ -3,7 +3,6 @@
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
-import { DEMO_EMAIL, DEMO_PASSWORD } from '@/lib/auth';
 
 /**
  * Login page: custom email/password sign-in (invite-only onboarding —
@@ -13,13 +12,13 @@ import { DEMO_EMAIL, DEMO_PASSWORD } from '@/lib/auth';
  * - Member: POST /api/v1/auth/login → JWT + profile → AuthContext
  *   persists the session → route to `/`. Errors render inline (401 shows
  *   the backend's enumeration-safe "Invalid email or password.").
- * - Visitor: "Explore the live demo" signs in with the public demo
- *   account (seeded server-side via scripts/seed_user.py --demo), which
- *   lands on the same mock-data frontend — no integrations needed.
+ * - Visitor: "Explore the live demo" calls POST /api/v1/auth/demo with
+ *   no credentials — the backend finds or auto-creates the sandbox
+ *   account and returns its session. Zero friction by design.
  */
 export default function LoginPage() {
   const router = useRouter();
-  const { login, isLoggingIn, error } = useAuth();
+  const { login, loginDemo, isLoggingIn, error } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
 
@@ -30,7 +29,7 @@ export default function LoginPage() {
   };
 
   const onDemo = async () => {
-    const ok = await login(DEMO_EMAIL, DEMO_PASSWORD);
+    const ok = await loginDemo();
     if (ok) router.replace('/');
   };
 

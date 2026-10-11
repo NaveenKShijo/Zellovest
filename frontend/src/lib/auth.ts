@@ -22,9 +22,16 @@ import type { AuthResponse, AuthUser, InviteResponse, InviteStatus } from '@/typ
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || '/api';
 
-/** Public demo credentials (documented, low-value sandbox account). */
-export const DEMO_EMAIL = process.env.NEXT_PUBLIC_DEMO_EMAIL || 'demo@zellovest.ai';
-export const DEMO_PASSWORD = process.env.NEXT_PUBLIC_DEMO_PASSWORD || 'zellovest-demo';
+/**
+ * Frictionless sandbox entry: POST /auth/demo with no body. The backend
+ * finds or auto-creates the demo account and returns its JWT — visitors
+ * never type (or see) any email or password.
+ */
+export async function demoLoginRequest(): Promise<AuthResponse> {
+  const response = await fetch(`${API_BASE}/v1/auth/demo`, { method: 'POST' });
+  if (!response.ok) throw new Error(await parseError(response));
+  return (await response.json()) as AuthResponse;
+}
 
 async function parseError(response: Response): Promise<string> {
   try {

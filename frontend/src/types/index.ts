@@ -54,8 +54,9 @@ export interface UserSession {
   department: string;
   avatarUrl?: string;
   organizationName: string; // Single-tenant organization boundary
-  accessToken?: string; // Custom JWT from POST /api/v1/auth/login
+  accessToken?: string; // Custom JWT from POST /api/v1/auth/login|demo
   expiresAt?: number; // Access token expiry (epoch ms)
+  isDemo?: boolean; // sandbox session: explores, cannot invite
 }
 
 export interface AuthUser {
@@ -64,6 +65,7 @@ export interface AuthUser {
   name: string;
   role: string;
   tenant_id: string;
+  is_demo?: boolean;
 }
 
 export interface AuthResponse {
@@ -90,6 +92,7 @@ export interface InviteStatus {
  * Invite-only onboarding: accounts are created by the seed script or by
  * claiming an invite link — there is no public signup.
  * - login(email, password): verify credentials, persist JWT session.
+ * - loginDemo(): one-click sandbox entry (no credentials), persist session.
  * - acceptInvite(token, name, password): claim an invite, persist session.
  * - logout(): clears the local session (stateless JWT, nothing to revoke).
  */
@@ -97,9 +100,10 @@ export interface AuthContextType {
   user: UserSession | null;
   isAuthenticated: boolean;
   isLoading: boolean; // session restore in progress (on app mount)
-  isLoggingIn: boolean; // login/invite-accept in progress
+  isLoggingIn: boolean; // login/demo/invite-accept in progress
   error: string | null; // last authentication error, if any
   login: (email: string, password: string) => Promise<boolean>;
+  loginDemo: () => Promise<boolean>;
   acceptInvite: (token: string, name: string, password: string) => Promise<boolean>;
   logout: () => Promise<void>;
   clearError: () => void;

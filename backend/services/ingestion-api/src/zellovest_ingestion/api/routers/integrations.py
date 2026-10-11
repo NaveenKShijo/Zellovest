@@ -26,7 +26,6 @@ from zellovest_ingestion.services.ramp_oauth import (
 logger = get_logger(__name__)
 router = APIRouter(prefix="/integrations/ramp", tags=["integrations"])
 
-
 @router.post("/connect", response_model=ConnectResponse, status_code=200)
 def connect(
     body: ConnectRequest | None = None,
@@ -113,8 +112,7 @@ async def callback(
     # Each token gets its own fresh nonce; both are stored (migration 0009)
     # so access renewal via the refresh token keeps working.
     key = settings.credentials_encryption_key
-    access_nonce = generate_nonce()
-    access_ct, _ = encrypt_token(tokens.access_token, key, access_nonce)
+    access_ct, access_nonce = encrypt_token(tokens.access_token, key)
     refresh_ct, refresh_nonce = encrypt_token(tokens.refresh_token or "", key)
     await aupsert_integration(
         session,
@@ -127,6 +125,7 @@ async def callback(
         token_expires_at=expires_at,
         scopes=tokens.scopes,
     )
+
     await session.commit()
     logger.info("oauth_callback_stored", tenant_id=tenant_id, scopes=tokens.scopes)
 

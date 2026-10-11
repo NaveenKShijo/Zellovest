@@ -2,7 +2,7 @@
 
 import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
 import { UserSession, AuthContextType, AuthResponse } from '@/types';
-import { acceptInviteRequest, loginRequest } from '@/lib/auth';
+import { acceptInviteRequest, demoLoginRequest, loginRequest } from '@/lib/auth';
 
 /**
  * AuthContext: custom email/password session (invite-only onboarding).
@@ -36,6 +36,7 @@ function toSession(data: AuthResponse): UserSession {
     organizationName: ORGANIZATION_NAME,
     accessToken: data.access_token,
     expiresAt: Date.now() + data.expires_in_minutes * 60 * 1000,
+    isDemo: data.user.is_demo === true,
   };
 }
 
@@ -94,6 +95,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  /** One-click sandbox entry (no credentials); persists the demo JWT session. */
+  const loginDemo = useCallback(async (): Promise<boolean> => {
+    setIsLoggingIn(true);
+    setError(null);
+    try {
+      const data = await demoLoginRequest();
+      const session = toSession(data);
+      setUser(session);
+      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(session));
+      return true;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not start the demo. Please try again.');
+      return false;
+    } finally {
+      setIsLoggingIn(false);
+    }
+  }, []);
+
   /** Claim an invite link; creates the account and persists the JWT session. */
   const acceptInvite = useCallback(async (token: string, name: string, password: string): Promise<boolean> => {
     setIsLoggingIn(true);
@@ -131,6 +150,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isLoggingIn,
         error,
         login,
+        loginDemo,
         acceptInvite,
         logout,
         clearError,

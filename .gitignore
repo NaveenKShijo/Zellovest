@@ -13,3 +13,5 @@ wheels/
 backend/.env
 
 .freebuff
+
+backend/scripts/
