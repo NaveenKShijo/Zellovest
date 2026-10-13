@@ -2,7 +2,7 @@
 
 Task signatures carry metadata IDs only (``tenant_id``, ``cursor``,
 ``event_id``, ``sync_id``). Workers fetch bytes from source APIs directly and
-stream gzipped JSONL into the partitioned S3 bronze lake. Raw payloads
+stream gzipped JSONL into the partitioned GCS bronze lake. Raw payloads
 never touch Redis.
 """
 
@@ -35,7 +35,7 @@ from zellovest_shared.workers.okta_client import (
     RateLimitError as OktaRateLimitError,
 )
 from zellovest_shared.workers.ramp_client import RampClient, RateLimitError, TransientRampError
-from zellovest_shared.workers.s3_writer import ENTITY_FOLDERS, write_records_gz
+from zellovest_shared.workers.gcs_writer import ENTITY_FOLDERS, write_records_gz
 
 from zellovest_workers.celery_app import QUEUE_INGESTION, celery_app
 
@@ -57,7 +57,25 @@ _RETRY_KWARGS: dict[str, Any] = {
 }
 
 _OKTA_ENTITIES = ("users", "apps", "logs")
-_OKTA_S3_FOLDERS = {"users": "okta_users", "apps": "okta_apps", "logs": "okta_logs"}
+_OKTA_GCS_FOLDERS = {"users": "okta_users", "apps": "okta_apps", "logs": "okta_logs"}
+
+
+def _raw_bucket(settings: Any) -> str:
+    """Resolve the GCS raw bucket with legacy S3 env fallback."""
+    if settings is None:
+        return "tenant-bucket"
+    return (
+        getattr(settings, "gcs_raw_bucket", "")
+        or getattr(settings, "s3_raw_bucket", "")
+        or "tenant-bucket"
+    )
+
+
+def _gcp_project(settings: Any) -> str | None:
+    """Resolve the GCP project id (None uses default credentials)."""
+    if settings is None:
+        return None
+    return getattr(settings, "google_cloud_project", "") or None
 
 
 def _settings() -> Any:
@@ -222,7 +240,7 @@ def _poll_entity(
     cursor: str | None,
     sync_id: str | None,
 ) -> dict[str, Any]:
-    """Shared keyset-polling engine: paginate Ramp -> gzip batches -> S3."""
+    """Shared keyset-polling engine: paginate Ramp -> gzip batches -> GCS."""
     settings = _settings()
     factory = get_session_factory()
     session = factory()
@@ -256,12 +274,11 @@ def _poll_entity(
                 break
             key = write_records_gz(
                 records,
-                bucket=settings.s3_raw_bucket if settings else "tenant-bucket",
+                bucket=_raw_bucket(settings),
                 entity_folder=ENTITY_FOLDERS.get(entity, entity),
                 sync_id=sync_id or "no-sync",
                 suffix=f"cursor-{next_cursor or 'final'}",
-                endpoint_url=settings.s3_endpoint_url if settings else None,
-                region=settings.aws_region if settings else "us-east-1",
+                project=_gcp_project(settings),
             )
             keys.append(key)
             total_records += len(records)
@@ -353,7 +370,7 @@ def handle_ramp_webhook_event(
     object_id: str | None = None,
     sync_id: str | None = None,
 ) -> dict[str, Any]:
-    """Handle one Ramp pushed event: validate -> fetch -> gzip -> S3."""
+    """Handle one Ramp pushed event: validate -> fetch -> gzip -> GCS."""
     del self  # bound task unused beyond retry config
     settings = _settings()
     factory = get_session_factory()
@@ -384,12 +401,11 @@ def handle_ramp_webhook_event(
 
         key = write_records_gz(
             records,
-            bucket=settings.s3_raw_bucket if settings else "tenant-bucket",
+            bucket=_raw_bucket(settings),
             entity_folder=ENTITY_FOLDERS["events"],
             sync_id=sync_id or "no-sync",
             suffix=f"event-{event_id}",
-            endpoint_url=settings.s3_endpoint_url if settings else None,
-            region=settings.aws_region if settings else "us-east-1",
+            project=_gcp_project(settings),
         )
         if checkpoint is not None:
             mark_checkpoint(session, checkpoint, status=SyncStatus.SUCCESS)
@@ -434,7 +450,7 @@ def sync_okta_license_usage(
     """Sync Okta app assignments / user activity into the bronze lake.
 
     Supports both scheduled polling (cursor) and webhook-triggered single
-    payloads. Writes normalized usage snapshots to S3 for the Zombie License
+    payloads. Writes normalized usage snapshots to GCS for the Zombie License
     engine to consume deterministically.
     """
     del self
@@ -453,12 +469,11 @@ def sync_okta_license_usage(
 
     key = write_records_gz(
         records,
-        bucket=settings.s3_raw_bucket if settings else "tenant-bucket",
+        bucket=_raw_bucket(settings),
         entity_folder="events",
         sync_id=sync_id or "no-sync",
         suffix="okta-usage",
-        endpoint_url=settings.s3_endpoint_url if settings else None,
-        region=settings.aws_region if settings else "us-east-1",
+        project=_gcp_project(settings),
     )
     logger.info("okta_sync_complete", tenant_id=tenant_id, records=len(records))
     return {"sync_id": sync_id, "records": len(records), "keys": [key] if key else []}
@@ -483,7 +498,7 @@ def sync_okta_batch(
     """Batch-pull Okta collections into the bronze lake (triggered by POST /sync/okta).
 
     Pages ``/users``, ``/apps`` and/or ``/logs`` via ``after`` cursors and
-    streams each page as gzipped JSONL to S3 (``okta_users/``, ``okta_apps/``,
+    streams each page as gzipped JSONL to GCS (``okta_users/``, ``okta_apps/``,
     ``okta_logs/``). The System Log ``after`` cursor is stored on the
     checkpoint so the next incremental run resumes where this one stopped.
 
@@ -535,12 +550,11 @@ def sync_okta_batch(
                         break
                     key = write_records_gz(
                         records,
-                        bucket=settings.s3_raw_bucket if settings else "tenant-bucket",
-                        entity_folder=_OKTA_S3_FOLDERS[entity],
+                        bucket=_raw_bucket(settings),
+                        entity_folder=_OKTA_GCS_FOLDERS[entity],
                         sync_id=sync_id or "no-sync",
                         suffix=f"okta-{entity}-cursor-{next_cursor or 'final'}",
-                        endpoint_url=settings.s3_endpoint_url if settings else None,
-                        region=settings.aws_region if settings else "us-east-1",
+                        project=_gcp_project(settings),
                     )
                     if key:
                         keys.append(key)

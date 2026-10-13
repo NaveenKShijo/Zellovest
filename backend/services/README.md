@@ -1,7 +1,7 @@
 # Zellovest Backend — Microservices (per PRD 27.5)
 
 Single-tenant, service-oriented layout. Each customer deployment runs all
-services isolated (own Postgres, Redis, S3 bucket, vector namespace).
+services isolated (own Postgres, Redis, GCS bucket, vector namespace).
 
 ## Services
 
@@ -11,7 +11,7 @@ services isolated (own Postgres, Redis, S3 bucket, vector namespace).
 | agentic-reasoning | `zellovest_agentic` | 8002 | Ask AI (SSE), negotiation copilot, RAG orchestration, tool sandbox = MCP host/client |
 | ingestion-api | `zellovest_ingestion` | 8003 | Ramp/Drive OAuth, webhooks (Ramp/Okta/Drive), pull sync (Ramp/Drive), upload fallback, sync dispatch |
 | workers | `zellovest_workers` | — | Celery: ingestion + document OCR + AP audit + maverick ML + zombie licenses |
-| shared | `zellovest_shared` | — | Config, DB models/session/repo, schemas, security, Ramp/S3/rate-limit clients |
+| shared | `zellovest_shared` | — | Config, DB models/session/repo, schemas, security, Ramp/GCS/rate-limit clients |
 
 ## Queues
 

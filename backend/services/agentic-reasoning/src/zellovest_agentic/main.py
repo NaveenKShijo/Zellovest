@@ -82,8 +82,8 @@ def create_app(settings=None) -> FastAPI:
     return app
 
 
-app = None
 try:
     app = create_app()
 except Exception:
-    app = None  # type: ignore[assignment]
+    logger.exception("agentic_reasoning_init_failed")
+    raise

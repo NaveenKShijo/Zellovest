@@ -26,14 +26,11 @@ services:
       timeout: 5s
       retries: 10
 
-  minio:
-    image: minio/minio:latest
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: minio
-      MINIO_ROOT_PASSWORD: minio12345
-    ports: ["9000:9000", "9001:9001"]
-    volumes: [miniodata:/data]
+  fake-gcs:
+    image: fsouza/fake-gcs-server:latest
+    command: -scheme http -port 4443 -backend memory
+    ports: ["4443:4443"]
+    volumes: [gcsdata:/data]
 
   procurement-core:
     build:
@@ -109,6 +106,25 @@ services:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
 
+  # Single-replica Celery Beat: fires purge_expired_uploads every 15 min.
+  # Do not scale past 1 replica (double-fire). Schedule file persisted
+  # in beatdata volume so restarts resume without duplicate runs.
+  scheduler-beat:
+    build:
+      context: .
+      dockerfile: services/workers/Dockerfile
+    env_file: [.env]
+    environment:
+      SERVICE_NAME: scheduler-beat
+    command: ["celery", "-A", "zellovest_workers.celery_app.celery_app", "beat", "--loglevel=info", "--schedule", "/var/run/celery/celerybeat-schedule"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    volumes: [beatdata:/var/run/celery]
+    deploy:
+      replicas: 1
+
 volumes:
   pgdata:
-  miniodata:
+  gcsdata:
+  beatdata:

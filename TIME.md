@@ -7,7 +7,8 @@
 - **Future multi-tenant readiness (V1 only):** primary tables include nullable future-ready `org_id UUID` column. No RLS by org_id, no tenant switching, no cross-tenant queries, no tenant-aware routing in V1. `tenant_id` in JWT/MCP context = deployment/instance ID in V1.
 - **Single role in V1:** Procurement team member (same capabilities). MCP/tools enforce authorization scopes; granular RBAC hooks reserved.
 - **Architecture principle:** deterministic systems for financial/compliance math; AI/agents for investigation/synthesis. Evidence-first (provenance: source doc, page, bbox, method, confidence).
-- **Stack:** Next.js 14+ / React, FastAPI (3 core services), Redis + Celery, PostgreSQL 16 + pgvector, S3/GCS/MinIO, Document AI/OCR, LightGBM/XGBoost, Jev AI (TypeSafe), MCP SDK (stdio local / Streamable HTTP prod; SSE only for Ask AI UI streaming).
+- **Stack:** Next.js 14+ / React, FastAPI (3 core services), Memorystore for Redis + Celery, Cloud SQL for PostgreSQL 16 + pgvector, GCS, Google Cloud Document AI/OCR, LightGBM/XGBoost, Jev AI (TypeSafe), MCP SDK (stdio local / Streamable HTTP prod; SSE only for Ask AI UI streaming).
+- **Cloud:** Google Cloud Platform only for all cloud services (Cloud Load Balancing, Cloud SQL, Memorystore, GCS, Cloud KMS, Secret Manager, Cloud Logging).
 - **Coding standards per AGENTS.md:** docstrings, structured logging, robust exception handling, PEP 8.
 
 ---
@@ -40,13 +41,13 @@
    - Future-ready `org_id UUID` field on primary tables (reservation only, unused in V1 logic per Global Notes).
 2. **Ingress API & File Storage**
    - `POST /api/v1/documents/upload` with MIME-type + file-size validation.
-   - Object storage integration (AWS S3 / GCS / MinIO local) with isolated instance bucket.
+   - Object storage integration (GCS) with isolated instance bucket.
 3. **Data Ingestion Connectors**
    - Ramp connector (REST/scheduled/incremental + webhooks where available): amount, merchant, MCC, date; normalized to canonical model.
    - Okta connector: app assignments, user activity, last login, email, assigned apps.
-   - Manual upload as fallback (Drive/S3/Dropbox extended in Week 2).
+   - Manual upload as fallback (Drive/GCS/Dropbox extended in Week 2).
 4. **Async Task Architecture**
-   - Redis + Celery (or ARQ), DB connection pooling, health-check endpoints for workers.
+   - Memorystore for Redis + Celery (or ARQ), DB connection pooling, health-check endpoints for workers.
    - Baseline tasks: `ingest_card_transaction_task`, `ingest_okta_directory_task`, `stage_document_task`.
 
 ### Week 1 Acceptance
@@ -82,9 +83,9 @@
 ### Backend & Data
 
 1. **File Integration Extension**
-   - Google Drive / S3 / Dropbox connectors (per PRD A.1) + manual upload; normalize to canonical model; async + incremental sync.
+   - Google Drive / GCS / Dropbox connectors (per PRD A.1) + manual upload; normalize to canonical model; async + incremental sync.
 2. **Document Processing & Router Pipeline (per PRD #6–7 diagram)**
-   - **Document Router:** digital vector PDFs → pdfplumber deterministic table/text; scanned/raster/variable → cloud OCR (Google Document AI / AWS Textract / Azure AI Document Intelligence) + LLM.
+   - **Document Router:** digital vector PDFs → pdfplumber deterministic table/text; scanned/raster/variable → cloud OCR (Google Cloud Document AI) + LLM.
    - **Document Classifier:** Invoice / Purchase Order / Contract / Other.
    - **Schema parsers:** Contracts (vendor, start/end, renewal notice, auto-renew, escalation caps); Invoices (number, issue/due dates, line items, qty, unit price, total).
    - Common Schema → Validation branch: high confidence → DB; low → Human Review → Correction → DB.
@@ -93,8 +94,8 @@
    - Versioned schema `contracts.terms_versioned`: product, price, effective_from/effective_to, currency, UoM, qty limits, discounts, taxes, payment/freight terms.
    - Amendment lineage: Original → Amendment 1/2 → Renewal → Price Revision; base immutable, child records override only validity windows; preserves history for historical invoice explainability.
 4. **Vector Store & Hybrid RAG Indexing**
-   - pgvector (or Qdrant) per-tenant namespace. Two collections (distinct purposes per PRD #17): `doc_chunks` (this week) + `software_catalog` (reserved for Week 3 capability matching).
-   - Legal chunker: section-aware preserving headers (Termination, Escalation, Governing Law); embeddings (e.g., `text-embedding-3-small`); metadata `{vendor_id, document_id, document_type, page, section/clause_type, raw text}`.
+   - pgvector on Cloud SQL (or Vertex AI Vector Search) per-tenant namespace. Two collections (distinct purposes per PRD #17): `doc_chunks` (this week) + `software_catalog` (reserved for Week 3 capability matching).
+   - Legal chunker: section-aware preserving headers (Termination, Escalation, Governing Law); embeddings; metadata `{vendor_id, document_id, document_type, page, section/clause_type, raw text}`.
    - Unified hybrid search: dense vector similarity + Postgres full-text (tsvector/BM25); vendor/doc/date filters; no cross-tenant retrieval.
 
 ### Week 2 Acceptance
@@ -178,7 +179,7 @@
 ### Backend & Data
 
 1. **Agentic Reasoning Service (MCP Host/Client)**
-   - Owns conversation state, intent/planning, tool selection, orchestration, streaming, synthesis (Answer + Evidence + Proposed Actions). No direct Postgres/vector/S3/ERP/Slack access.
+   - Owns conversation state, intent/planning, tool selection, orchestration, streaming, synthesis (Answer + Evidence + Proposed Actions). No direct Postgres/vector/GCS/ERP/Slack access.
    - Flow: User Q → Intent/Planning → MCP-1/MCP-2/MCP-3 → Evidence → LLM Reasoning → Answer + Evidence. Bounded retries (idempotent only), no fabrication on tool failure, per-tool timeouts + correlation IDs.
 2. **Three Logical MCP Servers** (separate modules/processes; one deployment initially, independently scalable later)
    - **MCP-1 Procurement Intelligence:** `get_vendor`/`contract`/`invoice`/`purchase_order`, `get_vendor_spend`, `get_license_usage`, `find_renewals`, `get_reconciliation_exception`, `compare_invoice_contract`, `get_maverick_spend`, `get_spend_trend`, `calculate_spend`/`savings`. Business-level ops only (no `execute_sql`); pagination/limits; deterministic math; tenant-scoped + authorized.
@@ -192,7 +193,7 @@
    - **Negotiation Copilot synthesis:** aggregates spend, seats, clauses via hybrid RAG into cited brief.
 4. **Savings Ledger:** `core.savings_ledger` for verified/potential; handlers for overbill, seats cut pre-renewal, maverick consolidated.
 5. **DevOps & Production Deployment (single-tenant per customer)**
-   - Docker multi-stage: Next.js standalone, FastAPI core, Agentic Reasoning + MCP ×3, Celery workers (Document OCR, AP Audit, Maverick Jev, Forecasting); docker-compose per-customer → K8s/Helm path; Traefik/Kong/ALB + Auth0 JWT + tenant injection; NGINX/Caddy reverse proxy (`/api/*` → FastAPI, `/` → Next.js) with SSE timeouts; Streamable HTTP for MCP prod, stdio local; managed PG16+pgvector, Redis, S3/GCS bucket with IAM; env + LLM/Jev keys via secrets.
+   - Docker multi-stage: Next.js standalone, FastAPI core, Agentic Reasoning + MCP ×3, Celery workers (Document OCR, AP Audit, Maverick Jev, Forecasting); docker-compose per-customer → GKE/Helm path; Google Cloud Load Balancing + Auth0 JWT + tenant injection; NGINX/Caddy reverse proxy (`/api/*` → FastAPI, `/` → Next.js) with SSE timeouts; Streamable HTTP for MCP prod, stdio local; Cloud SQL PG16+pgvector, Memorystore for Redis, GCS bucket with Cloud IAM; env + LLM/Jev keys via Google Cloud Secret Manager.
    - Seeding & E2E: `alembic upgrade head`, seed 10–15 vendors + contracts/amendments, invoices/POs, Ramp, Okta; verify login via public URL, PDF upload→OCR, exception + investigation, Ask AI streaming + citations, renewal brief, TLS/SSL (Let's Encrypt/Cloudflare).
 
 ### Week 4 Acceptance (per PRD #25.12)

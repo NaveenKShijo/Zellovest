@@ -1,6 +1,6 @@
 """Webhook receivers: Ramp/Okta (HMAC) + Google Drive push notifications.
 
-- Ramp/Okta: HMAC verify -> enqueue -> ack. Zero data extraction and no S3
+- Ramp/Okta: HMAC verify -> enqueue -> ack. Zero data extraction and no GCS
   I/O on the control plane.
 - Google Drive: ``changes.watch`` callback. Verifies ``X-Goog-*`` headers,
   acks ``sync`` handshakes immediately, resolves the owning tenant from the

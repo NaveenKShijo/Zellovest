@@ -94,9 +94,8 @@ def create_app(settings=None) -> FastAPI:
     return app
 
 
-app = None
 try:
     app = create_app()
 except Exception:
-    # Import-time env may be absent (docs/tests); create_app() is canonical.
-    app = None  # type: ignore[assignment]
+    logger.exception("procurement_core_init_failed")
+    raise

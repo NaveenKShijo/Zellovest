@@ -201,11 +201,9 @@ Use document-understanding models that examine the document and map extracted in
 
 ### Scanned/image-based documents
 
-Use OCR/document intelligence services such as:
+Use OCR/document intelligence services on Google Cloud Platform:
 
 * Google Cloud Document AI
-* AWS Textract
-* Azure AI Document Intelligence
 
 ---
 
@@ -1215,7 +1213,7 @@ The initial product architecture defines **three logical MCP servers**:
               └─────┬──────┘  └─────┬──────┘  └─────┬──────┘
                     │                │                │
                     ▼                ▼                ▼
-              PostgreSQL       Vector DB / S3     ERP / Slack /
+              PostgreSQL       Vector DB / GCS    ERP / Slack /
               + analytics      + provenance       Email / Actions
 ```
 
@@ -1307,7 +1305,7 @@ Procurement investigations depend on contracts, amendments, invoices, purchase o
 ### Primary data dependencies
 
 ```text
-Object Storage (S3/GCS/Azure Blob)
+Object Storage (GCS)
              │
              ▼
      Document Processing
@@ -1671,8 +1669,8 @@ A possible architecture is:
                     │       Analytics Knowledge Systems
                     │          │        │        │
                     │          ▼        ▼        ▼
-                    │       Postgres  Vector   ERP/Slack/
-                    │                  DB/S3    Email/etc.
+                     │       Postgres  Vector   ERP/Slack/
+                     │                  DB/GCS   Email/etc.
                     │
                     └──────────┬────────────────────────────┐
                                ▼                            │
@@ -1699,12 +1697,12 @@ Potential backend technology choices:
 * React / Next.js for frontend.
 * Python / FastAPI for backend APIs and the Agentic Reasoning Service.
 * Python MCP SDK or another official MCP SDK for MCP client/server implementation.
-* Dedicated PostgreSQL instance as operational/OLTP database.
-* Dedicated Redis for caching and asynchronous queues.
+* Dedicated PostgreSQL instance on Google Cloud SQL as operational/OLTP database.
+* Dedicated Memorystore for Redis for caching and asynchronous queues.
 * Celery or equivalent workers for background processing.
-* Dedicated S3/GCS/Azure Blob bucket for source documents.
-* Vector database or PostgreSQL with `pgvector` for semantic retrieval.
-* Document AI/OCR services for difficult documents.
+* Dedicated GCS bucket for source documents.
+* Vector database via pgvector on Cloud SQL or Vertex AI Vector Search for semantic retrieval.
+* Google Cloud Document AI / OCR services for difficult documents.
 * LLMs for extraction, reasoning, summarization, and agent workflows.
 
 # 27.5 Microservice Architecture and System Design
@@ -1718,12 +1716,12 @@ The platform follows a **single-tenant, service-oriented architecture** with cle
 | Layer | Components | Technology |
 |-------|------------|------------|
 | **Client & Presentation** | Next.js 14+ / React Frontend | Procurement dashboards, AP Audit UI, Ask AI chat, Negotiation workspace |
-| **API Gateway** | Traefik / Kong / AWS ALB + Auth0 | TLS termination, JWT auth, tenant injection, rate limiting |
+| **API Gateway** | Google Cloud Load Balancing + Auth0 | TLS termination, JWT auth, tenant injection, rate limiting |
 | **Core Services (3)** | Procurement Core, Agentic Reasoning, Ingestion API | FastAPI |
-| **Message Broker** | Apache Kafka / Redis | Event-driven communication |
+| **Message Broker** | Google Cloud Pub/Sub / Memorystore for Redis | Event-driven communication |
 | **Workers & Engines (4)** | Document OCR, AP Audit, Maverick Spend (Jev AI), Seat Forecasting | Celery, GPU pods, LightGBM, Jev AI API |
-| **Data Persistence** | Object Storage, PostgreSQL, Vector DB | S3/GCS, PostgreSQL 16 + RLS, pgvector/Pinecone/Qdrant |
-| **Deployment** | Docker Compose → Kubernetes | Helm/Terraform, per-customer isolation |
+| **Data Persistence** | Object Storage, PostgreSQL, Vector DB | GCS, Cloud SQL for PostgreSQL 16, pgvector / Vertex AI Vector Search |
+| **Deployment** | Docker Compose → GKE | Helm/Terraform, per-customer isolation |
 
 ---
 
@@ -1740,16 +1738,16 @@ The platform follows a **single-tenant, service-oriented architecture** with cle
 - **Dependencies**: Three MCP servers (Procurement Intelligence, Document Knowledge, External Systems)
 
 ### Service 3: Ingestion & Document Ingress API (FastAPI)
-- **Responsibilities**: Ramp/Okta webhook handlers, cloud drive connectors (Google Drive, S3, Dropbox), file upload staging, initial document triage
+- **Responsibilities**: Ramp/Okta webhook handlers, cloud drive connectors (Google Drive, GCS, Dropbox), file upload staging, initial document triage
 - **Key Data Stores**: Object Storage, Message broker
-- **Dependencies**: Ramp API, Okta API, Google Drive/S3/Dropbox APIs
+- **Dependencies**: Ramp API, Okta API, Google Drive/GCS/Dropbox APIs
 
 ---
 
 ## 27.5.3 Workers, Engines & ML Pipelines
 
 ### Worker 4: Document OCR & Extraction Worker (Celery / GPU Pods)
-- **Responsibilities**: Digital vs scanned triage, Document AI/OCR outsourcing (Google Cloud AI, AWS Textract, Azure AI), schema extraction, provenance tagging
+- **Responsibilities**: Digital vs scanned triage, Document AI/OCR via Google Cloud Document AI, schema extraction, provenance tagging
 - **Key Data Stores**: Object Storage, PostgreSQL (artifacts metadata)
 - **Output**: Document chunks + vectors → Vector DB
 
@@ -1772,19 +1770,19 @@ The platform follows a **single-tenant, service-oriented architecture** with cle
 
 ## 27.5.4 Data Persistence & Storage Tier
 
-### Object Storage (S3 / GCS / Azure Blob)
+### Object Storage (GCS)
 - Raw invoices & contracts (PDFs)
 - PDF page rasters
 - Extracted OCR artifacts
 - Model weights (artifacts)
 
-### Primary Operational Database (PostgreSQL 16 + RLS)
+### Primary Operational Database (Cloud SQL for PostgreSQL 16)
 - Tenants, vendors, users
 - Versioned contracts & amendments
 - Invoices & transactions
 - Discrepancy & audit logs
 
-### Vector Database (pgvector / Pinecone / Qdrant)
+### Vector Database (pgvector on Cloud SQL / Vertex AI Vector Search)
 - Contract chunks + bounding box provenance
 - Approved SaaS capability embeddings
 - Vendor policy embeddings
@@ -1798,11 +1796,11 @@ All services run as separate containers within one deployment:
 - Procurement Core Service
 - Agentic Reasoning & Ask AI Service
 - Ingestion & Document Ingress API
-- Message Broker (Redis)
+- Message Broker (Memorystore for Redis)
 - Workers (Celery + GPU pods for OCR)
-- Object Storage (MinIO / S3-compatible embedded)
+- Object Storage (GCS emulator for local dev, GCS bucket per customer in cloud)
 
-### Scaled Deployment (Kubernetes per Customer)
+### Scaled Deployment (GKE per Customer)
 Services independently scaled:
 - Procurement Core Service (horizontal pods)
 - Agentic Reasoning Service (horizontal pods, LLM host scaling)
@@ -1813,13 +1811,13 @@ Services independently scaled:
 ### Infrastructure Components
 | Component | Technology |
 |-----------|------------|
-| Orchestration | Docker Compose (initial) / Kubernetes (scaled) |
+| Orchestration | Docker Compose (initial) / GKE (scaled) |
 | Service Discovery | Environment variables / Kubernetes DNS |
-| Secret Management | Kubernetes Secrets / HashiCorp Vault per customer |
-| Logging | Structured JSON logs (JSONL) → Elastic / Loki |
+| Secret Management | Google Cloud Secret Manager per customer |
+| Logging | Structured JSON logs (JSONL) → Google Cloud Logging |
 | Monitoring | Prometheus + Grafana per customer deployment |
 | Health Checks | Liveness/Readiness probes per service |
-| Backup | PostgreSQL snapshots, Object Storage versioning |
+| Backup | Cloud SQL snapshots, GCS versioning |
 
 ---
 
@@ -1889,7 +1887,7 @@ Security and isolation guarantees:
 
 1. **Physical and Logical Isolation:** No customer data is co-mingled in shared tables or shared vector databases. This eliminates risks associated with cross-tenant data leaks or missing where-clause vulnerabilities.
 2. **Access Control (RBAC):** Within the organization, tools and APIs enforce granular user roles (e.g., `user_id`, `role`, `departmental_permissions`).
-3. **Dedicated Encryption & Keys:** Each instance can use organization-managed encryption keys (KMS) for data at rest (PostgreSQL, Object Storage, Vector Store) and TLS for data in transit.
+3. **Dedicated Encryption & Keys:** Each instance can use organization-managed encryption keys (Google Cloud KMS) for data at rest (Cloud SQL, GCS, Vector Store) and TLS for data in transit.
 4. **Tool Enforcement:** The LLM is never trusted to enforce security or authorization. All data access is strictly governed by the underlying API, MCP server, and database access policies.
 5. **MCP Server Isolation:** Each MCP server runs with a narrow service identity and only the minimum data-source permissions required for its declared tools.
 6. **Tenant Context Propagation:** Every MCP request must carry an authenticated, server-verifiable tenant/deployment context. The MCP server must not rely on the LLM to supply or preserve tenant boundaries correctly.
@@ -1910,10 +1908,10 @@ Even though V1 `tenant_id` = deployment/instance ID with no tenant switching and
 
 1. **DB:** every operational table carries non-null `tenant_id TEXT`; composite indexes lead with `tenant_id` (e.g. `(tenant_id, vendor_id)`); reserve nullable `org_id UUID` for future use only; never rely on a global unique constraint where `(tenant_id, key)` is correct (e.g. `(tenant_id, provider)` for integrations).
 2. **Auth/API:** never trust client-supplied `tenant_id` query/body params for authorization; JWT `sub` = tenant/instance ID in V1; propagate server-verified tenant context through API → service → worker → MCP; design schemas so `sub=user_id` + `org_id` can replace it in V2 without endpoint renames.
-3. **Object storage:** S3/GCS keys MUST embed tenant (`{tenant_id}/{entity}/{uuid}/{file}`); presigned URLs scoped to tenant prefix.
+3. **Object storage:** GCS keys MUST embed tenant (`{tenant_id}/{entity}/{uuid}/{file}`); signed URLs scoped to tenant prefix.
 4. **Vector store:** every chunk/embedding carries `tenant_id` metadata; all retrieval filters by tenant even when the index is currently dedicated.
 5. **Queues/workers/Redis:** every Celery task signature carries `tenant_id` first; Redis keys namespaced (`{tenant_id}:oauth:state:{s}`, `{tenant_id}:drive:watch:{c}`); idempotency keys scoped as `{tenant_id}:{event_id}`; per-tenant rate limits/quotas assumed.
-6. **Integrations:** one `tenant_integrations` row per `(tenant_id, provider)`; per-tenant OAuth tokens, webhook secrets, sync cursors, Drive watch channels; single global `CREDENTIALS_ENCRYPTION_KEY` is V1-only — code MUST support per-tenant KMS key ID lookup.
+6. **Integrations:** one `tenant_integrations` row per `(tenant_id, provider)`; per-tenant OAuth tokens, webhook secrets, sync cursors, Drive watch channels; single global `CREDENTIALS_ENCRYPTION_KEY` is V1-only — code MUST support per-tenant Cloud KMS key ID lookup.
 7. **MCP:** all three MCP servers are tenant-scoped; LLM never supplies tenant; every tool validates tenant context and logs `tenant_id, actor, tool, auth_result, latency, correlation_id`.
 8. **Observability/billing/lifecycle:** structured logs, metrics, audit events, and usage metering (doc-AI pages, LLM tokens, storage) include `tenant_id`; tenant delete/export MUST be implementable as drop-database + delete-bucket/prefix + delete-namespace.
 9. **Frontend:** no cross-tenant state in caches/stores; tenant is a deployment-level setting, not a user-selectable switch in V1 — keep it behind a single `tenantId` config so a V2 switcher can be added later.
@@ -2137,7 +2135,7 @@ The following requirements summarize the product capabilities with the MCP layer
 
 * Integrate Ramp Developer API for corporate card transactions.
 * Integrate Okta for application/license usage data.
-* Integrate Google Drive, S3, Dropbox, and manual upload for procurement documents.
+* Integrate Google Drive, GCS, Dropbox, and manual upload for procurement documents.
 * Normalize incoming data into the canonical model for the dedicated customer deployment.
 * Support asynchronous ingestion, incremental synchronization, and webhooks where available.
 

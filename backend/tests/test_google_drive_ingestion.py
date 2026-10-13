@@ -21,7 +21,7 @@ os.environ.setdefault("RAMP_CLIENT_ID", "test-id")
 os.environ.setdefault("RAMP_CLIENT_SECRET", "test-secret")
 os.environ.setdefault("RAMP_WEBHOOK_SECRET", "whsec-test")
 os.environ.setdefault("CREDENTIALS_ENCRYPTION_KEY", base64.b64encode(os.urandom(32)).decode())
-os.environ.setdefault("S3_RAW_BUCKET", "tenant-bucket")
+os.environ.setdefault("GCS_RAW_BUCKET", "tenant-bucket")
 os.environ.setdefault("JWT_SECRET_KEY", "test-jwt-secret")
 os.environ.setdefault("GOOGLE_DRIVE_WEBHOOK_TOKEN", "drive-chan-secret")
 
@@ -619,10 +619,15 @@ def test_connectors_routes_removed(client):
 
 
 def test_uploads_fallback_routes_intact(client):
-    """Manual upload fallback endpoints remain registered."""
-    routes = {r.path for r in client.app.routes}
-    assert "/api/v1/uploads" in routes
-    assert "/api/v1/uploads/{upload_id}" in routes
-    resp = client.get("/api/v1/uploads?tenant_id=t1")
-    assert resp.status_code == 200
-    assert resp.json()["uploads"] == []
+    """Manual upload init endpoint is registered and JWT-guarded."""
+    # NOTE: this FastAPI version keeps included routers lazy in
+    # ``app.routes`` (_IncludedRouter has no .path), so probe the
+    # OpenAPI schema instead of the route list.
+    spec = client.get("/openapi.json").json()
+    assert "/api/v1/uploads/init" in spec["paths"]
+    assert "post" in spec["paths"]["/api/v1/uploads/init"]
+    resp = client.post(
+        "/api/v1/uploads/init",
+        json={"filename": "a.pdf", "mime_type": "application/pdf", "size_bytes": 10},
+    )
+    assert resp.status_code == 401

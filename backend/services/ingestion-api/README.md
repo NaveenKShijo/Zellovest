@@ -19,7 +19,7 @@ Notes:
 - Drive callback creates the `changes.watch` push channel best-effort (failures only warn; pull sync keeps working). Watch entries expire — re-running OAuth (or a renewal job) re-establishes the channel.
 - `POST /sync/google-drive` writes a PENDING checkpoint (`entity='documents'`, cursor = explicit `cursor` or latest SUCCESS cursor; `full_sync` re-seeds `startPageToken`) and enqueues Celery task `zellovest.workers.tasks.ingestion.sync_drive_changes` (queue `ingestion_tasks`; worker pages Drive and fans files out to `document_tasks` for OCR & extraction).
 - Okta is webhook-only (`POST /api/v1/webhooks/okta`); no pull-sync endpoint.
-- Manual fallback upload (staging to S3/MinIO): `POST /api/v1/uploads`, `GET /uploads`, `GET /uploads/{id}`, `POST /uploads/{id}/process`.
+- Manual fallback upload (staging to GCS): `POST /api/v1/uploads`, `GET /uploads`, `GET /uploads/{id}`, `POST /uploads/{id}/process`.
 
 ## Env
 
@@ -27,4 +27,4 @@ Notes:
 - `GOOGLE_DRIVE_AUTH_URL` (default `https://accounts.google.com/o/oauth2/v2/auth`) / `GOOGLE_DRIVE_TOKEN_URL` (default `https://oauth2.googleapis.com/token`) / `GOOGLE_DRIVE_REDIRECT_URI` — must end in `/api/v1/integrations/google-drive/callback`.
 - `GOOGLE_DRIVE_WEBHOOK_TOKEN` — shared secret echoed as the watch `token`, verified on `X-Goog-Channel-Token`.
 - `GOOGLE_DRIVE_WEBHOOK_CALLBACK_URL` — public `https://…/api/v1/webhooks/google-drive` callback for `changes.watch`.
-- `S3_RAW_BUCKET` / `S3_ENDPOINT_URL` — staging bucket for manual uploads (MinIO in dev).
+- `GCS_RAW_BUCKET` / `GOOGLE_CLOUD_PROJECT` — staging bucket for manual uploads (GCS emulator in dev via `STORAGE_EMULATOR_HOST`).

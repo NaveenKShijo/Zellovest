@@ -160,7 +160,91 @@ export function useApi() {
         return upload<Document>('/documents/upload', formData, onProgress);
       },
     },
+    // Direct-to-GCS manual upload leases (ingestion gateway, /api/v1).
+    uploads: {
+      init: (data: {
+        filename: string;
+        mime_type: string;
+        size_bytes: number;
+        document_type: string;
+        vendor_id?: string | null;
+      }) => fetch('/api/v1/uploads/init', {
+        method: 'POST',
+        headers: getAuthHeaders(accessToken),
+        body: JSON.stringify({ ...data, vendor_id: data.vendor_id ?? null }),
+      }).then(handleResponse<UploadInitResponse>),
+      putBytes: (
+        signedUrl: string,
+        file: File,
+        contentType: string,
+        onProgress?: (progress: number) => void
+      ) => new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('PUT', signedUrl);
+        xhr.setRequestHeader('Content-Type', contentType || 'application/octet-stream');
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable && onProgress) {
+            onProgress(Math.round((event.loaded / event.total) * 100));
+          }
+        };
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) resolve();
+          else reject(new Error(`GCS upload failed: ${xhr.status}`));
+        };
+        xhr.onerror = () => reject(new Error('Network error during GCS upload'));
+        xhr.send(file);
+      }),
+      complete: (uploadId: string) => fetch(`/api/v1/uploads/${uploadId}/complete`, {
+        method: 'POST',
+        headers: getAuthHeaders(accessToken),
+      }).then(handleResponse<UploadCompleteResponse>),
+      get: (uploadId: string) => request<UploadLease>(`/v1/uploads/${uploadId}`),
+      list: (status?: string, page = 1, pageSize = 20) => {
+        const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+        if (status) params.set('status', status);
+        return request<UploadLeaseList>(`/v1/uploads?${params.toString()}`);
+      },
+      remove: (uploadId: string) => request<void>(`/v1/uploads/${uploadId}`, { method: 'DELETE' }),
+    },
   };
+}
+
+export interface UploadInitResponse {
+  upload_id: string;
+  gcs_key: string;
+  signed_url: string;
+  expires_at: string;
+}
+
+export interface UploadCompleteResponse {
+  upload_id: string;
+  gcs_key: string;
+  status: string;
+  size_actual: number;
+  task_id: string | null;
+}
+
+export interface UploadLease {
+  id: string;
+  tenant_id: string;
+  filename: string;
+  document_type: string;
+  status: string;
+  gcs_key: string;
+  size_expected: number;
+  mime_type: string;
+  vendor_id: string | null;
+  error: string | null;
+  expires_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UploadLeaseList {
+  uploads: UploadLease[];
+  total: number;
+  page: number;
+  page_size: number;
 }
 
 export type ApiClient = ReturnType<typeof useApi>;

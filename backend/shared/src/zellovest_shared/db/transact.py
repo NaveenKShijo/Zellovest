@@ -103,11 +103,11 @@ class TxnSource(str, enum.Enum):
 
 
 class Document(Base):
-    """Procurement document metadata (bytes live in S3/GCS, vectors outside)."""
+    """Procurement document metadata (bytes live in GCS, vectors outside)."""
 
     __tablename__ = "documents"
     __table_args__ = (
-        UniqueConstraint("s3_key", name="uq_documents_s3_key"),
+        UniqueConstraint("gcs_key", name="uq_documents_gcs_key"),
         Index("ix_docs_tenant_vendor_type", "tenant_id", "vendor_id", "document_type"),
     )
 
@@ -119,7 +119,7 @@ class Document(Base):
     upload_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("uploads.id"), nullable=True
     )
-    s3_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    gcs_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     document_type: Mapped[DocType] = mapped_column(
         Enum(DocType, name="doc_type", values_callable=lambda x: [e.value for e in x]),
@@ -475,7 +475,7 @@ class CardTransaction(Base):
         default=TxnSource.RAMP,
     )
     external_id: Mapped[str] = mapped_column(Text, nullable=False)
-    raw_s3_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_gcs_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

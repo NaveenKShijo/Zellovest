@@ -6,15 +6,22 @@ uniqueness guards against duplicate rows within the instance.
 """
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Absolute path to backend/.env so settings load regardless of the
+# process working directory (uvicorn/pytest CWD varies between runs).
+_BACKEND_ENV_FILE = Path(__file__).resolve().parents[3] / ".env"
 
 
 class Settings(BaseSettings):
     """Environment-driven configuration for all microservices."""
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=(str(_BACKEND_ENV_FILE), ".env"), extra="ignore"
+    )
 
     # Environment
     environment: str = Field(default="local")
@@ -53,14 +60,9 @@ class Settings(BaseSettings):
     # OAuth state TTL (seconds)
     oauth_state_ttl_seconds: int = Field(default=600, alias="OAUTH_STATE_TTL_SECONDS")
 
-    # Object storage — S3 bronze lake (legacy, kept for backward compat
-    # with workers/tests referencing `settings.s3_raw_bucket`).
-    s3_raw_bucket: str = Field(default="tenant-bucket", alias="S3_RAW_BUCKET")
-    s3_endpoint_url: str | None = Field(default=None, alias="S3_ENDPOINT_URL")
-    aws_region: str = Field(default="us-east-1", alias="AWS_REGION")
-
-    # Object storage — GCS raw bucket (signed-URL direct upload path).
-    gcs_raw_bucket: str = Field(default="", alias="GCS_RAW_BUCKET")
+    # Object storage — GCS raw bucket (bronze lake). GCP-only: all
+    # cloud storage is Google Cloud Storage.
+    gcs_raw_bucket: str = Field(alias="GCS_RAW_BUCKET")
     google_cloud_project: str = Field(default="", alias="GOOGLE_CLOUD_PROJECT")
     gcs_signed_url_expiry_secs: int = Field(
         default=900, alias="GCS_SIGNED_URL_EXPIRY_SECS"
@@ -71,6 +73,11 @@ class Settings(BaseSettings):
     google_application_credentials: str | None = Field(
         default=None, alias="GOOGLE_APPLICATION_CREDENTIALS"
     )
+
+    @property
+    def raw_bucket(self) -> str:
+        """Return the GCS raw bucket, falling back to the legacy S3 alias."""
+        return self.gcs_raw_bucket or self.s3_raw_bucket
 
     # Vector DB
     vector_db_url: str = Field(default="", alias="VECTOR_DB_URL")

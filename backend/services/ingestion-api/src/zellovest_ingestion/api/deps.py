@@ -8,6 +8,12 @@ from zellovest_shared.db.models import User
 from zellovest_shared.db.session import async_session_scope
 from zellovest_shared.security.auth import get_user_by_id
 from zellovest_shared.security.jwt import decode_token
+from zellovest_shared.workers.gcs_client import (
+    GcsObjectReader,
+    GcsSigner,
+    GcsStorageReader,
+    GcsStorageSigner,
+)
 from zellovest_ingestion.config import IngestionAPISettings, get_ingestion_api_settings
 
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -33,6 +39,20 @@ async def get_db_session(request: Request):
     settings = get_app_settings(request)
     async for session in async_session_scope(settings.async_database_url):
         yield session
+
+
+def get_gcs_signer_dep(
+    settings: IngestionAPISettings = Depends(get_app_settings),
+) -> GcsSigner:
+    """Return the GCS V4 PUT signer (override with FakeGcsSigner in tests)."""
+    return GcsStorageSigner(project=settings.google_cloud_project)
+
+
+def get_gcs_reader_dep(
+    settings: IngestionAPISettings = Depends(get_app_settings),
+) -> GcsObjectReader:
+    """Return the GCS object reader (override with FakeGcsReader in tests)."""
+    return GcsStorageReader(project=settings.google_cloud_project)
 
 
 async def get_current_user(

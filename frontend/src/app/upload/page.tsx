@@ -4,10 +4,16 @@ import React from 'react';
 import { UploadProvider, useUpload } from '@/components/upload/UploadProvider';
 import { DropZone } from '@/components/upload/DropZone';
 import { UploadQueue } from '@/components/upload/UploadQueue';
+import { useApi } from '@/lib/api';
 import { DocumentType } from '@/types';
+
+// Backend allows `policy`; the UI type calls it `vendor_policy`.
+const toBackendDocType = (t: DocumentType): string =>
+  t === 'vendor_policy' ? 'policy' : t;
 
 function UploadPageContent() {
   const { files, addFile, removeFile, retryFile, clearCompleted, updateFileStatus } = useUpload();
+  const api = useApi();
   const [documentType, setDocumentType] = useState<DocumentType>('contract');
   const [isUploading, setIsUploading] = useState(false);
 
@@ -17,28 +23,46 @@ function UploadPageContent() {
     });
   };
 
+  // Real three-step flow per file: init lease → PUT bytes to the
+  // signed URL → complete (verify + enqueue worker). Retry re-queues.
   const processQueue = async () => {
     const queuedFiles = files.filter(f => f.status === 'queued');
-    if (queuedFiles.length === 0) return;
+    if (queuedFiles.length === 0 || isUploading) return;
 
     setIsUploading(true);
 
-    for (const file of queuedFiles) {
-      updateFileStatus(file.id, 'uploading', 0);
+    for (const item of queuedFiles) {
+      try {
+        // 1. Mint the signed-URL lease (metadata only, no bytes).
+        updateFileStatus(item.id, 'uploading', 0);
+        const lease = await api.uploads.init({
+          filename: item.name,
+          mime_type: item.type || 'application/octet-stream',
+          size_bytes: item.size,
+          document_type: toBackendDocType(item.documentType),
+          vendor_id: item.vendorId ?? null,
+        });
 
-      // Simulate upload progress
-      const progressSteps = [10, 25, 45, 65, 85, 100];
-      for (const progress of progressSteps) {
-        await new Promise(r => setTimeout(r, 200));
-        updateFileStatus(file.id, 'uploading', progress);
+        // 2. PUT bytes directly to GCS (pinned content type).
+        await api.uploads.putBytes(
+          lease.signed_url,
+          item.file,
+          item.type,
+          (progress) => updateFileStatus(item.id, 'uploading', progress)
+        );
+
+        // 3. Complete: backend verifies bytes + enqueues extraction.
+        updateFileStatus(item.id, 'processing', 100);
+        const done = await api.uploads.complete(lease.upload_id);
+        updateFileStatus(item.id, 'completed', 100, undefined, done.upload_id);
+      } catch (err) {
+        updateFileStatus(
+          item.id,
+          'error',
+          undefined,
+          err instanceof Error ? err.message : 'Upload failed'
+        );
       }
-
-      // Simulate processing
-      updateFileStatus(file.id, 'processing');
-      await new Promise(r => setTimeout(r, 800));
-
-      // Complete
-      updateFileStatus(file.id, 'completed', 100, undefined, `doc_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`);
     }
 
     setIsUploading(false);

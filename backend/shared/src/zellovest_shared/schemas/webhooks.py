@@ -91,7 +91,7 @@ class OktaEventHookEnvelope(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 class OktaSignal(BaseModel):
-    """Normalized output consumed by M6/M2 — worker/S3 never sees raw LogEvent."""
+    """Normalized output consumed by M6/M2 — worker/GCS never sees raw LogEvent."""
     signal: str  # USER_LIFECYCLE | USER_LOGIN | APP_ASSIGNMENT | GROUP_MEMBERSHIP | UNSUPPORTED
     raw_event_type: str
     event_uuid: str

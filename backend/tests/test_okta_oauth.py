@@ -19,7 +19,7 @@ os.environ.setdefault("RAMP_CLIENT_ID", "test-id")
 os.environ.setdefault("RAMP_CLIENT_SECRET", "test-secret")
 os.environ.setdefault("RAMP_WEBHOOK_SECRET", "whsec-test")
 os.environ.setdefault("CREDENTIALS_ENCRYPTION_KEY", base64.b64encode(os.urandom(32)).decode())
-os.environ.setdefault("S3_RAW_BUCKET", "tenant-bucket")
+os.environ.setdefault("GCS_RAW_BUCKET", "tenant-bucket")
 os.environ.setdefault("JWT_SECRET_KEY", "test-jwt-secret")
 os.environ.setdefault("FRONTEND_URL", "http://localhost:3000")
 

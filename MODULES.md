@@ -69,7 +69,7 @@ Solves **scattered source systems**: pulls corporate card activity, SaaS/identit
 - `/upload` — drag-and-drop multi-file upload (`DropZone`), upload queue with progress/status (`UploadQueue`, `UploadProvider`).
 
 **Backend endpoints** (ingestion-api, FastAPI :8003)
-- `POST /api/v1/uploads`, `GET /uploads`, `GET /uploads/{id}`, `POST /uploads/{id}/process`, `DELETE /uploads/{id}` — manual fallback: drag-and-drop staging to object storage (S3/MinIO), MIME + size validation.
+- `POST /api/v1/uploads`, `GET /uploads`, `GET /uploads/{id}`, `POST /uploads/{id}/process`, `DELETE /uploads/{id}` — manual fallback: drag-and-drop staging to object storage (GCS), MIME + size validation.
 - `POST /api/v1/webhooks/ramp`, `POST /api/v1/webhooks/okta` — signed webhook ingress.
 - `POST /api/v1/webhooks/google-drive` — Drive push callback (`changes.watch`): verifies `X-Goog-Channel-ID` / `X-Goog-Channel-Token` / `X-Goog-Resource-State`; `sync` acked immediately, change events resolve the tenant from the watch mapping and enqueue a background pull (200 OK < 500ms).
 - `POST /api/v1/sync/ramp` — Ramp pull sync (`card_transactions`, `bills` only). `POST /api/v1/sync/google-drive` — Drive pull sync (`changes.list` from checkpoint cursor; worker fans files out to `document_tasks`). Okta has no pull-sync endpoint (webhook-only).
@@ -102,13 +102,13 @@ Solves **document chaos and lost contractual truth**: routes every document thro
 - HITL review interface — exception drawer for confidence < 0.80, editable commercial terms, "Verify & Commit to Ledger".
 
 **Backend endpoints**
-- Document OCR worker (Celery, queue `document_tasks`): `triage_document` → Document Router (pdfplumber deterministic vs Document AI/Textract/Azure DI + LLM) → classifier (invoice / purchase_order / contract / other) → schema mapping → validation branch → provenance tagging.
+- Document OCR worker (Celery, queue `document_tasks`): `triage_document` → Document Router (pdfplumber deterministic vs Google Cloud Document AI + LLM) → classifier (invoice / purchase_order / contract / other) → schema mapping → validation branch → provenance tagging.
 - RAG endpoints (agentic-reasoning :8002): `POST /api/v1/rag/search`, `POST /rag/upload`, `GET /rag/documents/{id}/chunks`, `GET /rag/documents/{id}/pages/{page}`.
 - Versioned contract ledger: `contracts.terms_versioned` (product, price, effective_from/to, currency, UoM, qty limits, discounts, taxes, payment/freight terms) + amendment lineage.
 
 **ML/AI / AI workflows**
 - Document classifier + LLM/schema extraction for variable layouts.
-- Legal-aware chunker (section-preserving) → embeddings (e.g., text-embedding-3-small) → pgvector/Qdrant `doc_chunks` collection.
+- Legal-aware chunker (section-preserving) → embeddings → pgvector on Cloud SQL / Vertex AI Vector Search `doc_chunks` collection.
 - Hybrid search: dense vector similarity + Postgres full-text, vendor/doc/date filters, tenant-scoped (prepares MCP-2).
 
 ### Inputs & Outputs
@@ -298,7 +298,7 @@ Solves **proving procurement value and closing the loop**: converts detections i
 ## M10 — Deployment, Security & Observability
 
 ### Module Name & Objective
-Solves **single-tenant delivery and enterprise trust**: packages every module into an isolated per-customer deployment (dedicated Postgres, Redis, S3 bucket, vector namespace) with TLS, JWT auth, secrets, and auditability for 500–1,000 active users (PRD #27.5, #28, A.6).
+Solves **single-tenant delivery and enterprise trust**: packages every module into an isolated per-customer deployment (dedicated Cloud SQL for PostgreSQL, Memorystore for Redis, GCS bucket, vector namespace) with TLS, JWT auth, secrets, and auditability for 500–1,000 active users (PRD #27.5, #28, A.6).
 
 ### Components
 **Frontend screens**
@@ -306,9 +306,9 @@ Solves **single-tenant delivery and enterprise trust**: packages every module in
 - `/integrations` — connection state surfaces (shares with M2).
 
 **Backend / DevOps**
-- Docker multi-stage images: Next.js standalone, FastAPI core (3 services), Agentic Reasoning + MCP ×3, Celery workers (Document OCR, AP Audit, Maverick Jev, Forecasting); `docker-compose.microservices.yml` per-customer → K8s/Helm path.
-- Traefik/Kong/ALB + Auth0 JWT + tenant injection; NGINX/Caddy reverse proxy (`/api/*` → FastAPI, `/` → Next.js) with SSE timeouts; Streamable HTTP for MCP prod, stdio local.
-- Managed PostgreSQL 16 + pgvector, Redis, S3/GCS bucket with IAM; env + LLM/Jev keys via secrets; structured JSON logging (`zellovest_shared.logging_conf`), Prometheus/Grafana, liveness/readiness probes, backups.
+- Docker multi-stage images: Next.js standalone, FastAPI core (3 services), Agentic Reasoning + MCP ×3, Celery workers (Document OCR, AP Audit, Maverick Jev, Forecasting); `docker-compose.microservices.yml` per-customer → GKE/Helm path.
+- Google Cloud Load Balancing + Auth0 JWT + tenant injection; NGINX/Caddy reverse proxy (`/api/*` → FastAPI, `/` → Next.js) with SSE timeouts; Streamable HTTP for MCP prod, stdio local.
+- Cloud SQL for PostgreSQL 16 + pgvector, Memorystore for Redis, GCS bucket with Cloud IAM; env + LLM/Jev keys via Google Cloud Secret Manager; structured JSON logging (`zellovest_shared.logging_conf`), Prometheus/Grafana, liveness/readiness probes, backups.
 - Seeding & E2E: `alembic upgrade head`, seed 10–15 vendors + contracts/amendments + invoices/POs + Ramp + Okta; verify login, upload→OCR, exception→investigation, Ask AI streaming, renewal brief, TLS (Let's Encrypt/Cloudflare).
 
 **ML/AI workflows** — none (platform concern).

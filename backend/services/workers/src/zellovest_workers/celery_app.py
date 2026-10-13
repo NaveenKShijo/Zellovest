@@ -37,12 +37,21 @@ def make_celery(broker_url: str = "redis://localhost:6379/0") -> Celery:
         ),
         task_routes={
             "zellovest.workers.tasks.ingestion.*": {"queue": QUEUE_INGESTION},
+            "zellovest.workers.tasks.document_ocr.stage_document": {"queue": QUEUE_INGESTION},
             "zellovest.workers.tasks.document_ocr.*": {"queue": QUEUE_DOCUMENTS},
             "zellovest.workers.tasks.ap_audit.*": {"queue": QUEUE_ANALYTICS},
             "zellovest.workers.tasks.maverick_spend.*": {"queue": QUEUE_ANALYTICS},
             "zellovest.workers.tasks.zombie_license.*": {"queue": QUEUE_ANALYTICS},
+            "zellovest.workers.tasks.maintenance.*": {"queue": QUEUE_INGESTION},
         },
         task_default_queue=QUEUE_INGESTION,
+        beat_schedule={
+            "purge-expired-uploads": {
+                "task": "zellovest.workers.tasks.maintenance.purge_expired_uploads",
+                "schedule": 900.0,
+                "options": {"queue": QUEUE_INGESTION},
+            },
+        },
     )
     return app
 

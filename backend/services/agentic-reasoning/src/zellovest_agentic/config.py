@@ -1,13 +1,21 @@
 """Agentic Reasoning Service configuration."""
 
+from pathlib import Path
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Absolute path to backend/.env so the service boots regardless of the
+# process working directory (uvicorn CWD varies between local runs).
+_BACKEND_ENV_FILE = Path(__file__).resolve().parents[4] / ".env"
 
 
 class AgenticReasoningSettings(BaseSettings):
     """Settings for Agentic Reasoning & Ask AI Service."""
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=(str(_BACKEND_ENV_FILE), ".env"), extra="ignore"
+    )
 
     # Service
     service_name: str = Field(default="agentic-reasoning", alias="SERVICE_NAME")

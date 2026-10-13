@@ -30,7 +30,6 @@ from zellovest_ingestion.services.sync_dispatcher import (
     dispatch_okta_sync,
     dispatch_sync_task,
 )
-from zellovest_ingestion.services.upload_manager import UploadManager
 
 __all__ = [
     "DEFAULT_DRIVE_SCOPES",
@@ -54,5 +53,4 @@ __all__ = [
     "get_drive_watch",
     "resolve_access_token",
     "resolve_watch_tenant",
-    "UploadManager",
 ]

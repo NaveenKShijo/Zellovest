@@ -9,7 +9,7 @@ Endpoint groups (Ramp, Drive and Okta share the same shape):
   (``POST /sync/google-drive`` via ``changes.list`` cursor) + Okta batch
   (``POST /sync/okta`` for ``users``/``apps``/``logs``; backfill path
   alongside the ``/webhooks/okta`` real-time path).
-- File Upload Staging (manual fallback to S3/MinIO)
+- File Upload Staging (manual fallback to GCS)
 - Document Triage
 """
 
@@ -104,8 +104,8 @@ def create_app(settings=None) -> FastAPI:
     return app
 
 
-app = None
 try:
     app = create_app()
 except Exception:
-    app = None  # type: ignore[assignment]
+    logger.exception("ingestion_api_init_failed")
+    raise

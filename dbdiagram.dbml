@@ -4,7 +4,7 @@
 //     + Okta (apps/users/logs/groups) payloads given 2026-10-09.
 // Rules: tenant_id TEXT on every table, UUID PKs, Ramp/Okta external IDs UNIQUE per tenant,
 // contract versioning (never UPDATE), immutable intelligence outputs.
-// Vectors / S3 bytes OUT of scope — only metadata lives here.
+// Vectors / GCS bytes OUT of scope — only metadata lives here.
 
 Project Zellovest {
   database_type: 'PostgreSQL'
@@ -352,7 +352,7 @@ Table documents {
   tenant_id text [not null]
   vendor_id uuid [note: 'resolved vendor, nullable until classified']
   upload_id uuid
-  s3_key text [not null, note: 'MUST embed tenant: {tenant_id}/... (PRD 28.2)']
+  gcs_key text [not null, note: 'GCS object key. MUST embed tenant: {tenant_id}/... (PRD 28.2)']
   filename varchar(255) [not null]
   document_type doc_type [not null]
   mime_type varchar(128) [not null]
@@ -364,7 +364,7 @@ Table documents {
 
   Indexes {
     (tenant_id, vendor_id, document_type) [name: 'ix_docs_tenant_vendor_type']
-    s3_key [unique]
+    gcs_key [unique]
   }
 }
 
@@ -579,7 +579,7 @@ Table card_transactions {
   recurrence_interval_days integer
   source txn_source [not null, default: 'ramp']
   external_id text [not null, note: 'Ramp transaction id; idempotency key']
-  raw_s3_key text [note: 'bronze JSONL location']
+  raw_gcs_key text [note: 'GCS bronze JSONL location']
   created_at timestamptz [not null, default: `now()`]
 
   Indexes {

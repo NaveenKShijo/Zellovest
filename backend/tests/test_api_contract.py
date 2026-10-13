@@ -21,7 +21,7 @@ os.environ.setdefault("RAMP_API_BASE_URL", "https://api.ramp.com/developer/v1")
 os.environ.setdefault("RAMP_REDIRECT_URI", "http://localhost:8000/callback")
 os.environ.setdefault("RAMP_WEBHOOK_SECRET", "whsec-test")
 os.environ.setdefault("CREDENTIALS_ENCRYPTION_KEY", base64.b64encode(os.urandom(32)).decode())
-os.environ.setdefault("S3_RAW_BUCKET", "tenant-bucket")
+os.environ.setdefault("GCS_RAW_BUCKET", "tenant-bucket")
 os.environ.setdefault("JWT_SECRET_KEY", "test-jwt-secret")
 os.environ.setdefault("FRONTEND_URL", "http://localhost:3000")
 
