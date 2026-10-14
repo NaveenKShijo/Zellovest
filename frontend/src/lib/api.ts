@@ -177,10 +177,12 @@ export function useApi() {
         signedUrl: string,
         file: File,
         contentType: string,
-        onProgress?: (progress: number) => void
+        onProgress?: (progress: number) => void,
+        onXhr?: (xhr: XMLHttpRequest) => void
       ) => new Promise<void>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         xhr.open('PUT', signedUrl);
+        if (onXhr) onXhr(xhr);
         xhr.setRequestHeader('Content-Type', contentType || 'application/octet-stream');
         xhr.upload.onprogress = (event) => {
           if (event.lengthComputable && onProgress) {

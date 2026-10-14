@@ -31,12 +31,13 @@ const DOC_TYPE_LABELS: Record<DocumentType, string> = {
 interface UploadQueueProps {
   files: UploadFile[];
   onRemove: (id: string) => void;
+  onCancel?: (id: string) => void;
   onRetry: (id: string) => void;
   onClearCompleted: () => void;
   isProcessing?: boolean;
 }
 
-export function UploadQueue({ files, onRemove, onRetry, onClearCompleted, isProcessing }: UploadQueueProps) {
+export function UploadQueue({ files, onRemove, onCancel, onRetry, onClearCompleted, isProcessing }: UploadQueueProps) {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
   const formatFileSize = (bytes: number) => {
@@ -107,7 +108,12 @@ export function UploadQueue({ files, onRemove, onRetry, onClearCompleted, isProc
           const colors = STATUS_COLORS[file.status];
           const isExpanded = expandedIds.has(file.id);
           const canRetry = file.status === 'error';
-          const canRemove = file.status !== 'uploading';
+          // A minted lease means server-side state exists: offer Cancel
+          // (abort + DELETE lease + blob) instead of local-only Remove.
+          // Completed rows belong to the pipeline and are not cancellable.
+          const hasLease = !!file.uploadId && file.status !== 'completed';
+          const showCancel = hasLease && !!onCancel;
+          const canRemove = !showCancel && file.status !== 'uploading';
 
           return (
             <div
@@ -202,6 +208,24 @@ export function UploadQueue({ files, onRemove, onRetry, onClearCompleted, isProc
                       onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'var(--bg-surface-tint)'}
                     >
                       Retry
+                    </button>
+                  )}
+                  {showCancel && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onCancel!(file.id); }}
+                      style={{
+                        padding: '6px 10px',
+                        borderRadius: 'var(--radius-sm)',
+                        fontSize: '11px',
+                        fontWeight: 600,
+                        color: 'var(--color-danger)',
+                        backgroundColor: 'var(--color-danger-subtle)',
+                        border: '1px solid var(--color-danger-border)',
+                      }}
+                      onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = 'var(--color-danger)'; e.currentTarget.style.color = '#FFFFFF'; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = 'var(--color-danger-subtle)'; e.currentTarget.style.color = 'var(--color-danger)'; }}
+                    >
+                      Cancel
                     </button>
                   )}
                   {canRemove && (

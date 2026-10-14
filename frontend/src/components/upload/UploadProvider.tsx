@@ -10,6 +10,7 @@ interface UploadContextType {
   retryFile: (id: string) => void;
   clearCompleted: () => void;
   updateFileStatus: (id: string, status: UploadStatus, progress?: number, error?: string, documentId?: string) => void;
+  setUploadId: (id: string, uploadId: string) => void;
 }
 
 const UploadContext = createContext<UploadContextType | undefined>(undefined);
@@ -40,7 +41,13 @@ export function UploadProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const retryFile = useCallback((id: string) => {
-    setFiles(prev => prev.map(f => f.id === id ? { ...f, status: 'queued' as UploadStatus, progress: 0, error: undefined } : f));
+    // Fresh lease on retry: drop the consumed uploadId so Cancel can't
+    // target a lease that's already staged/failed server-side.
+    setFiles(prev => prev.map(f => (
+      f.id === id
+        ? { ...f, uploadId: undefined, status: 'queued' as UploadStatus, progress: 0, error: undefined }
+        : f
+    )));
   }, []);
 
   const clearCompleted = useCallback(() => {
@@ -60,8 +67,12 @@ export function UploadProvider({ children }: { children: ReactNode }) {
     }));
   }, []);
 
+  const setUploadId = useCallback((id: string, uploadId: string) => {
+    setFiles(prev => prev.map(f => (f.id === id ? { ...f, uploadId } : f)));
+  }, []);
+
   return (
-    <UploadContext.Provider value={{ files, addFile, removeFile, retryFile, clearCompleted, updateFileStatus }}>
+    <UploadContext.Provider value={{ files, addFile, removeFile, retryFile, clearCompleted, updateFileStatus, setUploadId }}>
       {children}
     </UploadContext.Provider>
   );

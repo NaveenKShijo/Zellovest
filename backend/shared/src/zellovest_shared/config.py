@@ -76,8 +76,8 @@ class Settings(BaseSettings):
 
     @property
     def raw_bucket(self) -> str:
-        """Return the GCS raw bucket, falling back to the legacy S3 alias."""
-        return self.gcs_raw_bucket or self.s3_raw_bucket
+        """Return the GCS raw bucket"""
+        return self.gcs_raw_bucket
 
     # Vector DB
     vector_db_url: str = Field(default="", alias="VECTOR_DB_URL")

@@ -297,6 +297,9 @@ export interface UploadFile {
   progress: number;
   error?: string;
   documentId?: string;
+  // Backend lease id from POST /uploads/init (set once minted).
+  // Presence means server-side state exists → cancel via DELETE.
+  uploadId?: string;
   createdAt: string;
 }
 
