@@ -265,7 +265,7 @@ async def aget_latest_success_cursor(
                 IngestionSyncCheckpoint.tenant_id == tenant_id,
                 IngestionSyncCheckpoint.entity_type == entity,
                 IngestionSyncCheckpoint.status == SyncStatus.SUCCESS,
-                IngestionSyncCheckpoint.last_success_cursor.is_not_none(),
+                IngestionSyncCheckpoint.last_success_cursor.is_not(None),
             )
             .order_by(IngestionSyncCheckpoint.created_at.desc())
             .limit(1)

@@ -66,7 +66,6 @@ def _raw_bucket(settings: Any) -> str:
         return "tenant-bucket"
     return (
         getattr(settings, "gcs_raw_bucket", "")
-        or getattr(settings, "s3_raw_bucket", "")
         or "tenant-bucket"
     )
 
@@ -239,6 +238,8 @@ def _poll_entity(
     entity: str,
     cursor: str | None,
     sync_id: str | None,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> dict[str, Any]:
     """Shared keyset-polling engine: paginate Ramp -> gzip batches -> GCS."""
     settings = _settings()
@@ -265,7 +266,8 @@ def _poll_entity(
         while True:
             try:
                 records, next_cursor = client.fetch_page(
-                    entity, cursor=next_cursor, page_size=batch_size
+                    entity, cursor=next_cursor, page_size=batch_size,
+                    start_date=date_from, end_date=date_to
                 )
             except RateLimitError as exc:
                 logger.warning("poll_rate_limited", tenant_id=tenant_id, entity=entity)
@@ -329,7 +331,8 @@ def _poll_entity(
     **_RETRY_KWARGS,
 )
 def sync_ramp_card_transactions(
-    self: Task, tenant_id: str, cursor: str | None = None, sync_id: str | None = None
+    self: Task, tenant_id: str, cursor: str | None = None, sync_id: str | None = None,
+    date_from: str | None = None, date_to: str | None = None
 ) -> dict[str, Any]:
     """Poll Ramp card transactions (backfill/incremental/scheduled)."""
     return _poll_entity(
@@ -338,6 +341,7 @@ def sync_ramp_card_transactions(
         entity=EntityType.CARD_TRANSACTIONS.value,
         cursor=cursor,
         sync_id=sync_id,
+        date_from = date_from, date_to=date_to
     )
 
 
@@ -348,11 +352,13 @@ def sync_ramp_card_transactions(
     **_RETRY_KWARGS,
 )
 def sync_ramp_bills(
-    self: Task, tenant_id: str, cursor: str | None = None, sync_id: str | None = None
+    self: Task, tenant_id: str, cursor: str | None = None, sync_id: str | None = None,
+    date_from: str | None = None, date_to: str | None = None
 ) -> dict[str, Any]:
     """Poll Ramp bills (backfill/incremental/scheduled)."""
     return _poll_entity(
-        self, tenant_id=tenant_id, entity=EntityType.BILLS.value, cursor=cursor, sync_id=sync_id
+        self, tenant_id=tenant_id, entity=EntityType.BILLS.value, cursor=cursor, sync_id=sync_id,
+        date_from=date_from, date_to=date_to
     )
 
 

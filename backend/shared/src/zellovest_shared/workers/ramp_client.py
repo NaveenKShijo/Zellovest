@@ -59,6 +59,10 @@ class RampClient:
         params: dict | None = None,
         json_body: dict | None = None,
     ) -> dict[str, Any]:
+        """
+            It is the only place where the application code touches
+            the internet to talk to RAMP
+        """
         url = f"{self._base_url}{path}"
         try:
             resp = self._client.request(
@@ -91,6 +95,8 @@ class RampClient:
         entity: str,
         cursor: str | None = None,
         page_size: int = 100,
+        start_date: str | None = None,  # YYYY-MM-DD
+        end_date: str | None = None,
     ) -> tuple[list[dict[str, Any]], str | None]:
         """Fetch a single page of records from Ramp.
 
@@ -102,9 +108,13 @@ class RampClient:
         Returns:
             Tuple of (records_list, next_cursor_or_None).
         """
-        params = {"limit": page_size}
+        params: dict[str, Any] = {"limit": page_size}
         if cursor:
             params["cursor"] = cursor
+        if start_date:
+            params["from_date"] = start_date
+        if end_date:
+            params["to_date"] = end_date
 
         data = self._request("GET", f"/developer/v1/{entity}", params=params)
         records = data.get("data", [])

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState, useTransition } from 'react';
+import React, { useEffect, useState } from 'react';
 
 interface IntegrationStatusState {
   connected: boolean;
@@ -19,11 +19,19 @@ export default function IntegrationsPage() {
   const [isConnecting, setIsConnecting] = useState<boolean>(false);
   const [connectingProvider, setConnectingProvider] = useState<'ramp' | 'okta' | null>(null);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const [rampDateFrom, setRampDateFrom] = useState<string>(''); // YYYY-MM-DD
+  const [oktaSince, setOktaSince] = useState<string>('');       // YYYY-MM-DD → converted to ISO
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
   const [bannerNotice, setBannerNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   const tenantId = 'default-org';
 
+  const monthsAgo = (m: number) => {
+    const d = new Date(); d.setMonth(d.getMonth() - m);
+    return d.toISOString().slice(0, 10);
+  };
+  const todayStr = () => new Date().toISOString().slice(0, 10);
+  
   // Check URL query parameters on return from OAuth callback
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -162,6 +170,31 @@ export default function IntegrationsPage() {
     }
   };
 
+  const handleBackfillRamp = async () => {
+    if (!rampDateFrom) { setSyncFeedback('Pick a "Fetch history since" date first.'); return; }
+    if (rampDateFrom > todayStr()) { setSyncFeedback('Start date cannot be in the future.'); return; }
+    // 24-mo guard
+    const months = (Date.now() - new Date(rampDateFrom).getTime()) / (30.44*24*3600*1000);
+    if (months > 24) { setSyncFeedback('Range exceeds 24 months — this may be a very large job. Narrow the window or use All.'); return; }
+    setIsSyncing(true); setSyncFeedback(null);
+    const outcomes: string[] = [];
+    try {
+      for (const entity of ['card_transactions', 'bills'] as const) {
+        const res = await fetch('/api/v1/sync/ramp', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tenant_id: tenantId, entity, date_from: rampDateFrom, date_to: todayStr() }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+          outcomes.push(data.deduped ? `${entity} already running (Job: ${data.sync_id})` : `${entity} backfill since ${rampDateFrom} (Job: ${data.sync_id})`);
+        } else outcomes.push(`${entity} failed: ${data.detail || res.statusText}`);
+      }
+      setSyncFeedback(`Ramp backfill: ${outcomes.join('; ')}`);
+      void checkStatus();
+    } catch (err: any) { setSyncFeedback(`Backfill error: ${err.message}`); }
+    finally { setIsSyncing(false); }
+  };
+  
   // Single Sync Now for Okta: pulls users/apps/logs in one batch request.
   const handleSyncOktaNow = async () => {
     setIsSyncing(true);
@@ -186,6 +219,41 @@ export default function IntegrationsPage() {
       setIsSyncing(false);
     }
   };
+
+  const handleBackfillOkta = async () => {
+    if (!oktaSince) { setSyncFeedback('Pick a "Fetch history since" date first.'); return; }
+    if (oktaSince > todayStr()) { setSyncFeedback('Start date cannot be in the future.'); return; }
+    const months = (Date.now() - new Date(oktaSince).getTime()) / (30.44*24*3600*1000);
+    if (months > 24) { setSyncFeedback('Range exceeds 24 months — this may be a very large job. Narrow the window.'); return; }
+    setIsSyncing(true);
+    setSyncFeedback(null);
+    try {
+      const res = await fetch('/api/v1/sync/okta', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tenant_id: tenantId,
+          entities: ['users', 'apps', 'logs'],
+          since: new Date(oktaSince).toISOString(),
+          until: new Date().toISOString(),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setSyncFeedback(data.deduped
+          ? `Okta backfill already running (Job: ${data.sync_id})`
+          : `Okta backfill since ${oktaSince} for users, apps, logs (Job: ${data.sync_id})`);
+      } else {
+        setSyncFeedback(`Okta backfill failed: ${data.detail || res.statusText}`);
+      }
+      void checkStatus();
+    } catch (err: any) {
+      setSyncFeedback(`Backfill error: ${err.message}`);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', maxWidth: '1100px' }}>
@@ -326,6 +394,22 @@ export default function IntegrationsPage() {
                       Last synced: {new Date(rampStatus.updated_at).toLocaleDateString()} {new Date(rampStatus.updated_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </div>
                   )}
+                  <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <label style={{ fontSize: '11.5px', fontWeight: 600 }}>Fetch history since (backfill)</label>
+                    <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                      <input type="date" value={rampDateFrom} max={todayStr()}
+                        onChange={(e) => setRampDateFrom(e.target.value)}
+                        style={{ padding: '6px 8px', fontSize: '12px', borderRadius: '6px', border: '1px solid var(--border-subtle)' }} />
+                      {[3, 6].map((m) => (
+                        <button key={m} onClick={() => setRampDateFrom(monthsAgo(m))}
+                          style={{ padding: '4px 8px', fontSize: '11px', fontWeight: 600, borderRadius: '6px', border: '1px solid var(--border-subtle)', background: 'var(--bg-surface)', cursor: 'pointer' }}>
+                          {m}M</button>
+                      ))}
+                      <button onClick={() => setRampDateFrom(monthsAgo(12))}
+                        title="Default 12-month window"
+                        style={{ padding: '4px 8px', fontSize: '11px', fontWeight: 700, borderRadius: '6px', border: '1px solid var(--border-subtle)', cursor: 'pointer' }}>12M ★</button>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
@@ -366,7 +450,22 @@ export default function IntegrationsPage() {
                     }}
                   >
                     {isSyncing ? 'Syncing...' : 'Sync Now'}
-                  </button>
+                    </button>
+
+                    <button onClick={handleBackfillRamp} disabled={isSyncing || !rampDateFrom} title={!rampDateFrom ? 'Pick a start date first' : `Backfill since ${rampDateFrom}`}
+                      style={{
+                        padding: '7px 12px',
+                        fontSize: '12px',
+                        fontWeight: 600,
+                        color: 'var(--text-primary)',
+                        backgroundColor: 'var(--bg-surface)',
+                        border: '1px solid var(--border-strong)',
+                        borderRadius: 'var(--radius-md)',
+                        cursor: (isSyncing || !rampDateFrom) ? 'not-allowed' : 'pointer',
+                        opacity: !rampDateFrom ? 0.5 : 1,
+                      }}>
+                      {isSyncing ? 'Working...' : 'Backfill'}
+                    </button>
                   <button
                     onClick={handleConnectRamp}
                     disabled={isConnecting}
@@ -432,6 +531,22 @@ export default function IntegrationsPage() {
                       Last synced: {new Date(oktaStatus.updated_at).toLocaleDateString()} {new Date(oktaStatus.updated_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </div>
                   )}
+                  <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    <label style={{ fontSize: '11.5px', fontWeight: 600 }}>Fetch history since (backfill)</label>
+                    <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                      <input type="date" value={oktaSince} max={todayStr()}
+                        onChange={(e) => setOktaSince(e.target.value)}
+                        style={{ padding: '6px 8px', fontSize: '12px', borderRadius: '6px', border: '1px solid var(--border-subtle)' }} />
+                      {[3, 6].map((m) => (
+                        <button key={m} onClick={() => setOktaSince(monthsAgo(m))}
+                          style={{ padding: '4px 8px', fontSize: '11px', fontWeight: 600, borderRadius: '6px', border: '1px solid var(--border-subtle)', background: 'var(--bg-surface)', cursor: 'pointer' }}>
+                          {m}M</button>
+                      ))}
+                      <button onClick={() => setOktaSince(monthsAgo(12))}
+                        title="Default 12-month window"
+                        style={{ padding: '4px 8px', fontSize: '11px', fontWeight: 700, borderRadius: '6px', border: '1px solid var(--border-subtle)', cursor: 'pointer' }}>12M ★</button>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
@@ -472,6 +587,20 @@ export default function IntegrationsPage() {
                     }}
                   >
                     {isSyncing ? 'Syncing...' : 'Sync Now'}
+                  </button>
+                  <button onClick={handleBackfillOkta} disabled={isSyncing || !oktaSince} title={!oktaSince ? 'Pick a start date first' : `Backfill since ${oktaSince}`}
+                    style={{
+                      padding: '7px 12px',
+                      fontSize: '12px',
+                      fontWeight: 600,
+                      color: 'var(--text-primary)',
+                      backgroundColor: 'var(--bg-surface)',
+                      border: '1px solid var(--border-strong)',
+                      borderRadius: 'var(--radius-md)',
+                      cursor: (isSyncing || !oktaSince) ? 'not-allowed' : 'pointer',
+                      opacity: !oktaSince ? 0.5 : 1,
+                    }}>
+                    {isSyncing ? 'Working...' : 'Backfill'}
                   </button>
                   <button
                     onClick={handleConnectOkta}

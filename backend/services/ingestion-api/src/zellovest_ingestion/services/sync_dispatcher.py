@@ -1,3 +1,12 @@
+from uuid import UUID
+from datetime import UTC, datetime, timedelta
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from zellovest_shared.db.models import EntityType, SyncMode
+from zellovest_shared.db.repository import acreate_pending_checkpoint
+from zellovest_shared.logging_conf import get_logger
+
 """Pull-sync task dispatcher (Ramp + Google Drive + Okta batch).
 
 - Ramp pull sync (``POST /api/v1/sync/ramp``): PENDING checkpoint + enqueue a
@@ -14,13 +23,20 @@
   path; batch pull is the backfill/reconciliation path.
 """
 
-from uuid import UUID
+"""
+Naveen's note:
+    It does same 2 step, 3 times.
 
-from sqlalchemy.ext.asyncio import AsyncSession
+    For every pull-sync it does:
+    1. Write a PENDING ticket in Postgres via acreate_pending_checkpoint(...)
+    2. Drop a tiny note in Redis/Celery queue with only IDs: {"tenant_id":...,
+    "cursor":..., "sync_id":...} — never raw data.
 
-from zellovest_shared.db.models import EntityType, SyncMode
-from zellovest_shared.db.repository import acreate_pending_checkpoint
-from zellovest_shared.logging_conf import get_logger
+    Then returns (sync_id, celery_task_id, created) so the API can reply 202
+    Accepted {status: PENDING} immediately without waiting for the long fetch.
+
+    The 3 variants are for Ramp, okta and Drive.
+"""
 
 logger = get_logger(__name__)
 
@@ -32,6 +48,13 @@ OKTA_SYNC_TASK_NAME = "zellovest.workers.tasks.ingestion.sync_okta_batch"
 
 _OKTA_ENTITIES = frozenset({"users", "apps", "logs"})
 
+DEFAULT_BACKFILL_MONTHS = 12
+
+def _default_date_from() -> str:
+    return (datetime.now(UTC).date() - timedelta(days=365)).isoformat()
+
+def _today_str() -> str:
+    return datetime.now(UTC).date().isoformat()
 
 def _enqueue(source: str, entity: str, kwargs: dict) -> str:
     """Lazy-import Celery tasks.
@@ -61,7 +84,7 @@ def _enqueue(source: str, entity: str, kwargs: dict) -> str:
     return str(async_result.id)
 
 
-async def dispatch_sync_task(
+async def dispatch_sync_task(   # ramp dispatch sync
     session: AsyncSession,
     *,
     tenant_id: str,
@@ -88,7 +111,11 @@ async def dispatch_sync_task(
     if not entity_type:
         raise ValueError(f"Unknown entity: {entity}")
 
-    mode = SyncMode.BACKFILL if (date_from or date_to) else SyncMode.INCREMENTAL
+    explicit_window = bool(date_from or date_to)
+    mode = SyncMode.BACKFILL if explicit_window else SyncMode.INCREMENTAL
+    if mode == SyncMode.BACKFILL:
+        date_from = date_from or _default_date_from()  # 12-mo default
+        date_to = date_to or _today_str()
 
     checkpoint, created = await acreate_pending_checkpoint(
         session,
@@ -107,6 +134,8 @@ async def dispatch_sync_task(
         "tenant_id": tenant_id,
         "cursor": cursor,
         "sync_id": str(checkpoint.sync_id),
+        "date_from": date_from,
+        "date_to": date_to
     })
     logger.info("dispatch_sync_enqueued", tenant_id=tenant_id, sync_id=str(checkpoint.sync_id), task_id=task_id)
     return checkpoint.sync_id, task_id, True
@@ -231,7 +260,12 @@ async def dispatch_okta_sync(
             session, tenant_id=tenant_id, entity=EntityType.EVENTS
         )
 
-    mode = SyncMode.BACKFILL if (since or until or cursor) else SyncMode.INCREMENTAL
+    explicit = bool(since or until)
+    mode = SyncMode.BACKFILL if explicit else SyncMode.INCREMENTAL
+    if mode == SyncMode.BACKFILL:
+        until = until or _today_str()
+        # since default: 12-mo ISO-8601; Okta logs wants full timestamp
+        since = since or (datetime.now(UTC) - timedelta(days=365)).isoformat() + "Z"
 
     checkpoint, created = await acreate_pending_checkpoint(
         session,

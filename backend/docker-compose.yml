@@ -16,22 +16,31 @@ services:
     ports:
       - "6379:6379"
 
-  scheduler-beat:
+  worker-ingestion:
     build:
       context: .
       dockerfile: services/workers/Dockerfile
     env_file: [.env]
     environment:
-      SERVICE_NAME: scheduler-beat
-    command: ["celery", "-A", "zellovest_workers.celery_app.celery_app", "beat", "--loglevel=info", "--schedule", "/var/run/celery/celerybeat-schedule"]
+      SERVICE_NAME: worker-ingestion
+    command: ["celery", "-A", "zellovest_workers.celery_app.celery_app", "worker", "-Q", "ingestion_tasks", "--loglevel=info", "--concurrency=2"]
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
-    volumes: [beatdata:/var/run/celery]
-    deploy:
-      replicas: 1
+      
+#   ingestion-api:
+#     build:
+#       context: .
+#       dockerfile: services/ingestion-api/Dockerfile
+#     env_file: [.env]
+#     environment:
+#       SERVICE_NAME: ingestion-api
+#       SERVICE_PORT: 8003
+#     ports: ["8003:8003"]
+#     depends_on:
+#       postgres: {condition: service_healthy}
+#       redis: {condition: service_healthy}
 
 
 volumes:
   pgdata:
-  beatdata:
