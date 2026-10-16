@@ -104,6 +104,21 @@ function SingleAlert({ alert, onDismiss }: { alert: SystemAlert; onDismiss: () =
           <span style={{ fontSize: '11.5px', opacity: 0.7, marginLeft: '8px' }}>
             ({alert.timestamp})
           </span>
+          {alert.action && (
+            <a
+              href={alert.action.href}
+              style={{
+                marginLeft: '10px',
+                fontSize: '12.5px',
+                fontWeight: 700,
+                color: 'inherit',
+                textDecoration: 'underline',
+                textUnderlineOffset: '2px',
+              }}
+            >
+              {alert.action.label}
+            </a>
+          )}
         </div>
       </div>
 

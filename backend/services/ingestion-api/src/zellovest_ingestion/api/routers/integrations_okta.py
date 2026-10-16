@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from zellovest_shared.db.models import TenantIntegration
+from zellovest_shared.db.models import TenantIntegration, effective_connection_status
 from zellovest_shared.db.repository import aupsert_integration
 from zellovest_shared.logging_conf import get_logger
 from zellovest_shared.schemas.integrations import ConnectRequest, ConnectResponse
@@ -241,7 +241,13 @@ async def status(
     tenant_id: str = Query(default="default-org"),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
-    """Check whether the Okta integration is active for this tenant."""
+    """Check whether the Okta integration is active for this tenant.
+
+    The effective status folds wall-clock ``token_expires_at`` over the
+    stored row so an ACTIVE row with a past expiry reads as EXPIRED —
+    letting the UI prompt a reconnect instead of showing Connected while
+    every sync fails.
+    """
     stmt = select(TenantIntegration).where(
         TenantIntegration.tenant_id == tenant_id,
         TenantIntegration.provider == OKTA_PROVIDER,
@@ -256,20 +262,27 @@ async def status(
             "tenant_id": tenant_id,
             "status": "DISCONNECTED",
             "scopes": [],
+            "needs_reconnect": False,
+            "last_error": None,
+            "token_expires_at": None,
             "updated_at": None,
         }
 
-    status_str = (
-        integration.connection_status.value
-        if hasattr(integration.connection_status, "value")
-        else str(integration.connection_status)
+    effective = effective_connection_status(
+        integration.connection_status, integration.token_expires_at
     )
+    status_str = effective.value
+    needs_reconnect = effective.value in ("EXPIRED", "REVOKED")
     return {
-        "connected": status_str.upper() == "ACTIVE",
+        "connected": effective.value == "ACTIVE",
         "provider": OKTA_PROVIDER,
         "tenant_id": tenant_id,
         "status": status_str,
         "scopes": integration.scopes or [],
-        "token_expires_at": integration.token_expires_at.isoformat() if integration.token_expires_at else None,
+        "needs_reconnect": needs_reconnect,
+        "last_error": integration.last_error,
+        "token_expires_at": (
+            integration.token_expires_at.isoformat() if integration.token_expires_at else None
+        ),
         "updated_at": integration.updated_at.isoformat() if integration.updated_at else None,
     }

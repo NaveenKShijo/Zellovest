@@ -44,12 +44,17 @@ from zellovest_shared.db.models import (
     Upload,
     UploadStatus,
     User,
+    effective_connection_status,
+    is_integration_token_expired,
 )
 from zellovest_shared.db.repository import (
+    aclear_integration_error,
     acreate_pending_checkpoint,
     amark_checkpoint,
+    amark_integration_status,
     aupsert_integration,
     mark_checkpoint,
+    mark_integration_status_sync,
     upsert_integration_sync,
 )
 from zellovest_shared.db.session import (
@@ -133,15 +138,20 @@ __all__ = [
     "Workflow",
     "WorkflowStatus",
     "WorkflowType",
+    "aclear_integration_error",
     "acreate_pending_checkpoint",
     "amark_checkpoint",
+    "amark_integration_status",
     "async_session_scope",
     "aupsert_integration",
+    "effective_connection_status",
     "get_async_db_session",
     "get_async_session_factory",
     "get_db_session",
     "get_session_factory",
+    "is_integration_token_expired",
     "mark_checkpoint",
+    "mark_integration_status_sync",
     "sync_session_scope",
     "upsert_integration_sync",
 ]

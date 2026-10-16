@@ -46,6 +46,55 @@ class ConnectionStatus(str, enum.Enum):
     REVOKED = "REVOKED"
 
 
+def is_integration_token_expired(
+    token_expires_at: datetime | None, *, skew_seconds: int = 60
+) -> bool:
+    """Return True when a stored OAuth access-token expiry has passed.
+
+    Args:
+        token_expires_at: Stored expiry (naive assumed UTC); None means unknown.
+        skew_seconds: Clock-skew grace window before treating as expired.
+
+    Returns:
+        True when the token should be treated as expired and the user
+        prompted to reconnect (or a refresh attempted first).
+    """
+    from datetime import UTC, timedelta
+
+    if token_expires_at is None:
+        return False
+    aware = token_expires_at if token_expires_at.tzinfo else token_expires_at.replace(
+        tzinfo=UTC
+    )
+    return aware <= datetime.now(UTC) + timedelta(seconds=skew_seconds)
+
+
+def effective_connection_status(
+    stored: ConnectionStatus | str, token_expires_at: datetime | None
+) -> ConnectionStatus:
+    """Derive the user-facing status, folding wall-clock expiry over storage.
+
+    The DB row is only flipped to EXPIRED/REVOKED when a worker observes an
+    auth failure; until then an ACTIVE row with a past ``token_expires_at``
+    must still read as EXPIRED so the UI prompts a reconnect.
+
+    Args:
+        stored: Persisted connection status value.
+        token_expires_at: Stored access-token expiry, if known.
+
+    Returns:
+        Effective status for API responses and UI gating.
+    """
+    raw = stored.value if isinstance(stored, ConnectionStatus) else str(stored).upper()
+    if raw == ConnectionStatus.REVOKED.value:
+        return ConnectionStatus.REVOKED
+    if raw == ConnectionStatus.EXPIRED.value:
+        return ConnectionStatus.EXPIRED
+    if is_integration_token_expired(token_expires_at):
+        return ConnectionStatus.EXPIRED
+    return ConnectionStatus.ACTIVE
+
+
 class SyncStatus(str, enum.Enum):
     """Sync execution state machine."""
 

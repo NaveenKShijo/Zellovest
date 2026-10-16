@@ -4,6 +4,7 @@ import React, { ReactNode } from 'react';
 import { AuthProvider } from './AuthContext';
 import { LayoutProvider } from './LayoutContext';
 import { ToastProvider } from './ToastContext';
+import { IntegrationExpiryWatcher } from '@/components/integrations/IntegrationExpiryWatcher';
 
 /**
  * AppProviders: Composes all global React Contexts in one place.
@@ -18,6 +19,7 @@ export function AppProviders({ children }: { children: ReactNode }) {
     <AuthProvider>
       <ToastProvider>
         <LayoutProvider>
+          <IntegrationExpiryWatcher />
           {children}
         </LayoutProvider>
       </ToastProvider>

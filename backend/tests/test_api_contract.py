@@ -248,6 +248,71 @@ def test_healthz(client):  # type: ignore[no-untyped-def]
     assert client.get("/healthz").json() == {"status": "ok", "service": "ingestion-api"}
 
 
+def _expired_ramp_row():  # type: ignore[no-untyped-def]
+    """Build a Ramp integration row whose access token expired yesterday."""
+    from datetime import UTC, datetime, timedelta
+
+    from zellovest_shared.db.models import TenantIntegration
+
+    return TenantIntegration(
+        tenant_id="default-org",
+        provider="ramp",
+        encrypted_access_token=b"ct",
+        encrypted_refresh_token=b"rt",
+        access_nonce=b"n" * 12,
+        refresh_nonce=b"m" * 12,
+        token_expires_at=datetime.now(UTC) - timedelta(days=1),
+        scopes=["transactions:read", "bills:read", "offline_access"],
+    )
+
+
+def _session_with_row(row):  # type: ignore[no-untyped-def]
+    """Fake async DB session resolving one integration row."""
+    mock_session = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = row
+    mock_session.execute.return_value = mock_result
+    return mock_session
+
+
+def test_status_expired_token_reports_needs_reconnect(client):  # type: ignore[no-untyped-def]
+    """GET /status reads EXPIRED + needs_reconnect for a past token_expires_at."""
+    from zellovest_ingestion.api.deps import get_db_session
+
+    async def fake_session():  # type: ignore[no-untyped-def]
+        yield _session_with_row(_expired_ramp_row())
+
+    client.app.dependency_overrides[get_db_session] = fake_session
+    try:
+        response = client.get("/api/v1/integrations/ramp/status?tenant_id=default-org")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["connected"] is False
+        assert data["status"] == "EXPIRED"
+        assert data["needs_reconnect"] is True
+        assert data["token_expires_at"] is not None
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_sync_ramp_rejected_when_token_expired(client):  # type: ignore[no-untyped-def]
+    """POST /sync/ramp fails fast with 409 when the token needs a reconnect."""
+    from zellovest_ingestion.api.deps import get_db_session
+
+    async def fake_session():  # type: ignore[no-untyped-def]
+        yield _session_with_row(_expired_ramp_row())
+
+    client.app.dependency_overrides[get_db_session] = fake_session
+    try:
+        response = client.post(
+            "/api/v1/sync/ramp", json={"tenant_id": "default-org", "entity": "bills"}
+        )
+        assert response.status_code == 409
+        assert "reconnect" in response.json()["detail"].lower()
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_celery_task_names_and_queues() -> None:
     """Task registry uses the agreed names and queue routing."""
     from zellovest_workers.tasks import ingestion as _tasks  # noqa: F401

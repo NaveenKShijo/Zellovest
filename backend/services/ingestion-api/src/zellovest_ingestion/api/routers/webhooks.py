@@ -116,7 +116,7 @@ async def ramp_webhook(
     tenant_id = (
         request.headers.get("X-Tenant-Id")
         or (payload.get("tenant_id") if isinstance(payload, dict) else None)
-        or "default"
+        or "default-org"
     )
     sync_id, _task_id, created = await dispatch_ramp_webhook(
         session,

@@ -117,3 +117,68 @@ async def exchange_code_for_tokens(
         )
     except (KeyError, ValueError, TypeError) as exc:
         raise OAuthExchangeError(f"malformed token response: {exc}") from exc
+
+
+async def refresh_ramp_access_token(
+    token_url: str,
+    *,
+    client_id: str,
+    client_secret: str,
+    refresh_token: str,
+    timeout_seconds: float = 15.0,
+) -> TokenExchangeResult:
+    """Refresh an expired Ramp access token (requires offline access grant).
+
+    Args:
+        token_url: Ramp token endpoint.
+        client_id: OAuth client id (never logged).
+        client_secret: OAuth client secret (never logged).
+        refresh_token: Previously issued refresh token (never logged).
+        timeout_seconds: HTTP timeout bound.
+
+    Raises:
+        OAuthExchangeError: On transport failure, non-2xx (e.g. revoked
+            grant — caller should prompt reconnect), or malformed responses.
+    """
+    async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+        try:
+            response = await client.post(
+                token_url,
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token,
+                },
+                auth=(client_id, client_secret),
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+        except (httpx.TimeoutException, httpx.ConnectError) as exc:
+            logger.warning("oauth_refresh_transport_error", error_class=type(exc).__name__)
+            raise OAuthExchangeError("token endpoint unreachable") from exc
+
+    if response.status_code != 200:
+        logger.warning(
+            "oauth_refresh_rejected",
+            status_code=response.status_code,
+            response_body=response.text[:500],
+        )
+        raise OAuthExchangeError(
+            f"token endpoint returned {response.status_code}: {response.text[:200]}"
+        )
+
+    try:
+        body = response.json()
+        raw_scopes = body.get("scopes") or body.get("scope") or []
+        if isinstance(raw_scopes, str):
+            scopes_list = raw_scopes.split()
+        elif isinstance(raw_scopes, list):
+            scopes_list = [str(s) for s in raw_scopes]
+        else:
+            scopes_list = []
+        return TokenExchangeResult(
+            access_token=body["access_token"],
+            refresh_token=body.get("refresh_token") or "",
+            expires_in=int(body.get("expires_in", 3600)),
+            scopes=scopes_list,
+        )
+    except (KeyError, ValueError, TypeError) as exc:
+        raise OAuthExchangeError(f"malformed token response: {exc}") from exc

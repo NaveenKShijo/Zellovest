@@ -8,8 +8,42 @@ interface IntegrationStatusState {
   tenant_id: string;
   status: string;
   scopes: string[];
+  needs_reconnect?: boolean;
+  last_error?: string | null;
   token_expires_at?: string | null;
   updated_at?: string | null;
+}
+
+/** True when the user must reconnect (EXPIRED/REVOKED or past expiry). */
+function needsReconnect(status: IntegrationStatusState | null): boolean {
+  if (!status) return false;
+  if (status.needs_reconnect === true) return true;
+  const upper = (status.status || '').toUpperCase();
+  if (upper === 'EXPIRED' || upper === 'REVOKED') return true;
+  if (status.connected && status.token_expires_at) {
+    return Date.parse(status.token_expires_at) <= Date.now();
+  }
+  return false;
+}
+
+/** True when the token expires within 24h (early warning, still connected). */
+function isExpiringSoon(status: IntegrationStatusState | null): boolean {
+  if (!status?.connected || needsReconnect(status) || !status.token_expires_at) {
+    return false;
+  }
+  return Date.parse(status.token_expires_at) - Date.now() <= 24 * 60 * 60 * 1000;
+}
+
+/** True when a sync failure means the OAuth token needs a reconnect. */
+function isReconnectError(detail: string): boolean {
+  const lower = (detail || '').toLowerCase();
+  return (
+    lower.includes('reconnect') ||
+    lower.includes('expired') ||
+    lower.includes('revoked') ||
+    lower.includes('invalid_grant') ||
+    lower.includes('401')
+  );
 }
 
 export default function IntegrationsPage() {
@@ -142,9 +176,12 @@ export default function IntegrationsPage() {
 
   // Single Sync Now for Ramp: schedules both entities sequentially and
   // reports one combined result instead of two separate buttons.
+  // A 409 with a reconnect detail means the access token expired: surface a
+  // reconnect banner instead of a generic "failed" line.
   const handleSyncRampNow = async () => {
     setIsSyncing(true);
     setSyncFeedback(null);
+    setBannerNotice(null);
     const outcomes: string[] = [];
     try {
       for (const entity of ['card_transactions', 'bills'] as const) {
@@ -158,7 +195,16 @@ export default function IntegrationsPage() {
           outcomes.push(`${entity.replace('_', ' ')} (Job: ${data.sync_id || 'queued'})`);
         } else {
           const err = await res.json().catch(() => ({}));
-          outcomes.push(`${entity.replace('_', ' ')} failed: ${err.detail || res.statusText}`);
+          const detail = err.detail || res.statusText;
+          if (res.status === 409 && isReconnectError(detail)) {
+            setBannerNotice({
+              type: 'error',
+              message: `Ramp sync blocked: ${detail}. Click Reconnect on the Ramp card below, then retry.`,
+            });
+            outcomes.push(`${entity.replace('_', ' ')} blocked: reconnect required`);
+          } else {
+            outcomes.push(`${entity.replace('_', ' ')} failed: ${detail}`);
+          }
         }
       }
       setSyncFeedback(`Ramp sync scheduled: ${outcomes.join('; ')}`);
@@ -187,6 +233,12 @@ export default function IntegrationsPage() {
         const data = await res.json().catch(() => ({}));
         if (res.ok) {
           outcomes.push(data.deduped ? `${entity} already running (Job: ${data.sync_id})` : `${entity} backfill since ${rampDateFrom} (Job: ${data.sync_id})`);
+        } else if (res.status === 409 && isReconnectError(data.detail || '')) {
+          setBannerNotice({
+            type: 'error',
+            message: `Ramp backfill blocked: ${data.detail}. Click Reconnect on the Ramp card below, then retry.`,
+          });
+          outcomes.push(`${entity} blocked: reconnect required`);
         } else outcomes.push(`${entity} failed: ${data.detail || res.statusText}`);
       }
       setSyncFeedback(`Ramp backfill: ${outcomes.join('; ')}`);
@@ -199,6 +251,7 @@ export default function IntegrationsPage() {
   const handleSyncOktaNow = async () => {
     setIsSyncing(true);
     setSyncFeedback(null);
+    setBannerNotice(null);
     try {
       const res = await fetch('/api/v1/sync/okta', {
         method: 'POST',
@@ -210,7 +263,16 @@ export default function IntegrationsPage() {
         setSyncFeedback(`Okta sync scheduled for users, apps, logs (Job: ${data.sync_id || 'queued'})`);
       } else {
         const err = await res.json().catch(() => ({}));
-        setSyncFeedback(`Okta sync failed: ${err.detail || res.statusText}`);
+        const detail = err.detail || res.statusText;
+        if (res.status === 409 && isReconnectError(detail)) {
+          setBannerNotice({
+            type: 'error',
+            message: `Okta sync blocked: ${detail}. Click Reconnect on the Okta card below, then retry.`,
+          });
+          setSyncFeedback('Okta sync blocked: reconnect required.');
+        } else {
+          setSyncFeedback(`Okta sync failed: ${detail}`);
+        }
       }
       void checkStatus();
     } catch (err: any) {
@@ -243,6 +305,12 @@ export default function IntegrationsPage() {
         setSyncFeedback(data.deduped
           ? `Okta backfill already running (Job: ${data.sync_id})`
           : `Okta backfill since ${oktaSince} for users, apps, logs (Job: ${data.sync_id})`);
+      } else if (res.status === 409 && isReconnectError(data.detail || '')) {
+        setBannerNotice({
+          type: 'error',
+          message: `Okta backfill blocked: ${data.detail}. Click Reconnect on the Okta card below, then retry.`,
+        });
+        setSyncFeedback('Okta backfill blocked: reconnect required.');
       } else {
         setSyncFeedback(`Okta backfill failed: ${data.detail || res.statusText}`);
       }
@@ -254,6 +322,11 @@ export default function IntegrationsPage() {
     }
   };
 
+
+  const rampNeedsReconnect = needsReconnect(rampStatus);
+  const oktaNeedsReconnect = needsReconnect(oktaStatus);
+  const rampExpiringSoon = isExpiringSoon(rampStatus);
+  const oktaExpiringSoon = isExpiringSoon(oktaStatus);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', maxWidth: '1100px' }}>
@@ -355,7 +428,11 @@ export default function IntegrationsPage() {
               padding: '20px',
               borderRadius: 'var(--radius-md)',
               backgroundColor: 'var(--bg-surface-warm, #FFF9FA)',
-              border: rampStatus?.connected ? '1px solid var(--color-success-border)' : '1px solid var(--border-strong)',
+              border: rampNeedsReconnect
+                ? '1px solid var(--color-danger-border)'
+                : rampStatus?.connected
+                  ? '1px solid var(--color-success-border)'
+                  : '1px solid var(--border-strong)',
               display: 'flex',
               flexDirection: 'column',
               justifyContent: 'space-between',
@@ -373,18 +450,62 @@ export default function IntegrationsPage() {
                     fontWeight: 700,
                     padding: '3px 9px',
                     borderRadius: 'var(--radius-full)',
-                    backgroundColor: rampStatus?.connected ? 'var(--color-success-subtle)' : 'var(--bg-surface-tint)',
-                    color: rampStatus?.connected ? 'var(--color-success)' : 'var(--text-muted)',
-                    border: `1px solid ${rampStatus?.connected ? 'var(--color-success-border)' : 'var(--border-subtle)'}`,
+                    backgroundColor: rampNeedsReconnect
+                      ? 'var(--color-danger-subtle)'
+                      : rampStatus?.connected
+                        ? 'var(--color-success-subtle)'
+                        : 'var(--bg-surface-tint)',
+                    color: rampNeedsReconnect ? 'var(--color-danger)' : rampStatus?.connected ? 'var(--color-success)' : 'var(--text-muted)',
+                    border: `1px solid ${rampNeedsReconnect ? 'var(--color-danger-border)' : rampStatus?.connected ? 'var(--color-success-border)' : 'var(--border-subtle)'}`,
                   }}
                 >
-                  {isLoadingStatus ? 'Loading...' : rampStatus?.connected ? 'Connected' : 'Not Connected'}
+                  {isLoadingStatus
+                    ? 'Loading...'
+                    : rampNeedsReconnect
+                      ? 'Expired — reconnect'
+                      : rampStatus?.connected
+                        ? 'Connected'
+                        : 'Not Connected'}
                 </span>
               </div>
 
               <p style={{ fontSize: '12.5px', color: 'var(--text-secondary)', lineHeight: '1.45', margin: '0 0 12px 0' }}>
                 Ingests corporate card transactions, spend trends, and accounts payable bills via Ramp API.
               </p>
+
+              {rampNeedsReconnect && (
+                <div
+                  role="alert"
+                  style={{
+                    marginBottom: '12px',
+                    padding: '10px 12px',
+                    borderRadius: 'var(--radius-md)',
+                    backgroundColor: 'var(--color-danger-subtle)',
+                    border: '1px solid var(--color-danger-border)',
+                    color: 'var(--color-danger)',
+                    fontSize: '12.5px',
+                    lineHeight: '1.5',
+                  }}
+                >
+                  <strong>Access token expired.</strong> Syncs are failing until you reconnect.
+                  {rampStatus?.token_expires_at && (
+                    <div style={{ marginTop: '2px' }}>
+                      Expired: {new Date(rampStatus.token_expires_at).toLocaleString()}
+                    </div>
+                  )}
+                  {rampStatus?.last_error && (
+                    <div style={{ marginTop: '2px', fontSize: '11.5px', opacity: 0.9 }}>
+                      {rampStatus.last_error}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {!rampNeedsReconnect && rampStatus?.connected && rampStatus?.token_expires_at && (
+                <div style={{ marginBottom: '12px', fontSize: '11.5px', color: rampExpiringSoon ? 'var(--color-warning)' : 'var(--text-muted)' }}>
+                  {rampExpiringSoon ? 'Token expires soon' : 'Token expires'}: {new Date(rampStatus.token_expires_at).toLocaleString()}
+                </div>
+              )}
 
               {rampStatus?.connected && (
                 <div style={{ marginBottom: '12px', fontSize: '11.5px', color: 'var(--text-muted)' }}>
@@ -415,7 +536,7 @@ export default function IntegrationsPage() {
             </div>
 
             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-              {!rampStatus?.connected ? (
+              {!rampStatus?.connected && !rampNeedsReconnect ? (
                 <button
                   onClick={handleConnectRamp}
                   disabled={isConnecting}
@@ -432,6 +553,24 @@ export default function IntegrationsPage() {
                   }}
                 >
                   {isConnecting && connectingProvider === 'ramp' ? 'Redirecting to Ramp...' : 'Connect Ramp'}
+                </button>
+              ) : rampNeedsReconnect ? (
+                <button
+                  onClick={handleConnectRamp}
+                  disabled={isConnecting}
+                  style={{
+                    padding: '8px 16px',
+                    fontSize: '13px',
+                    fontWeight: 700,
+                    color: '#FFFFFF',
+                    backgroundColor: 'var(--color-danger)',
+                    border: 'none',
+                    borderRadius: 'var(--radius-md)',
+                    cursor: isConnecting ? 'wait' : 'pointer',
+                    transition: 'background-color 0.15s ease',
+                  }}
+                >
+                  {isConnecting && connectingProvider === 'ramp' ? 'Redirecting to Ramp...' : 'Reconnect Ramp now'}
                 </button>
               ) : (
                 <>
@@ -493,7 +632,11 @@ export default function IntegrationsPage() {
               padding: '20px',
               borderRadius: 'var(--radius-md)',
               backgroundColor: 'var(--bg-surface-warm, #FFF9FA)',
-              border: oktaStatus?.connected ? '1px solid var(--color-success-border)' : '1px solid var(--border-subtle)',
+              border: oktaNeedsReconnect
+                ? '1px solid var(--color-danger-border)'
+                : oktaStatus?.connected
+                  ? '1px solid var(--color-success-border)'
+                  : '1px solid var(--border-subtle)',
               display: 'flex',
               flexDirection: 'column',
               justifyContent: 'space-between',
@@ -511,17 +654,61 @@ export default function IntegrationsPage() {
                     fontWeight: 700,
                     padding: '3px 9px',
                     borderRadius: 'var(--radius-full)',
-                    backgroundColor: oktaStatus?.connected ? 'var(--color-success-subtle)' : 'var(--bg-surface-tint)',
-                    color: oktaStatus?.connected ? 'var(--color-success)' : 'var(--text-secondary)',
-                    border: `1px solid ${oktaStatus?.connected ? 'var(--color-success-border)' : 'var(--border-subtle)'}`,
+                    backgroundColor: oktaNeedsReconnect
+                      ? 'var(--color-danger-subtle)'
+                      : oktaStatus?.connected
+                        ? 'var(--color-success-subtle)'
+                        : 'var(--bg-surface-tint)',
+                    color: oktaNeedsReconnect ? 'var(--color-danger)' : oktaStatus?.connected ? 'var(--color-success)' : 'var(--text-secondary)',
+                    border: `1px solid ${oktaNeedsReconnect ? 'var(--color-danger-border)' : oktaStatus?.connected ? 'var(--color-success-border)' : 'var(--border-subtle)'}`,
                   }}
                 >
-                  {isLoadingStatus ? 'Loading...' : oktaStatus?.connected ? 'Connected' : 'Not Connected'}
+                  {isLoadingStatus
+                    ? 'Loading...'
+                    : oktaNeedsReconnect
+                      ? 'Expired — reconnect'
+                      : oktaStatus?.connected
+                        ? 'Connected'
+                        : 'Not Connected'}
                 </span>
               </div>
               <p style={{ fontSize: '12.5px', color: 'var(--text-secondary)', lineHeight: '1.45', margin: '0 0 12px 0' }}>
                 Synchronizing employee application assignments and user seat provisioning for zombie license detection.
               </p>
+
+              {oktaNeedsReconnect && (
+                <div
+                  role="alert"
+                  style={{
+                    marginBottom: '12px',
+                    padding: '10px 12px',
+                    borderRadius: 'var(--radius-md)',
+                    backgroundColor: 'var(--color-danger-subtle)',
+                    border: '1px solid var(--color-danger-border)',
+                    color: 'var(--color-danger)',
+                    fontSize: '12.5px',
+                    lineHeight: '1.5',
+                  }}
+                >
+                  <strong>Access token expired.</strong> Syncs are failing until you reconnect.
+                  {oktaStatus?.token_expires_at && (
+                    <div style={{ marginTop: '2px' }}>
+                      Expired: {new Date(oktaStatus.token_expires_at).toLocaleString()}
+                    </div>
+                  )}
+                  {oktaStatus?.last_error && (
+                    <div style={{ marginTop: '2px', fontSize: '11.5px', opacity: 0.9 }}>
+                      {oktaStatus.last_error}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {!oktaNeedsReconnect && oktaStatus?.connected && oktaStatus?.token_expires_at && (
+                <div style={{ marginBottom: '12px', fontSize: '11.5px', color: oktaExpiringSoon ? 'var(--color-warning)' : 'var(--text-muted)' }}>
+                  {oktaExpiringSoon ? 'Token expires soon' : 'Token expires'}: {new Date(oktaStatus.token_expires_at).toLocaleString()}
+                </div>
+              )}
 
               {oktaStatus?.connected && (
                 <div style={{ marginBottom: '12px', fontSize: '11.5px', color: 'var(--text-muted)' }}>
@@ -552,7 +739,7 @@ export default function IntegrationsPage() {
             </div>
 
             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-              {!oktaStatus?.connected ? (
+              {!oktaStatus?.connected && !oktaNeedsReconnect ? (
                 <button
                   onClick={handleConnectOkta}
                   disabled={isConnecting}
@@ -569,6 +756,24 @@ export default function IntegrationsPage() {
                   }}
                 >
                   {isConnecting && connectingProvider === 'okta' ? 'Redirecting to Okta...' : 'Connect Okta'}
+                </button>
+              ) : oktaNeedsReconnect ? (
+                <button
+                  onClick={handleConnectOkta}
+                  disabled={isConnecting}
+                  style={{
+                    padding: '8px 16px',
+                    fontSize: '13px',
+                    fontWeight: 700,
+                    color: '#FFFFFF',
+                    backgroundColor: 'var(--color-danger)',
+                    border: 'none',
+                    borderRadius: 'var(--radius-md)',
+                    cursor: isConnecting ? 'wait' : 'pointer',
+                    transition: 'background-color 0.15s ease',
+                  }}
+                >
+                  {isConnecting && connectingProvider === 'okta' ? 'Redirecting to Okta...' : 'Reconnect Okta now'}
                 </button>
               ) : (
                 <>

@@ -57,6 +57,8 @@ Situations when celery beat is needed to act like janitor cleaning up db rows in
 
 2. Set up celery beat as janitor to clean up the mess of pending status db inserts in uploads table that has passed expiry limit.
 
+3. Handle growing table 'ingestion_sync_checkpoint'. I think, only pending tasks should remain. Succeeded and failed tasks should be removed within a day.
+
 
 
 ### GET /uploads/{id} :

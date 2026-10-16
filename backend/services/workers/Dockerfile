@@ -3,6 +3,7 @@ FROM python:3.11-slim
 WORKDIR /app
 COPY shared/ /app/shared/
 COPY services/workers/ /app/services/workers/
+RUN pip install --upgrade pip
 RUN pip install --no-cache-dir -e /app/shared && pip install --no-cache-dir -e /app/services/workers
 
 # Default: ingestion queue. Override command per worker type in compose.

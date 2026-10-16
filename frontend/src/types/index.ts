@@ -147,6 +147,10 @@ export interface SystemAlert {
   message: string;
   dismissible?: boolean;
   timestamp: string;
+  action?: {
+    label: string;
+    href: string;
+  };
 }
 
 export interface ToastContextType {

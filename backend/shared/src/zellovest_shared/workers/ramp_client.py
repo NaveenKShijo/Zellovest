@@ -40,6 +40,83 @@ class PermanentRampError(RampError):
     pass
 
 
+def is_auth_failure(exc: BaseException) -> bool:
+    """Return True when a Ramp error looks like an expired/revoked token.
+
+    Args:
+        exc: Exception raised by :class:`RampClient`.
+
+    Returns:
+        True for 401/403 permanent failures — the tenant must reconnect
+        (or the worker must refresh first) instead of retrying the call.
+    """
+    status = getattr(exc, "status_code", None)
+    if status in (401, 403):
+        return True
+    message = str(exc).lower()
+    return "client error: 401" in message or "client error: 403" in message
+
+
+def refresh_ramp_access_token(
+    token_url: str,
+    client_id: str,
+    client_secret: str,
+    refresh_token: str,
+    timeout: float = 15.0,
+) -> dict[str, object]:
+    """Refresh an expired Ramp OAuth access token (sync, for Celery workers).
+
+    Calls the Ramp token endpoint with ``grant_type=refresh_token`` and
+    HTTP Basic client auth — the same exchange the Connect flow uses.
+
+    Args:
+        token_url: Ramp token endpoint URL.
+        client_id: OAuth client id (never logged).
+        client_secret: OAuth client secret (never logged).
+        refresh_token: Previously issued refresh token (never logged).
+        timeout: Per-request timeout in seconds.
+
+    Returns:
+        Token response mapping with ``access_token`` and usually a rotated
+        ``refresh_token``, plus ``expires_in`` and ``scope``.
+
+    Raises:
+        TransientRampError: Transport failure — safe to retry.
+        PermanentRampError: Rejected grant (revoked/rotated refresh token) —
+            the tenant must reconnect; do not retry.
+    """
+    try:
+        resp = httpx.post(
+            token_url,
+            data={"grant_type": "refresh_token", "refresh_token": refresh_token},
+            auth=(client_id, client_secret),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=timeout,
+        )
+    except (httpx.TimeoutException, httpx.ConnectError) as exc:
+        logger.warning("ramp_refresh_transport_error", error_class=type(exc).__name__)
+        raise TransientRampError(f"Ramp refresh unreachable: {exc}") from exc
+    if resp.status_code != 200:
+        logger.warning(
+            "ramp_refresh_rejected", status=resp.status_code, body=resp.text[:200]
+        )
+        raise PermanentRampError(
+            f"Ramp refresh rejected ({resp.status_code}): reconnect required",
+            status_code=resp.status_code,
+        )
+    try:
+        body = resp.json()
+        access_token = body["access_token"]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise PermanentRampError(f"Malformed refresh response: {exc}") from exc
+    return {
+        "access_token": access_token,
+        "refresh_token": body.get("refresh_token") or "",
+        "expires_in": int(body.get("expires_in", 3600)),
+        "scope": body.get("scope") or body.get("scopes") or "",
+    }
+
+
 class RampClient:
     """Thin wrapper around Ramp REST API with structured errors."""
 
@@ -111,12 +188,21 @@ class RampClient:
         params: dict[str, Any] = {"limit": page_size}
         if cursor:
             params["cursor"] = cursor
-        if start_date:
-            params["from_date"] = start_date
-        if end_date:
-            params["to_date"] = end_date
 
-        data = self._request("GET", f"/developer/v1/{entity}", params=params)
+        def _as_datetime(v: str, end: bool = False) -> str:
+            v = v.strip()
+            if "T" in v:
+                return v if v.endswith("Z") else v + "Z"
+            return f"{v}T{'23:59:59' if end else '00:00:00'}Z"
+
+        is_txn = (entity == "card_transactions")  # mapped to /transactions at :196
+        if start_date:
+            params["from_date"] = _as_datetime(start_date, end=False) if is_txn else start_date
+        if end_date:
+            params["to_date"] = _as_datetime(end_date, end=True) if is_txn else end_date
+
+        api_path = {"card_transactions":"transactions","bills":"bills"}.get(entity, entity)
+        data = self._request("GET", f"/developer/v1/{api_path}", params=params)
         records = data.get("data", [])
         next_cursor = data.get("pagination", {}).get("next_cursor")
         return records, next_cursor

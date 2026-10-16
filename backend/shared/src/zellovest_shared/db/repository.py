@@ -127,6 +127,108 @@ async def aupsert_integration(
     return row
 
 
+def mark_integration_status_sync(
+    session: Session,
+    *,
+    tenant_id: str,
+    provider: str,
+    status: ConnectionStatus,
+    error: str | None = None,
+) -> None:
+    """Persist an OAuth connection lifecycle transition (sync workers).
+
+    Used when a sync worker observes an expired access token or a revoked
+    grant (401/invalid_grant) so the next ``/status`` read — and the UI —
+    prompts the user to reconnect instead of silently failing.
+
+    Args:
+        session: Sync DB session (caller commits).
+        tenant_id: Tenant owning the integration row.
+        provider: Provider key (``ramp`` / ``okta``).
+        status: Target lifecycle state (EXPIRED or REVOKED).
+        error: Short, secret-free reason surfaced as ``last_error``.
+    """
+    row = session.execute(
+        select(TenantIntegration).where(
+            TenantIntegration.tenant_id == tenant_id,
+            TenantIntegration.provider == provider,
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        return
+    row.connection_status = status
+    row.last_error = (error or "")[:500] or None
+    session.add(row)
+    logger.warning(
+        "integration_status_marked",
+        tenant_id=tenant_id,
+        provider=provider,
+        status=status.value,
+    )
+
+
+async def amark_integration_status(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    provider: str,
+    status: ConnectionStatus,
+    error: str | None = None,
+) -> None:
+    """Persist an OAuth connection lifecycle transition (async API plane).
+
+    Args:
+        session: Async DB session (caller commits).
+        tenant_id: Tenant owning the integration row.
+        provider: Provider key (``ramp`` / ``okta``).
+        status: Target lifecycle state (EXPIRED or REVOKED).
+        error: Short, secret-free reason surfaced as ``last_error``.
+    """
+    row = (
+        await session.execute(
+            select(TenantIntegration).where(
+                TenantIntegration.tenant_id == tenant_id,
+                TenantIntegration.provider == provider,
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        return
+    row.connection_status = status
+    row.last_error = (error or "")[:500] or None
+    session.add(row)
+    logger.warning(
+        "integration_status_marked",
+        tenant_id=tenant_id,
+        provider=provider,
+        status=status.value,
+    )
+
+
+async def aclear_integration_error(
+    session: AsyncSession, *, tenant_id: str, provider: str
+) -> None:
+    """Clear a stale ``last_error`` when a sync is explicitly retried.
+
+    Args:
+        session: Async DB session (caller commits).
+        tenant_id: Tenant owning the integration row.
+        provider: Provider key (``ramp`` / ``okta``).
+    """
+    row = (
+        await session.execute(
+            select(TenantIntegration).where(
+                TenantIntegration.tenant_id == tenant_id,
+                TenantIntegration.provider == provider,
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        return
+    row.last_error = None
+    session.add(row)
+
+
 async def acreate_pending_checkpoint(
     session: AsyncSession,
     *,

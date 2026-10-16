@@ -15,12 +15,18 @@ from celery import Task
 from sqlalchemy import select
 from zellovest_shared.config import get_settings
 from zellovest_shared.db.models import (
+    ConnectionStatus,
     EntityType,
     IngestionSyncCheckpoint,
     SyncStatus,
     TenantIntegration,
+    is_integration_token_expired,
 )
-from zellovest_shared.db.repository import mark_checkpoint, upsert_integration_sync
+from zellovest_shared.db.repository import (
+    mark_checkpoint,
+    mark_integration_status_sync,
+    upsert_integration_sync,
+)
 from zellovest_shared.db.session import get_session_factory
 from zellovest_shared.logging_conf import get_logger
 from zellovest_shared.schemas.webhooks import OktaSignal
@@ -34,7 +40,14 @@ from zellovest_shared.workers.okta_client import (
 from zellovest_shared.workers.okta_client import (
     RateLimitError as OktaRateLimitError,
 )
-from zellovest_shared.workers.ramp_client import RampClient, RateLimitError, TransientRampError
+from zellovest_shared.workers.ramp_client import (
+    PermanentRampError,
+    RampClient,
+    RateLimitError,
+    TransientRampError,
+    is_auth_failure as is_ramp_auth_failure,
+    refresh_ramp_access_token,
+)
 from zellovest_shared.workers.gcs_writer import ENTITY_FOLDERS, write_records_gz
 
 from zellovest_workers.celery_app import QUEUE_INGESTION, celery_app
@@ -61,19 +74,18 @@ _OKTA_GCS_FOLDERS = {"users": "okta_users", "apps": "okta_apps", "logs": "okta_l
 
 
 def _raw_bucket(settings: Any) -> str:
-    """Resolve the GCS raw bucket with legacy S3 env fallback."""
-    if settings is None:
-        return "tenant-bucket"
+    """Resolve the GCS raw bucket """
+    # if settings is None:
+    #     return ""
     return (
         getattr(settings, "gcs_raw_bucket", "")
-        or "tenant-bucket"
     )
 
 
 def _gcp_project(settings: Any) -> str | None:
     """Resolve the GCP project id (None uses default credentials)."""
-    if settings is None:
-        return None
+    # if settings is None:
+    #     return None
     return getattr(settings, "google_cloud_project", "") or None
 
 
@@ -96,6 +108,153 @@ def _load_access_token(session: Any, tenant_id: str, key_b64: str, provider: str
     if row is None:
         raise ValueError(f"no {provider} integration for tenant {tenant_id}")
     return decrypt_token(row.encrypted_access_token, row.access_nonce, key_b64)
+
+
+def _mark_provider_status(
+    session: Any,
+    tenant_id: str,
+    provider: str,
+    status: ConnectionStatus,
+    error: str,
+) -> None:
+    """Persist an OAuth lifecycle transition best-effort (never fails the task).
+
+    Args:
+        session: Sync DB session (committed here on success).
+        tenant_id: Tenant owning the integration row.
+        provider: Provider key (``ramp`` / ``okta``).
+        status: Target lifecycle state (EXPIRED or REVOKED).
+        error: Short, secret-free reason stored as ``last_error``.
+    """
+    try:
+        mark_integration_status_sync(
+            session,
+            tenant_id=tenant_id,
+            provider=provider,
+            status=status,
+            error=error,
+        )
+        session.commit()
+    except Exception:
+        try:
+            session.rollback()
+        except Exception:
+            pass
+    logger.warning(
+        "integration_marked_needs_reconnect",
+        tenant_id=tenant_id,
+        provider=provider,
+        status=status.value,
+    )
+
+
+def _resolve_ramp_auth(session: Any, tenant_id: str, settings: Any) -> dict[str, Any]:
+    """Resolve full Ramp OAuth material for a tenant.
+
+    Args:
+        session: Sync DB session.
+        tenant_id: Tenant owning the ``ramp`` integration row.
+        settings: Worker settings (encryption key).
+
+    Returns:
+        Mapping with ``token``, ``refresh_token``, ``expires_at`` and
+        ``scopes``.
+
+    Raises:
+        ValueError: When no Ramp integration row exists for the tenant.
+    """
+    row = session.execute(
+        select(TenantIntegration).where(
+            TenantIntegration.tenant_id == tenant_id,
+            TenantIntegration.provider == "ramp",
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise ValueError(f"no ramp integration for tenant {tenant_id}")
+    key = settings.credentials_encryption_key if settings else ""
+    token = decrypt_token(row.encrypted_access_token, row.access_nonce, key)
+    refresh_token = ""
+    if row.encrypted_refresh_token and row.refresh_nonce:
+        try:
+            refresh_token = decrypt_token(
+                row.encrypted_refresh_token,
+                row.refresh_nonce,
+                key,
+            )
+        except Exception:
+            refresh_token = ""
+    return {
+        "token": token,
+        "refresh_token": refresh_token,
+        "expires_at": row.token_expires_at,
+        "scopes": list(row.scopes or []),
+    }
+
+
+def _refresh_ramp_token(
+    session: Any, tenant_id: str, settings: Any, auth: dict[str, Any]
+) -> str:
+    """Renew an expired Ramp access token and persist the rotated pair.
+
+    Args:
+        session: Sync DB session (committed here on success).
+        tenant_id: Tenant owning the ``ramp`` integration row.
+        settings: Worker settings (needs the Ramp OAuth app credentials).
+        auth: Mapping from :func:`_resolve_ramp_auth` with a refresh token.
+
+    Returns:
+        The fresh access token.
+
+    Raises:
+        PermanentRampError: When refresh is impossible (no app configured
+            or grant revoked) — the tenant must reconnect; do not retry.
+    """
+    token_url = getattr(settings, "ramp_token_url", "") if settings else ""
+    client_id = getattr(settings, "ramp_client_id", "") if settings else ""
+    client_secret = getattr(settings, "ramp_client_secret", "") if settings else ""
+    if not token_url or not client_id or not client_secret or not auth["refresh_token"]:
+        _mark_provider_status(
+            session,
+            tenant_id,
+            "ramp",
+            ConnectionStatus.EXPIRED,
+            "Ramp access token expired — reconnect the integration",
+        )
+        raise PermanentRampError("Ramp access token expired — reconnect the integration")
+    try:
+        tokens = refresh_ramp_access_token(
+            token_url, client_id, client_secret, auth["refresh_token"]
+        )
+    except PermanentRampError as exc:
+        _mark_provider_status(
+            session,
+            tenant_id,
+            "ramp",
+            ConnectionStatus.REVOKED,
+            f"Ramp refresh rejected — reconnect required ({exc})",
+        )
+        raise PermanentRampError(
+            "Ramp refresh rejected — reconnect the integration in /integrations"
+        ) from exc
+    new_refresh = str(tokens.get("refresh_token") or "") or auth["refresh_token"]
+    key = settings.credentials_encryption_key
+    access_nonce = generate_nonce()
+    access_ct, _ = encrypt_token(str(tokens["access_token"]), key, access_nonce)
+    refresh_ct, refresh_nonce = encrypt_token(new_refresh, key)
+    upsert_integration_sync(
+        session,
+        tenant_id=tenant_id,
+        provider="ramp",
+        encrypted_access_token=access_ct,
+        encrypted_refresh_token=refresh_ct,
+        access_nonce=access_nonce,
+        refresh_nonce=refresh_nonce,
+        token_expires_at=datetime.now(UTC) + timedelta(seconds=int(tokens["expires_in"])),
+        scopes=auth["scopes"] or None,
+    )
+    session.commit()
+    logger.info("ramp_token_refreshed", tenant_id=tenant_id)
+    return str(tokens["access_token"])
 
 
 def _load_okta_credentials(session: Any, tenant_id: str, settings: Any) -> tuple[str, str]:
@@ -195,10 +354,29 @@ def _refresh_okta_bearer_token(session: Any, tenant_id: str, settings: Any, auth
     client_id = getattr(settings, "okta_client_id", "") if settings else ""
     client_secret = getattr(settings, "okta_client_secret", "") if settings else ""
     if not client_id or not client_secret or not auth["refresh_token"]:
+        _mark_provider_status(
+            session,
+            tenant_id,
+            "okta",
+            ConnectionStatus.EXPIRED,
+            "Okta access token expired — reconnect the integration",
+        )
         raise PermanentOktaError("Okta Bearer token expired — Reconnect the integration")
-    tokens = refresh_access_token(
-        auth["domain"], client_id, client_secret, auth["refresh_token"]
-    )
+    try:
+        tokens = refresh_access_token(
+            auth["domain"], client_id, client_secret, auth["refresh_token"]
+        )
+    except PermanentOktaError as exc:
+        _mark_provider_status(
+            session,
+            tenant_id,
+            "okta",
+            ConnectionStatus.REVOKED,
+            f"Okta refresh rejected — reconnect required ({exc})",
+        )
+        raise PermanentOktaError(
+            "Okta refresh rejected — reconnect the integration in /integrations"
+        ) from exc
     new_refresh = tokens["refresh_token"] or auth["refresh_token"]
     key = settings.credentials_encryption_key
     access_nonce = generate_nonce()
@@ -251,9 +429,11 @@ def _poll_entity(
             mark_checkpoint(session, checkpoint, status=SyncStatus.RUNNING)
             session.commit()
 
-        access_token = _load_access_token(
-            session, tenant_id, settings.credentials_encryption_key if settings else ""
-        )
+        auth = _resolve_ramp_auth(session, tenant_id, settings)
+        access_token = auth["token"]
+        if auth["refresh_token"] and is_integration_token_expired(auth["expires_at"]):
+            # Hourly OAuth token lapsed — renew in place so the sync proceeds.
+            access_token = _refresh_ramp_token(session, tenant_id, settings, auth)
         client = RampClient(
             settings.ramp_api_base_url if settings else "https://api.ramp.com", access_token
         )
@@ -303,6 +483,42 @@ def _poll_entity(
         )
         return {"sync_id": sync_id, "pages": pages, "records": total_records, "keys": keys}
     except (TransientRampError, RateLimitError, httpx.TimeoutException, httpx.ConnectError):
+        raise
+    except PermanentRampError as exc:
+        if is_ramp_auth_failure(exc):
+            _mark_provider_status(
+                session,
+                tenant_id,
+                "ramp",
+                ConnectionStatus.REVOKED,
+                f"Ramp auth rejected — reconnect required ({exc})",
+            )
+            if checkpoint is not None:
+                try:
+                    mark_checkpoint(
+                        session,
+                        checkpoint,
+                        status=SyncStatus.FAILED,
+                        error_log="Ramp auth rejected — reconnect the integration in /integrations",
+                    )
+                    session.commit()
+                except Exception:
+                    session.rollback()
+            raise PermanentRampError(
+                "Ramp access token expired or revoked — "
+                "reconnect the integration in /integrations"
+            ) from exc
+        if checkpoint is not None:
+            try:
+                mark_checkpoint(
+                    session,
+                    checkpoint,
+                    status=SyncStatus.FAILED,
+                    error_log=f"{type(exc).__name__}: {exc}",
+                )
+                session.commit()
+            except Exception:
+                session.rollback()
         raise
     except Exception as exc:
         if checkpoint is not None:
@@ -390,9 +606,10 @@ def handle_ramp_webhook_event(
         if not event_id or not tenant_id:
             raise ValueError("webhook task missing tenant_id/event_id")
 
-        access_token = _load_access_token(
-            session, tenant_id, settings.credentials_encryption_key if settings else ""
-        )
+        auth = _resolve_ramp_auth(session, tenant_id, settings)
+        access_token = auth["token"]
+        if auth["refresh_token"] and is_integration_token_expired(auth["expires_at"]):
+            access_token = _refresh_ramp_token(session, tenant_id, settings, auth)
         client = RampClient(
             settings.ramp_api_base_url if settings else "https://api.ramp.com", access_token
         )
@@ -420,6 +637,30 @@ def handle_ramp_webhook_event(
         return {"sync_id": sync_id, "event_id": event_id, "key": key}
     except (TransientRampError, RateLimitError, httpx.TimeoutException, httpx.ConnectError):
         raise
+    except PermanentRampError as exc:
+        if is_ramp_auth_failure(exc):
+            _mark_provider_status(
+                session,
+                tenant_id,
+                "ramp",
+                ConnectionStatus.REVOKED,
+                f"Ramp auth rejected — reconnect required ({exc})",
+            )
+        if checkpoint is not None:
+            try:
+                mark_checkpoint(
+                    session,
+                    checkpoint,
+                    status=SyncStatus.FAILED,
+                    error_log="Ramp auth rejected — reconnect the integration in /integrations",
+                )
+                session.commit()
+            except Exception:
+                session.rollback()
+        raise PermanentRampError(
+            "Ramp access token expired or revoked — "
+            "reconnect the integration in /integrations"
+        ) from exc
     except Exception as exc:
         if checkpoint is not None:
             try:
@@ -589,6 +830,27 @@ def sync_okta_batch(
             client.close()
     except (TransientOktaError, OktaRateLimitError, httpx.TimeoutException, httpx.ConnectError):
         raise
+    except PermanentOktaError as exc:
+        _mark_provider_status(
+            session,
+            tenant_id,
+            "okta",
+            ConnectionStatus.REVOKED,
+            f"Okta auth rejected — reconnect required ({exc})",
+        )
+        if checkpoint is not None:
+            try:
+                mark_checkpoint(
+                    session, checkpoint, status=SyncStatus.FAILED,
+                    error_log="Okta auth rejected — reconnect the integration in /integrations",
+                )
+                session.commit()
+            except Exception:
+                session.rollback()
+        raise PermanentOktaError(
+            "Okta access token expired or revoked — "
+            "reconnect the integration in /integrations"
+        ) from exc
     except Exception as exc:
         if checkpoint is not None:
             try:
