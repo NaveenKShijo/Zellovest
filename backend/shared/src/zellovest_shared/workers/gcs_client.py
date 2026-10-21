@@ -379,3 +379,12 @@ def get_gcs_reader(project: str = "", *, use_fake: bool = False) -> GcsObjectRea
     if use_fake:
         return FakeGcsReader()
     return GcsStorageReader(project=project)
+
+def make_storage_client(project: str | None, credentials_path: str | None):
+    from google.cloud import storage
+    from google.oauth2 import service_account
+
+    if credentials_path:
+        creds = service_account.Credentials.from_service_account_file(credentials_path)
+        return storage.Client(project=project, credentials=creds)
+    return storage.Client(project=project)

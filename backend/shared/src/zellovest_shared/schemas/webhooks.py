@@ -43,8 +43,8 @@ class WebhookAck(BaseModel):
     """Immediate webhook acknowledgement (no payload echo)."""
 
     received: bool = True
-    sync_id: str | None = None
-    deduped: bool = False
+    # sync_id: str | None = None
+    # deduped: bool = False
 
 class OktaActor(BaseModel):
     """Who performed the action."""

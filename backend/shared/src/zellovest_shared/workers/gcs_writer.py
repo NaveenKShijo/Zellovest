@@ -47,6 +47,37 @@ def _to_jsonl_gz(records: list[dict[str, Any]]) -> bytes:
     lines = [json.dumps(r, default=str) for r in records]
     return gzip.compress(("\n".join(lines) + "\n").encode("utf-8"))
 
+def _make_storage_client(project: str | None):
+    """Create a GCS client, using the configured service-account key file.
+
+    ``google.auth.default()`` only inspects the process environment and
+    gcloud ADC. Pydantic Settings reads ``backend/.env`` without exporting
+    it, so the key path is passed explicitly here.
+
+    Args:
+        project: GCP project id, or None to use the key's project.
+
+    Returns:
+        An authenticated ``google.cloud.storage.Client``.
+    """
+    from google.cloud import storage
+    from google.oauth2 import service_account
+
+    credentials_path = ""
+    try:
+        from zellovest_shared.config import get_settings
+
+        credentials_path = get_settings().google_application_credentials or ""
+    except Exception:
+        credentials_path = ""
+
+    if credentials_path:
+        credentials = service_account.Credentials.from_service_account_file(
+            credentials_path
+        )
+        return storage.Client(project=project, credentials=credentials)
+    return storage.Client(project=project)
+
 
 def write_records_gz(
     records: list[dict[str, Any]],
@@ -95,9 +126,10 @@ def write_records_gz(
         ) from exc
 
     try:
-        client = storage.Client(project=project)
+        client = _make_storage_client(project)
         blob = client.bucket(bucket).blob(key)
         blob.upload_from_string(payload, content_type="application/gzip")
+
     except Exception as exc:
         logger.error(
             "gcs_write_failed",
