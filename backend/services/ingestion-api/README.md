@@ -23,6 +23,13 @@ Notes:
 
 ## Env
 
+Password recovery uses a one-time link sent through SMTP. Configure
+`EMAIL_SMTP_HOST`, `EMAIL_FROM`, and `FRONTEND_URL`; the default SMTP port is
+587 with STARTTLS. Set `EMAIL_SMTP_USERNAME` and `EMAIL_SMTP_PASSWORD` when
+the relay requires authentication. Apply migration `0012_password_reset_tokens`
+before deploying the recovery endpoints. Links expire after 30 minutes and
+can only be used once.
+
 - `GOOGLE_DRIVE_CLIENT_ID` / `GOOGLE_DRIVE_CLIENT_SECRET` — Drive OAuth app.
 - `GOOGLE_DRIVE_AUTH_URL` (default `https://accounts.google.com/o/oauth2/v2/auth`) / `GOOGLE_DRIVE_TOKEN_URL` (default `https://oauth2.googleapis.com/token`) / `GOOGLE_DRIVE_REDIRECT_URI` — must end in `/api/v1/integrations/google-drive/callback`.
 - `GOOGLE_DRIVE_WEBHOOK_TOKEN` — shared secret echoed as the watch `token`, verified on `X-Goog-Channel-Token`.

@@ -164,6 +164,11 @@ export default function LoginPage() {
               }}
             />
           </label>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '-4px' }}>
+            <a href="/forgot-password" style={{ fontSize: '12px', color: 'var(--color-brand)', fontWeight: 600 }}>
+              Forgot password?
+            </a>
+          </div>
           <button
             type="submit"
             disabled={isLoggingIn}

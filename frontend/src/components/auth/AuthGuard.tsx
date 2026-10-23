@@ -4,8 +4,8 @@ import React, { useEffect } from 'react';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 
-/** Routes that render without a session (login + invite claim). */
-const PUBLIC_ROUTES = ['/login', '/invite'];
+/** Routes that render without a session (login, invite claim, password recovery). */
+const PUBLIC_ROUTES = ['/login', '/invite', '/forgot-password', '/reset-password'];
 
 function isPublicRoute(pathname: string): boolean {
   return PUBLIC_ROUTES.some((route) => pathname === route || pathname.startsWith(`${route}/`));
