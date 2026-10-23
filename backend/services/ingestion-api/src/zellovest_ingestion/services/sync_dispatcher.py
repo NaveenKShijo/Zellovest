@@ -1,8 +1,7 @@
-from uuid import UUID
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from zellovest_shared.db.models import EntityType, SyncMode
 from zellovest_shared.db.repository import acreate_pending_checkpoint
 from zellovest_shared.logging_conf import get_logger
@@ -93,6 +92,7 @@ async def dispatch_sync_task(   # ramp dispatch sync
     cursor: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
+    force_new: bool = False,
 ) -> tuple[UUID, str, bool]:
     """Write a PENDING checkpoint and enqueue a Ramp pull-sync task.
 
@@ -125,6 +125,7 @@ async def dispatch_sync_task(   # ramp dispatch sync
         cursor_token=cursor,
         date_from=date_from,
         date_to=date_to,
+        force_new=force_new,
     )
     if not created:
         logger.info("dispatch_sync_deduped", tenant_id=tenant_id, sync_id=str(checkpoint.sync_id))
@@ -137,7 +138,12 @@ async def dispatch_sync_task(   # ramp dispatch sync
         "date_from": date_from,
         "date_to": date_to
     })
-    logger.info("dispatch_sync_enqueued", tenant_id=tenant_id, sync_id=str(checkpoint.sync_id), task_id=task_id)
+    logger.info(
+        "dispatch_sync_enqueued",
+        tenant_id=tenant_id,
+        sync_id=str(checkpoint.sync_id),
+        task_id=task_id,
+    )
     return checkpoint.sync_id, task_id, True
 
 
@@ -152,7 +158,18 @@ def _enqueue_drive(kwargs: dict) -> str:
     from zellovest_workers.celery_app import celery_app
 
     async_result = celery_app.send_task(DRIVE_SYNC_TASK_NAME, kwargs=kwargs)
-    return str(async_result.id)
+    task_id = str(async_result.id)
+    logger.info(
+        "drive_task_enqueued_redis",
+        tenant_id=kwargs.get("tenant_id"),
+        sync_id=kwargs.get("sync_id"),
+        task_id=task_id,
+        task_name=DRIVE_SYNC_TASK_NAME,
+        queue="ingestion_tasks",
+        cursor=kwargs.get("cursor"),
+        page_size=kwargs.get("page_size"),
+    )
+    return task_id
 
 
 async def dispatch_drive_sync(
@@ -190,13 +207,35 @@ async def dispatch_drive_sync(
 
     mode = SyncMode.BACKFILL if (full_sync or cursor) else SyncMode.INCREMENTAL
 
+    logger.info(
+        "dispatch_drive_sync_called",
+        tenant_id=tenant_id,
+        cursor=cursor,
+        effective_cursor=effective_cursor,
+        full_sync=full_sync,
+        force_new=full_sync,
+        mode=mode.value,
+        page_size=page_size,
+    )
+
     checkpoint, created = await acreate_pending_checkpoint(
         session,
         tenant_id=tenant_id,
         entity=EntityType.DOCUMENTS,
         mode=mode,
         cursor_token=effective_cursor,
+        force_new=full_sync,
     )
+    logger.info(
+        "dispatch_drive_sync_checkpoint",
+        tenant_id=tenant_id,
+        sync_id=str(checkpoint.sync_id),
+        created=created,
+        status=checkpoint.status.value,
+        cursor_token=checkpoint.cursor_token,
+        force_new=full_sync,
+    )
+
     if not created:
         logger.info(
             "dispatch_drive_sync_deduped",
@@ -216,6 +255,7 @@ async def dispatch_drive_sync(
         tenant_id=tenant_id,
         sync_id=str(checkpoint.sync_id),
         task_id=task_id,
+        created=created,
     )
     return checkpoint.sync_id, task_id, True
 
@@ -237,6 +277,7 @@ async def dispatch_okta_sync(
     since: str | None = None,
     until: str | None = None,
     page_size: int = 200,
+    force_new: bool = False,
 ) -> tuple[UUID, str, bool]:
     """Write a PENDING checkpoint and enqueue an Okta batch-pull task.
 
@@ -275,6 +316,7 @@ async def dispatch_okta_sync(
         cursor_token=effective_cursor,
         date_from=since,
         date_to=until,
+        force_new=force_new,
     )
     if not created:
         logger.info(

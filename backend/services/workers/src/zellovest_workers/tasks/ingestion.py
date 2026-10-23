@@ -1,4 +1,4 @@
-"""Ingestion data-plane tasks: Ramp polling + webhook handlers, Okta sync.
+"""Ingestion data-plane tasks: Ramp polling + webhooks, Okta sync, Drive.
 
 Task signatures carry metadata IDs only (``tenant_id``, ``cursor``,
 ``event_id``, ``sync_id``). Workers fetch bytes from source APIs directly and
@@ -6,6 +6,7 @@ stream gzipped JSONL into the partitioned GCS bronze lake. Raw payloads
 never touch Redis.
 """
 
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -22,6 +23,12 @@ from zellovest_shared.db.models import (
     TenantIntegration,
     is_integration_token_expired,
 )
+from zellovest_shared.db.models import (
+    Upload as UploadRow,
+)
+from zellovest_shared.db.models import (
+    UploadStatus as DbUploadStatus,
+)
 from zellovest_shared.db.repository import (
     mark_checkpoint,
     mark_integration_status_sync,
@@ -31,6 +38,15 @@ from zellovest_shared.db.session import get_session_factory
 from zellovest_shared.logging_conf import get_logger
 from zellovest_shared.schemas.webhooks import OktaSignal
 from zellovest_shared.security.crypto import decrypt_token, encrypt_token, generate_nonce
+from zellovest_shared.workers.drive_client import (
+    DriveAuthError,
+    DriveCursorExpiredError,
+    DriveTokenRefreshError,
+    GoogleDriveClient,
+    GoogleDriveError,
+    refresh_drive_access_token,
+)
+from zellovest_shared.workers.gcs_writer import ENTITY_FOLDERS, write_bytes, write_records_gz
 from zellovest_shared.workers.okta_client import (
     OktaClient,
     PermanentOktaError,
@@ -45,14 +61,20 @@ from zellovest_shared.workers.ramp_client import (
     RampClient,
     RateLimitError,
     TransientRampError,
-    is_auth_failure as is_ramp_auth_failure,
     refresh_ramp_access_token,
 )
-from zellovest_shared.workers.gcs_writer import ENTITY_FOLDERS, write_records_gz
+from zellovest_shared.workers.ramp_client import (
+    is_auth_failure as is_ramp_auth_failure,
+)
 
 from zellovest_workers.celery_app import QUEUE_INGESTION, celery_app
 
 logger = get_logger(__name__)
+
+
+class PermanentDriveError(RuntimeError):
+    """Drive auth/config failure that retries cannot fix (reconnect needed)."""
+
 
 _RETRY_KWARGS: dict[str, Any] = {
     "autoretry_for": (
@@ -60,6 +82,7 @@ _RETRY_KWARGS: dict[str, Any] = {
         RateLimitError,
         TransientOktaError,
         OktaRateLimitError,
+        GoogleDriveError,
         httpx.TimeoutException,
         httpx.ConnectError,
     ),
@@ -71,6 +94,11 @@ _RETRY_KWARGS: dict[str, Any] = {
 
 _OKTA_ENTITIES = ("users", "apps", "logs")
 _OKTA_GCS_FOLDERS = {"users": "okta_users", "apps": "okta_apps", "logs": "okta_logs"}
+
+_DRIVE_PROVIDER = "google_drive"
+_DRIVE_FOLDER_MIME = "application/vnd.google-apps.folder"
+_DRIVE_PROCESSABLE_MIMES = ("application/pdf", "image/")
+_DRIVE_FILENAME_MAX_LEN = 180
 
 
 def _raw_bucket(settings: Any) -> str:
@@ -316,7 +344,9 @@ def _resolve_okta_auth(session: Any, tenant_id: str, settings: Any) -> dict[str,
         token = settings.okta_api_token or ""
         scheme = "SSWS"
     if not domain or not token:
-        raise ValueError(f"Okta credentials missing for tenant {tenant_id} (need OKTA_DOMAIN + token)")
+        raise ValueError(
+            f"Okta credentials missing for tenant {tenant_id} (need OKTA_DOMAIN + token)"
+        )
     return {
         "domain": domain,
         "token": token,
@@ -335,7 +365,9 @@ def _okta_bearer_expired(expires_at: Any, skew_seconds: int = 60) -> bool:
     return aware <= datetime.now(UTC) + timedelta(seconds=skew_seconds)
 
 
-def _refresh_okta_bearer_token(session: Any, tenant_id: str, settings: Any, auth: dict[str, Any]) -> str:
+def _refresh_okta_bearer_token(
+    session: Any, tenant_id: str, settings: Any, auth: dict[str, Any]
+) -> str:
     """Renew an expired OAuth Bearer token and persist the rotated pair.
 
     Args:
@@ -407,6 +439,621 @@ def _get_checkpoint(session: Any, sync_id: str) -> IngestionSyncCheckpoint | Non
     return session.execute(
         select(IngestionSyncCheckpoint).where(IngestionSyncCheckpoint.sync_id == wanted)
     ).scalar_one_or_none()
+
+
+def _drive_folder_ids(settings: Any) -> list[str]:
+    """Return configured Drive folder ids (comma-separated env value)."""
+    raw = getattr(settings, "google_drive_folder_ids", "") if settings else ""
+    return [part.strip() for part in str(raw or "").split(",") if part.strip()]
+
+
+def _safe_drive_filename(raw: str) -> str:
+    """Sanitize a Drive file name for use in a GCS object key.
+
+    Args:
+        raw: Drive ``name`` field (may contain slashes/control chars).
+
+    Returns:
+        A safe basename, truncated to preserve the extension when possible.
+    """
+    base = str(raw or "").replace("\\", "/").rsplit("/", 1)[-1]
+    base = re.sub(r"[\x00-\x1f\x7f]", "", base)
+    base = re.sub(r"\s+", " ", base).strip()
+    if not base or base in {".", ".."}:
+        return "drive-file"
+    if len(base) > _DRIVE_FILENAME_MAX_LEN:
+        stem, dot, ext = base.rpartition(".")
+        if dot and stem and len(ext) <= 16:
+            keep = _DRIVE_FILENAME_MAX_LEN - len(ext) - 1
+            base = stem[:keep].rstrip() + dot + ext
+        else:
+            base = base[:_DRIVE_FILENAME_MAX_LEN].rstrip()
+    return base or "drive-file"
+
+
+def _is_drive_folder(file: dict[str, Any]) -> bool:
+    """Return True when a Drive list entry is a folder (not a document)."""
+    return str(file.get("mimeType") or "") == _DRIVE_FOLDER_MIME
+
+
+def _is_processable_drive_file(file: dict[str, Any]) -> bool:
+    """Return True for PDF/image files the OCR worker can consume."""
+    mime_type = str(file.get("mimeType") or "")
+    return bool(file.get("id")) and mime_type.startswith(_DRIVE_PROCESSABLE_MIMES)
+
+
+def _drive_change_record(
+    *,
+    tenant_id: str,
+    sync_id: str | None,
+    file: dict[str, Any],
+    removed: bool,
+    change_time: str | None,
+) -> dict[str, Any]:
+    """Build one tenant-tagged bronze record for a Drive file/change."""
+    record: dict[str, Any] = {
+        "tenant_id": tenant_id,
+        "source": _DRIVE_PROVIDER,
+        "sync_id": sync_id,
+        "removed": removed,
+        "change_time": change_time,
+    }
+    record.update(file)
+    return record
+
+
+def _resolve_drive_auth(session: Any, tenant_id: str, settings: Any) -> dict[str, Any]:
+    """Resolve full Google Drive OAuth material for a tenant.
+
+    Args:
+        session: Sync DB session.
+        tenant_id: Tenant owning the ``google_drive`` integration row.
+        settings: Worker settings (encryption key).
+
+    Returns:
+        Mapping with ``token``, ``refresh_token``, ``expires_at`` and
+        ``scopes``.
+
+    Raises:
+        ValueError: When no Drive integration row exists for the tenant.
+    """
+    row = session.execute(
+        select(TenantIntegration).where(
+            TenantIntegration.tenant_id == tenant_id,
+            TenantIntegration.provider == _DRIVE_PROVIDER,
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise ValueError(f"no {_DRIVE_PROVIDER} integration for tenant {tenant_id}")
+    key = settings.credentials_encryption_key if settings else ""
+    token = decrypt_token(row.encrypted_access_token, row.access_nonce, key)
+    refresh_token = ""
+    if row.encrypted_refresh_token and row.refresh_nonce:
+        try:
+            refresh_token = decrypt_token(
+                row.encrypted_refresh_token,
+                row.refresh_nonce,
+                key,
+            )
+        except Exception:
+            refresh_token = ""
+    return {
+        "token": token,
+        "refresh_token": refresh_token,
+        "expires_at": row.token_expires_at,
+        "scopes": list(row.scopes or []),
+    }
+
+
+def _refresh_drive_token(
+    session: Any, tenant_id: str, settings: Any, auth: dict[str, Any]
+) -> str:
+    """Renew an expired Drive access token and persist the rotated pair.
+
+    Args:
+        session: Sync DB session (committed here on success).
+        tenant_id: Tenant owning the ``google_drive`` integration row.
+        settings: Worker settings (needs the Google OAuth app credentials).
+        auth: Mapping from :func:`_resolve_drive_auth` with a refresh token.
+
+    Returns:
+        The fresh access token.
+
+    Raises:
+        PermanentDriveError: When refresh is impossible (no app configured
+            or the grant was revoked) — the tenant must reconnect.
+    """
+    token_url = (
+        getattr(settings, "google_drive_token_url", "") if settings else ""
+    ) or "https://oauth2.googleapis.com/token"
+    client_id = getattr(settings, "google_drive_client_id", "") if settings else ""
+    client_secret = getattr(settings, "google_drive_client_secret", "") if settings else ""
+    if not client_id or not client_secret or not auth["refresh_token"]:
+        _mark_provider_status(
+            session,
+            tenant_id,
+            _DRIVE_PROVIDER,
+            ConnectionStatus.EXPIRED,
+            "Google Drive access token expired — reconnect the integration",
+        )
+        raise PermanentDriveError(
+            "Google Drive access token expired — reconnect the integration"
+        )
+    try:
+        tokens = refresh_drive_access_token(
+            token_url,
+            client_id,
+            client_secret,
+            auth["refresh_token"],
+        )
+    except DriveTokenRefreshError as exc:
+        _mark_provider_status(
+            session,
+            tenant_id,
+            _DRIVE_PROVIDER,
+            ConnectionStatus.REVOKED,
+            f"Google Drive refresh rejected — reconnect required ({exc})",
+        )
+        raise PermanentDriveError(
+            "Google Drive refresh rejected — reconnect the integration in /integrations"
+        ) from exc
+
+    new_refresh = str(tokens.get("refresh_token") or "") or auth["refresh_token"]
+    key = settings.credentials_encryption_key
+    access_nonce = generate_nonce()
+    access_ct, _ = encrypt_token(str(tokens["access_token"]), key, access_nonce)
+    refresh_ct, refresh_nonce = encrypt_token(new_refresh, key)
+    upsert_integration_sync(
+        session,
+        tenant_id=tenant_id,
+        provider=_DRIVE_PROVIDER,
+        encrypted_access_token=access_ct,
+        encrypted_refresh_token=refresh_ct,
+        access_nonce=access_nonce,
+        refresh_nonce=refresh_nonce,
+        token_expires_at=datetime.now(UTC)
+        + timedelta(seconds=int(tokens.get("expires_in") or 3600)),
+        scopes=auth["scopes"] or None,
+    )
+    session.commit()
+    logger.info("drive_token_refreshed", tenant_id=tenant_id)
+    return str(tokens["access_token"])
+
+
+def _drive_gcs_key(tenant_id: str, file: dict[str, Any]) -> str:
+    """Build the tenant-isolated GCS key for one Drive file."""
+    file_id = str(file.get("id") or "unknown")
+    filename = _safe_drive_filename(str(file.get("name") or file_id))
+    return f"drive/{tenant_id}/{file_id}/{filename}"
+
+
+def _fan_out_drive_file(
+    session: Any,
+    client: GoogleDriveClient,
+    settings: Any,
+    *,
+    tenant_id: str,
+    file: dict[str, Any],
+) -> bool:
+    """Copy one Drive file to GCS and enqueue OCR/extraction.
+
+    The upload lease is flipped to ``processing`` before the document task is
+    enqueued (mirrors ``stage_document``) so duplicate change records cannot
+    double-process a file.
+
+    Returns:
+        True when a new processing task was enqueued.
+    """
+    if not _is_processable_drive_file(file):
+        return False
+    file_id = str(file.get("id") or "")
+    mime_type = str(file.get("mimeType") or "application/octet-stream")
+    filename = _safe_drive_filename(str(file.get("name") or file_id))
+    gcs_key = _drive_gcs_key(tenant_id, file)
+    row = session.execute(
+        select(UploadRow).where(UploadRow.gcs_key == gcs_key)
+    ).scalar_one_or_none()
+    if row is not None and row.status in (
+        DbUploadStatus.PENDING,
+        DbUploadStatus.PROCESSING,
+    ):
+        logger.info("drive_file_already_processing", tenant_id=tenant_id, file_id=file_id)
+        return False
+    try:
+        data = client.download_file(file_id)
+    except DriveAuthError:
+        raise
+    except GoogleDriveError as exc:
+        logger.warning(
+            "drive_file_download_failed",
+            tenant_id=tenant_id,
+            file_id=file_id,
+            error_class=type(exc).__name__,
+        )
+        return False
+    if not data:
+        logger.warning("drive_file_empty", tenant_id=tenant_id, file_id=file_id)
+        return False
+    try:
+        write_bytes(
+            data,
+            bucket=_raw_bucket(settings),
+            key=gcs_key,
+            content_type=mime_type,
+            project=_gcp_project(settings),
+        )
+    except Exception as exc:
+        logger.warning(
+            "drive_file_gcs_write_failed",
+            tenant_id=tenant_id,
+            file_id=file_id,
+            error_class=type(exc).__name__,
+        )
+        return False
+
+    if row is None:
+        row = UploadRow(
+            id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            filename=filename,
+            gcs_key=gcs_key,
+            mime_type=mime_type,
+            size_expected=len(data),
+            document_type="other",
+            status=DbUploadStatus.PROCESSING,
+            expires_at=None,
+        )
+        session.add(row)
+    else:
+        row.filename = filename
+        row.mime_type = mime_type
+        row.size_expected = len(data)
+        row.status = DbUploadStatus.PROCESSING
+        row.error = None
+    session.commit()
+
+    try:
+        from zellovest_workers.tasks.document_ocr import process_document
+
+        process_document.delay(
+            tenant_id=tenant_id,
+            gcs_key=gcs_key,
+            document_type_hint=None,
+            upload_id=str(row.id),
+        )
+    except Exception as exc:
+        row.status = DbUploadStatus.FAILED
+        row.error = f"enqueue failed: {type(exc).__name__}"
+        session.commit()
+        raise
+    logger.info("drive_file_fanned_out", tenant_id=tenant_id, file_id=file_id, gcs_key=gcs_key)
+    return True
+
+
+def _write_drive_records(
+    records: list[dict[str, Any]],
+    settings: Any,
+    *,
+    sync_id: str | None,
+    suffix: str,
+) -> str | None:
+    """Write a Drive metadata batch to the bronze lake (no-op when empty)."""
+    if not records:
+        return None
+    return write_records_gz(
+        records,
+        bucket=_raw_bucket(settings),
+        entity_folder=ENTITY_FOLDERS["documents"],
+        sync_id=sync_id or "no-sync",
+        suffix=suffix,
+        project=_gcp_project(settings),
+    )
+
+
+def _sync_drive_full(
+    session: Any,
+    client: GoogleDriveClient,
+    settings: Any,
+    *,
+    tenant_id: str,
+    sync_id: str | None,
+    page_size: int,
+) -> tuple[str, int, int, int, list[str], dict[str, Any]]:
+    """Run a full Drive backfill and return the cursor for later increments.
+
+    Returns:
+        Tuple of (start cursor, pages, records, processed, keys, stats).
+    """
+    start_token = client.get_start_page_token()
+    folder_ids = _drive_folder_ids(settings)
+    targets: list[str | None] = list(folder_ids) if folder_ids else [None]
+    seen: set[str] = set()
+    pages = 0
+    total_records = 0
+    total_processed = 0
+    keys: list[str] = []
+    for target_index, folder_id in enumerate(targets):
+        page_token: str | None = None
+        while True:
+            files, page_token = client.list_files(
+                folder_id=folder_id,
+                page_size=page_size,
+                page_token=page_token,
+            )
+            pages += 1
+            records: list[dict[str, Any]] = []
+            for file in files:
+                file_id = str(file.get("id") or "")
+                if file_id and file_id in seen:
+                    continue
+                if file_id:
+                    seen.add(file_id)
+                records.append(
+                    _drive_change_record(
+                        tenant_id=tenant_id,
+                        sync_id=sync_id,
+                        file=file,
+                        removed=False,
+                        change_time=None,
+                    )
+                )
+                if not _is_drive_folder(file) and _fan_out_drive_file(
+                    session, client, settings, tenant_id=tenant_id, file=file
+                ):
+                    total_processed += 1
+            key = _write_drive_records(
+                records,
+                settings,
+                sync_id=sync_id,
+                suffix=f"drive-full-{target_index}-page-{pages}",
+            )
+            if key:
+                keys.append(key)
+            total_records += len(records)
+            if not page_token:
+                break
+    return start_token, pages, total_records, total_processed, keys, {
+        "mode": "full",
+        "folders": folder_ids or ["*"],
+    }
+
+
+def _sync_drive_changes(
+    session: Any,
+    client: GoogleDriveClient,
+    settings: Any,
+    checkpoint: IngestionSyncCheckpoint | None,
+    *,
+    tenant_id: str,
+    cursor: str,
+    sync_id: str | None,
+    page_size: int,
+) -> tuple[str, int, int, int, list[str], dict[str, Any]]:
+    """Page ``changes.list`` from a cursor, writing records and fanning out.
+
+    Returns:
+        Tuple of (next cursor, pages, records, processed, keys, stats).
+    """
+    token = cursor
+    pages = 0
+    total_records = 0
+    total_processed = 0
+    keys: list[str] = []
+    processed_ids: set[str] = set()
+    while True:
+        changes, next_page, new_start = client.list_changes_page(
+            token,
+            page_size=page_size,
+        )
+        pages += 1
+        records: list[dict[str, Any]] = []
+        for change in changes:
+            file = change.get("file") or {}
+            file_id = str(change.get("fileId") or file.get("id") or "")
+            removed = bool(change.get("removed"))
+            records.append(
+                _drive_change_record(
+                    tenant_id=tenant_id,
+                    sync_id=sync_id,
+                    file=file or {"id": file_id},
+                    removed=removed,
+                    change_time=str(change.get("time") or "") or None,
+                )
+            )
+            if (
+                file_id not in processed_ids
+                and not removed
+                and not file.get("trashed")
+                and not _is_drive_folder(file)
+            ):
+                processed_ids.add(file_id)
+                if _fan_out_drive_file(
+                    session, client, settings, tenant_id=tenant_id, file=file
+                ):
+                    total_processed += 1
+        key = _write_drive_records(
+            records,
+            settings,
+            sync_id=sync_id,
+            suffix=f"drive-changes-page-{pages}",
+        )
+        if key:
+            keys.append(key)
+        total_records += len(records)
+        next_cursor = next_page or new_start
+        if checkpoint is not None and next_cursor:
+            mark_checkpoint(
+                session,
+                checkpoint,
+                status=SyncStatus.RUNNING,
+                cursor_token=next_cursor,
+            )
+            session.commit()
+        if next_page:
+            token = next_page
+            continue
+        token = new_start or token
+        break
+    return token, pages, total_records, total_processed, keys, {"mode": "incremental"}
+
+
+def _mark_drive_checkpoint_failed(
+    session: Any,
+    checkpoint: IngestionSyncCheckpoint | None,
+    error_log: str,
+) -> None:
+    """Best-effort FAILED transition for a Drive checkpoint."""
+    if checkpoint is None:
+        return
+    try:
+        mark_checkpoint(session, checkpoint, status=SyncStatus.FAILED, error_log=error_log)
+        session.commit()
+    except Exception:
+        try:
+            session.rollback()
+        except Exception:
+            pass
+
+
+def _sync_drive(
+    self: Task,
+    *,
+    tenant_id: str,
+    cursor: str | None,
+    sync_id: str | None,
+    page_size: int,
+) -> dict[str, Any]:
+    """Shared Drive pull-sync engine: auth -> pages -> GCS -> OCR fan-out."""
+    del self  # bound task unused beyond retry config
+    settings = _settings()
+    factory = get_session_factory()
+    session = factory()
+    checkpoint = _get_checkpoint(session, sync_id or "") if sync_id else None
+    try:
+        if checkpoint is not None:
+            mark_checkpoint(session, checkpoint, status=SyncStatus.RUNNING)
+            session.commit()
+        if not tenant_id:
+            raise ValueError("drive task missing tenant_id")
+
+        auth = _resolve_drive_auth(session, tenant_id, settings)
+        access_token = auth["token"]
+        if is_integration_token_expired(auth["expires_at"]):
+            if not auth["refresh_token"]:
+                _mark_provider_status(
+                    session,
+                    tenant_id,
+                    _DRIVE_PROVIDER,
+                    ConnectionStatus.EXPIRED,
+                    "Google Drive access token expired — reconnect the integration",
+                )
+                raise PermanentDriveError(
+                    "Google Drive access token expired — reconnect the integration"
+                )
+            access_token = _refresh_drive_token(session, tenant_id, settings, auth)
+
+        client = GoogleDriveClient(access_token=access_token)
+        try:
+            if cursor:
+                try:
+                    result = _sync_drive_changes(
+                        session,
+                        client,
+                        settings,
+                        checkpoint,
+                        tenant_id=tenant_id,
+                        cursor=cursor,
+                        sync_id=sync_id,
+                        page_size=page_size,
+                    )
+                except DriveCursorExpiredError:
+                    logger.warning(
+                        "drive_cursor_expired_reseeding",
+                        tenant_id=tenant_id,
+                        sync_id=sync_id,
+                    )
+                    result = _sync_drive_full(
+                        session,
+                        client,
+                        settings,
+                        tenant_id=tenant_id,
+                        sync_id=sync_id,
+                        page_size=page_size,
+                    )
+            else:
+                result = _sync_drive_full(
+                    session,
+                    client,
+                    settings,
+                    tenant_id=tenant_id,
+                    sync_id=sync_id,
+                    page_size=page_size,
+                )
+        finally:
+            client.close()
+
+        final_cursor, pages, total_records, total_processed, keys, stats = result
+        if checkpoint is not None:
+            mark_checkpoint(
+                session,
+                checkpoint,
+                status=SyncStatus.SUCCESS,
+                cursor_token=final_cursor,
+            )
+            session.commit()
+        logger.info(
+            "drive_sync_complete",
+            tenant_id=tenant_id,
+            sync_id=sync_id,
+            pages=pages,
+            records=total_records,
+            processed=total_processed,
+            **stats,
+        )
+        return {
+            "sync_id": sync_id,
+            "cursor": final_cursor,
+            "pages": pages,
+            "records": total_records,
+            "processed": total_processed,
+            "keys": keys,
+            **stats,
+        }
+    except DriveAuthError as exc:
+        _mark_provider_status(
+            session,
+            tenant_id,
+            _DRIVE_PROVIDER,
+            ConnectionStatus.REVOKED,
+            f"Google Drive auth rejected — reconnect required ({exc})",
+        )
+        _mark_drive_checkpoint_failed(
+            session,
+            checkpoint,
+            "Google Drive auth rejected — reconnect the integration in /integrations",
+        )
+        raise PermanentDriveError(
+            "Google Drive access token expired or revoked — "
+            "reconnect the integration in /integrations"
+        ) from exc
+    except PermanentDriveError as exc:
+        _mark_drive_checkpoint_failed(session, checkpoint, str(exc))
+        raise
+    except Exception as exc:
+        _mark_drive_checkpoint_failed(
+            session,
+            checkpoint,
+            f"{type(exc).__name__}: {exc}",
+        )
+        logger.error(
+            "drive_sync_failed",
+            tenant_id=tenant_id,
+            sync_id=sync_id,
+            error_class=type(exc).__name__,
+        )
+        raise
+    finally:
+        session.close()
 
 
 def _poll_entity(
@@ -769,7 +1416,11 @@ def sync_okta_batch(
             raise ValueError("batch task missing tenant_id")
         auth = _resolve_okta_auth(session, tenant_id, settings)
         domain, api_token, scheme = auth["domain"], auth["token"], auth["scheme"]
-        if scheme == "Bearer" and auth["refresh_token"] and _okta_bearer_expired(auth["expires_at"]):
+        if (
+            scheme == "Bearer"
+            and auth["refresh_token"]
+            and _okta_bearer_expired(auth["expires_at"])
+        ):
             # Hourly OAuth token lapsed — renew in place so the sync proceeds.
             api_token = _refresh_okta_bearer_token(session, tenant_id, settings, auth)
         client = OktaClient(domain, api_token, scheme=scheme)  # type: ignore[arg-type]
@@ -791,7 +1442,9 @@ def sync_okta_batch(
                             until=until if entity == "logs" else None,
                         )
                     except OktaRateLimitError as exc:
-                        logger.warning("okta_batch_rate_limited", tenant_id=tenant_id, entity=entity)
+                        logger.warning(
+                            "okta_batch_rate_limited", tenant_id=tenant_id, entity=entity
+                        )
                         raise self.retry(exc=exc, countdown=exc.retry_after_seconds)
                     if not records:
                         break
@@ -808,7 +1461,12 @@ def sync_okta_batch(
                     entity_records += len(records)
                     if checkpoint is not None and entity == "logs" and next_cursor:
                         last_cursor = next_cursor
-                        mark_checkpoint(session, checkpoint, status=SyncStatus.RUNNING, cursor_token=next_cursor)
+                        mark_checkpoint(
+                            session,
+                            checkpoint,
+                            status=SyncStatus.RUNNING,
+                            cursor_token=next_cursor,
+                        )
                         session.commit()
                     if not next_cursor:
                         break
@@ -825,7 +1483,12 @@ def sync_okta_batch(
                 "okta_batch_complete", tenant_id=tenant_id,
                 records=total_records, per_entity=per_entity,
             )
-            return {"sync_id": sync_id, "records": total_records, "per_entity": per_entity, "keys": keys}
+            return {
+                "sync_id": sync_id,
+                "records": total_records,
+                "per_entity": per_entity,
+                "keys": keys,
+            }
         finally:
             client.close()
     except (TransientOktaError, OktaRateLimitError, httpx.TimeoutException, httpx.ConnectError):
@@ -867,3 +1530,42 @@ def sync_okta_batch(
         raise
     finally:
         session.close()
+
+
+@celery_app.task(
+    name="zellovest.workers.tasks.ingestion.sync_drive_changes",
+    bind=True,
+    queue=QUEUE_INGESTION,
+    **_RETRY_KWARGS,
+)
+def sync_drive_changes(
+    self: Task,
+    tenant_id: str,
+    cursor: str | None = None,
+    sync_id: str | None = None,
+    page_size: int = 100,
+) -> dict[str, Any]:
+    """Pull Google Drive changes into the bronze lake and fan out documents.
+
+    Triggered by ``POST /api/v1/sync/google-drive`` and Drive push
+    notifications. With no cursor (first connect / full import) the worker
+    seeds ``changes.getStartPageToken`` and pages ``files.list``; subsequent
+    runs page ``changes.list`` from the checkpoint cursor. PDFs/images are
+    copied to GCS and enqueued on ``document_tasks`` for OCR/extraction.
+
+    Args:
+        tenant_id: Tenant owning the ``google_drive`` integration.
+        cursor: ``changes.list`` pageToken override; None means full import.
+        sync_id: Checkpoint ticket id for resumable cursor bookkeeping.
+        page_size: Drive page size (1-1000).
+
+    Returns:
+        Summary dict with cursor, page/record counts, and GCS keys.
+    """
+    return _sync_drive(
+        self,
+        tenant_id=tenant_id,
+        cursor=cursor,
+        sync_id=sync_id,
+        page_size=min(max(int(page_size or 100), 1), 1000),
+    )

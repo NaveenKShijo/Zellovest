@@ -54,6 +54,15 @@ class Settings(BaseSettings):
     okta_client_id: str = Field(default="", alias="OKTA_CLIENT_ID")
     okta_client_secret: str = Field(default="", alias="OKTA_CLIENT_SECRET")
 
+    # Google Drive OAuth (per-tenant Connect flow). Workers use the app
+    # credentials to refresh expiring access tokens in place.
+    google_drive_client_id: str = Field(default="", alias="GOOGLE_DRIVE_CLIENT_ID")
+    google_drive_client_secret: str = Field(default="", alias="GOOGLE_DRIVE_CLIENT_SECRET")
+    google_drive_token_url: str = Field(
+        default="https://oauth2.googleapis.com/token", alias="GOOGLE_DRIVE_TOKEN_URL"
+    )
+    google_drive_folder_ids: str = Field(default="", alias="GOOGLE_DRIVE_FOLDER_IDS")
+
     # Token encryption: base64-encoded 32-byte key for AES-256-GCM.
     credentials_encryption_key: str = Field(alias="CREDENTIALS_ENCRYPTION_KEY")
 

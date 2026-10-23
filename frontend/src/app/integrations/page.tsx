@@ -1,6 +1,13 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+
+interface DriveWatchState {
+  channel_id?: string;
+  resource_id?: string;
+  /** Channel expiry as returned by Google (epoch milliseconds string). */
+  expiration?: string | null;
+}
 
 interface IntegrationStatusState {
   connected: boolean;
@@ -12,6 +19,7 @@ interface IntegrationStatusState {
   last_error?: string | null;
   token_expires_at?: string | null;
   updated_at?: string | null;
+  watch?: DriveWatchState | null;
 }
 
 /** True when the user must reconnect (EXPIRED/REVOKED or past expiry). */
@@ -46,17 +54,42 @@ function isReconnectError(detail: string): boolean {
   );
 }
 
+/** Render a Drive watch expiry (epoch ms string or ISO) as a local string. */
+function formatWatchExpiry(expiration?: string | null): string | null {
+  if (!expiration) return null;
+  const ms = Number(expiration);
+  const date = Number.isFinite(ms) ? new Date(ms) : new Date(expiration);
+  return Number.isNaN(date.getTime()) ? null : date.toLocaleString();
+}
+
+/** Fallback status used when an integration status request fails. */
+function disconnectedIntegration(
+  provider: string,
+  tenantId: string
+): IntegrationStatusState {
+  return {
+    connected: false,
+    provider,
+    tenant_id: tenantId,
+    status: 'DISCONNECTED',
+    scopes: [],
+  };
+}
+
 export default function IntegrationsPage() {
   const [rampStatus, setRampStatus] = useState<IntegrationStatusState | null>(null);
   const [oktaStatus, setOktaStatus] = useState<IntegrationStatusState | null>(null);
+  const [driveStatus, setDriveStatus] = useState<IntegrationStatusState | null>(null);
   const [isLoadingStatus, setIsLoadingStatus] = useState<boolean>(true);
   const [isConnecting, setIsConnecting] = useState<boolean>(false);
-  const [connectingProvider, setConnectingProvider] = useState<'ramp' | 'okta' | null>(null);
+  const [connectingProvider, setConnectingProvider] = useState<'ramp' | 'okta' | 'drive' | null>(null);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [rampDateFrom, setRampDateFrom] = useState<string>(''); // YYYY-MM-DD
   const [oktaSince, setOktaSince] = useState<string>('');       // YYYY-MM-DD → converted to ISO
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
   const [bannerNotice, setBannerNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  // Guard so a single OAuth return kicks off the initial full Drive import once.
+  const driveInitialImportStarted = useRef<boolean>(false);
 
   const tenantId = 'default-org';
 
@@ -65,62 +98,34 @@ export default function IntegrationsPage() {
     return d.toISOString().slice(0, 10);
   };
   const todayStr = () => new Date().toISOString().slice(0, 10);
-  
-  // Check URL query parameters on return from OAuth callback
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const params = new URLSearchParams(window.location.search);
-    const statusParam = params.get('status');
-    const providerParam = params.get('provider');
-    const messageParam = params.get('message');
 
-    const providerLabel =
-      providerParam === 'okta' ? 'Okta' : providerParam === 'google-drive' ? 'Google Drive' : 'Ramp';
-    if (statusParam === 'connected' && providerParam) {
-      setBannerNotice({
-        type: 'success',
-        message: `${providerLabel} successfully connected! Your access tokens are securely stored and encrypted.`,
-      });
-      // Clean up the URL query params without reloading
-      window.history.replaceState({}, document.title, window.location.pathname);
-    } else if (statusParam === 'error') {
-      setBannerNotice({
-        type: 'error',
-        message: `Failed to complete ${providerLabel} connection: ${messageParam || 'unknown error'}. Please try again.`,
-      });
-      window.history.replaceState({}, document.title, window.location.pathname);
-    }
-  }, []);
-
-  const disconnectedState = (provider: string): IntegrationStatusState => ({
-    connected: false,
-    provider,
-    tenant_id: tenantId,
-    status: 'DISCONNECTED',
-    scopes: [],
-  });
-
-  // Fetch current integration statuses (Ramp + Okta)
-  const checkStatus = async () => {
+  // Fetch current integration statuses (Ramp + Okta + Google Drive)
+  const checkStatus = useCallback(async () => {
     setIsLoadingStatus(true);
     try {
-      const [rampRes, oktaRes] = await Promise.all([
+      const [rampRes, oktaRes, driveRes] = await Promise.all([
         fetch(`/api/v1/integrations/ramp/status?tenant_id=${tenantId}`),
         fetch(`/api/v1/integrations/okta/status?tenant_id=${tenantId}`),
+        fetch(`/api/v1/integrations/google-drive/status?tenant_id=${tenantId}`),
       ]);
-      setRampStatus(rampRes.ok ? await rampRes.json() : disconnectedState('ramp'));
-      setOktaStatus(oktaRes.ok ? await oktaRes.json() : disconnectedState('okta'));
+      setRampStatus(rampRes.ok ? await rampRes.json() : disconnectedIntegration('ramp', tenantId));
+      setOktaStatus(oktaRes.ok ? await oktaRes.json() : disconnectedIntegration('okta', tenantId));
+      setDriveStatus(driveRes.ok ? await driveRes.json() : disconnectedIntegration('google-drive', tenantId));
     } catch {
-      setRampStatus(disconnectedState('ramp'));
-      setOktaStatus(disconnectedState('okta'));
+      setRampStatus(disconnectedIntegration('ramp', tenantId));
+      setOktaStatus(disconnectedIntegration('okta', tenantId));
+      setDriveStatus(disconnectedIntegration('google-drive', tenantId));
     } finally {
       setIsLoadingStatus(false);
     }
-  };
+  }, [tenantId]);
 
   useEffect(() => {
-    checkStatus();
-  }, []);
+    // Mount-time status fetch legitimately writes fetched state; this effect
+    // owns the external-system sync.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void checkStatus();
+  }, [checkStatus]);
 
   // Handle Connect to Ramp: fetch the authorization URL, then go
   // straight to Ramp (same as Okta below).
@@ -134,11 +139,16 @@ export default function IntegrationsPage() {
     await handleConnectProvider('okta', '/api/v1/integrations/okta/connect', 'Okta');
   };
 
+  // Handle Connect to Google Drive: same OAuth-connect flow as Ramp/Okta.
+  const handleConnectDrive = async () => {
+    await handleConnectProvider('drive', '/api/v1/integrations/google-drive/connect', 'Google Drive');
+  };
+
   // Shared OAuth-connect flow: POST connect -> redirect to the provider's
   // real authorize page. No intermediate step: the provider itself asks
   // the user to sign in and approve access.
   const handleConnectProvider = async (
-    provider: 'ramp' | 'okta',
+    provider: 'ramp' | 'okta' | 'drive',
     connectUrl: string,
     label: string
   ) => {
@@ -164,15 +174,98 @@ export default function IntegrationsPage() {
       } else {
         throw new Error('No authorization URL returned from ingestion service');
       }
-    } catch (err: any) {
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
       setBannerNotice({
         type: 'error',
-        message: `Unable to initiate ${label} connection: ${err.message}`,
+        message: `Unable to initiate ${label} connection: ${message}`,
       });
       setIsConnecting(false);
       setConnectingProvider(null);
     }
   };
+
+  // Google Drive sync. `fullSync` triggers the initial/first-load import
+  // (re-seeds the change cursor and lists existing files); otherwise only
+  // the incremental `changes.list` stream since the last checkpoint is pulled.
+  const triggerDriveSync = useCallback(
+    async (fullSync: boolean, options?: { clearBanner?: boolean }) => {
+      if (options?.clearBanner !== false) setBannerNotice(null);
+      setIsSyncing(true);
+      setSyncFeedback(null);
+      try {
+        const res = await fetch('/api/v1/sync/google-drive', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tenant_id: tenantId, full_sync: fullSync }),
+        });
+        const data = await res.json().catch(() => ({}));
+        const label = fullSync ? 'Google Drive full import' : 'Google Drive incremental sync';
+        if (res.ok) {
+          setSyncFeedback(
+            data.deduped
+              ? `${label} already running (Job: ${data.sync_id})`
+              : `${label} started (Job: ${data.sync_id || 'queued'})`
+          );
+        } else if (res.status === 409 && isReconnectError(data.detail || '')) {
+          setBannerNotice({
+            type: 'error',
+            message: `Google Drive sync blocked: ${data.detail}. Click Reconnect on the Drive card below, then retry.`,
+          });
+          setSyncFeedback('Google Drive sync blocked: reconnect required.');
+        } else {
+          setSyncFeedback(`Google Drive sync failed: ${data.detail || res.statusText}`);
+        }
+        void checkStatus();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setSyncFeedback(`Google Drive sync error: ${message}`);
+      } finally {
+        setIsSyncing(false);
+      }
+    },
+    [tenantId, checkStatus]
+  );
+
+  // Check URL query parameters on return from the OAuth callback.
+  //
+  // On the first successful Google Drive connection we kick off the initial
+  // full import automatically; once connected, new/updated Drive files flow in
+  // through the incremental `changes.list` cursor (push watch + Sync Now).
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const statusParam = params.get('status');
+    const providerParam = params.get('provider');
+    const messageParam = params.get('message');
+
+    const providerLabel =
+      providerParam === 'okta' ? 'Okta' : providerParam === 'google-drive' ? 'Google Drive' : 'Ramp';
+    if (statusParam === 'connected' && providerParam) {
+      const isDrive = providerParam === 'google-drive';
+      // Reading the OAuth callback query string is an external-system sync;
+      // the notice reflects the one-time redirect result.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setBannerNotice({
+        type: 'success',
+        message: isDrive
+          ? `${providerLabel} successfully connected! A full import of your Drive documents has started.`
+          : `${providerLabel} successfully connected! Your access tokens are securely stored and encrypted.`,
+      });
+      // Clean up the URL query params without reloading
+      window.history.replaceState({}, document.title, window.location.pathname);
+      if (isDrive && !driveInitialImportStarted.current) {
+        driveInitialImportStarted.current = true;
+        void triggerDriveSync(true, { clearBanner: false });
+      }
+    } else if (statusParam === 'error') {
+      setBannerNotice({
+        type: 'error',
+        message: `Failed to complete ${providerLabel} connection: ${messageParam || 'unknown error'}. Please try again.`,
+      });
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+  }, [triggerDriveSync]);
 
   // Single Sync Now for Ramp: schedules both entities sequentially and
   // reports one combined result instead of two separate buttons.
@@ -209,8 +302,9 @@ export default function IntegrationsPage() {
       }
       setSyncFeedback(`Ramp sync scheduled: ${outcomes.join('; ')}`);
       void checkStatus();
-    } catch (err: any) {
-      setSyncFeedback(`Sync error: ${err.message}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setSyncFeedback(`Sync error: ${message}`);
     } finally {
       setIsSyncing(false);
     }
@@ -243,8 +337,10 @@ export default function IntegrationsPage() {
       }
       setSyncFeedback(`Ramp backfill: ${outcomes.join('; ')}`);
       void checkStatus();
-    } catch (err: any) { setSyncFeedback(`Backfill error: ${err.message}`); }
-    finally { setIsSyncing(false); }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setSyncFeedback(`Backfill error: ${message}`);
+    } finally { setIsSyncing(false); }
   };
   
   // Single Sync Now for Okta: pulls users/apps/logs in one batch request.
@@ -275,8 +371,9 @@ export default function IntegrationsPage() {
         }
       }
       void checkStatus();
-    } catch (err: any) {
-      setSyncFeedback(`Sync error: ${err.message}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setSyncFeedback(`Sync error: ${message}`);
     } finally {
       setIsSyncing(false);
     }
@@ -315,8 +412,9 @@ export default function IntegrationsPage() {
         setSyncFeedback(`Okta backfill failed: ${data.detail || res.statusText}`);
       }
       void checkStatus();
-    } catch (err: any) {
-      setSyncFeedback(`Backfill error: ${err.message}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setSyncFeedback(`Backfill error: ${message}`);
     } finally {
       setIsSyncing(false);
     }
@@ -325,8 +423,10 @@ export default function IntegrationsPage() {
 
   const rampNeedsReconnect = needsReconnect(rampStatus);
   const oktaNeedsReconnect = needsReconnect(oktaStatus);
+  const driveNeedsReconnect = needsReconnect(driveStatus);
   const rampExpiringSoon = isExpiringSoon(rampStatus);
   const oktaExpiringSoon = isExpiringSoon(oktaStatus);
+  const driveExpiringSoon = isExpiringSoon(driveStatus);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', maxWidth: '1100px' }}>
@@ -834,10 +934,15 @@ export default function IntegrationsPage() {
               padding: '20px',
               borderRadius: 'var(--radius-md)',
               backgroundColor: 'var(--bg-surface-warm, #FFF9FA)',
-              border: '1px solid var(--border-subtle)',
+              border: driveNeedsReconnect
+                ? '1px solid var(--color-danger-border)'
+                : driveStatus?.connected
+                  ? '1px solid var(--color-success-border)'
+                  : '1px solid var(--border-subtle)',
               display: 'flex',
               flexDirection: 'column',
               justifyContent: 'space-between',
+              gap: '14px',
             }}
           >
             <div>
@@ -851,17 +956,187 @@ export default function IntegrationsPage() {
                     fontWeight: 700,
                     padding: '3px 9px',
                     borderRadius: 'var(--radius-full)',
-                    backgroundColor: 'var(--bg-surface-tint)',
-                    color: 'var(--text-secondary)',
-                    border: '1px solid var(--border-subtle)',
+                    backgroundColor: driveNeedsReconnect
+                      ? 'var(--color-danger-subtle)'
+                      : driveStatus?.connected
+                        ? 'var(--color-success-subtle)'
+                        : 'var(--bg-surface-tint)',
+                    color: driveNeedsReconnect ? 'var(--color-danger)' : driveStatus?.connected ? 'var(--color-success)' : 'var(--text-secondary)',
+                    border: `1px solid ${driveNeedsReconnect ? 'var(--color-danger-border)' : driveStatus?.connected ? 'var(--color-success-border)' : 'var(--border-subtle)'}`,
                   }}
                 >
-                  Active Listener
+                  {isLoadingStatus
+                    ? 'Loading...'
+                    : driveNeedsReconnect
+                      ? 'Expired — reconnect'
+                      : driveStatus?.connected
+                        ? 'Connected'
+                        : 'Not Connected'}
                 </span>
               </div>
-              <p style={{ fontSize: '12.5px', color: 'var(--text-secondary)', lineHeight: '1.45', margin: 0 }}>
+              <p style={{ fontSize: '12.5px', color: 'var(--text-secondary)', lineHeight: '1.45', margin: '0 0 12px 0' }}>
                 Automated ingress folder listener for vendor order forms, service contracts, and invoices.
               </p>
+
+              {driveNeedsReconnect && (
+                <div
+                  role="alert"
+                  style={{
+                    marginBottom: '12px',
+                    padding: '10px 12px',
+                    borderRadius: 'var(--radius-md)',
+                    backgroundColor: 'var(--color-danger-subtle)',
+                    border: '1px solid var(--color-danger-border)',
+                    color: 'var(--color-danger)',
+                    fontSize: '12.5px',
+                    lineHeight: '1.5',
+                  }}
+                >
+                  <strong>Access token expired.</strong> Syncs are failing until you reconnect.
+                  {driveStatus?.token_expires_at && (
+                    <div style={{ marginTop: '2px' }}>
+                      Expired: {new Date(driveStatus.token_expires_at).toLocaleString()}
+                    </div>
+                  )}
+                  {driveStatus?.last_error && (
+                    <div style={{ marginTop: '2px', fontSize: '11.5px', opacity: 0.9 }}>
+                      {driveStatus.last_error}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {!driveNeedsReconnect && driveStatus?.connected && driveStatus?.token_expires_at && (
+                <div style={{ marginBottom: '12px', fontSize: '11.5px', color: driveExpiringSoon ? 'var(--color-warning)' : 'var(--text-muted)' }}>
+                  {driveExpiringSoon ? 'Token expires soon' : 'Token expires'}: {new Date(driveStatus.token_expires_at).toLocaleString()}
+                </div>
+              )}
+
+              {driveStatus?.connected && (
+                <div style={{ marginBottom: '12px', fontSize: '11.5px', color: 'var(--text-muted)' }}>
+                  <div>Scopes: <strong style={{ color: 'var(--text-primary)' }}>{driveStatus.scopes.join(', ') || 'drive.readonly'}</strong></div>
+                  <div style={{ marginTop: '4px' }}>
+                    Push watch:{' '}
+                    <strong style={{ color: 'var(--text-primary)' }}>
+                      {formatWatchExpiry(driveStatus.watch?.expiration)
+                        ? `active until ${formatWatchExpiry(driveStatus.watch?.expiration)}`
+                        : 'not registered (pull sync active)'}
+                    </strong>
+                  </div>
+                  {driveStatus.updated_at && (
+                    <div style={{ marginTop: '2px' }}>
+                      Last synced: {new Date(driveStatus.updated_at).toLocaleDateString()} {new Date(driveStatus.updated_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </div>
+                  )}
+                  <div
+                    style={{
+                      marginTop: '10px',
+                      padding: '8px 10px',
+                      borderRadius: 'var(--radius-md)',
+                      backgroundColor: 'var(--bg-surface-tint)',
+                      border: '1px solid var(--border-subtle)',
+                      lineHeight: '1.45',
+                    }}
+                  >
+                    The first connection runs a <strong style={{ color: 'var(--text-primary)' }}>full import</strong> of your Drive
+                    documents automatically. New or updated files afterwards are pulled
+                    <strong style={{ color: 'var(--text-primary)' }}> incrementally</strong>.
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              {!driveStatus?.connected && !driveNeedsReconnect ? (
+                <button
+                  onClick={handleConnectDrive}
+                  disabled={isConnecting}
+                  style={{
+                    padding: '8px 16px',
+                    fontSize: '13px',
+                    fontWeight: 700,
+                    color: '#FFFFFF',
+                    backgroundColor: 'var(--color-brand)',
+                    border: 'none',
+                    borderRadius: 'var(--radius-md)',
+                    cursor: isConnecting ? 'wait' : 'pointer',
+                    transition: 'background-color 0.15s ease',
+                  }}
+                >
+                  {isConnecting && connectingProvider === 'drive' ? 'Redirecting to Google Drive...' : 'Connect Google Drive'}
+                </button>
+              ) : driveNeedsReconnect ? (
+                <button
+                  onClick={handleConnectDrive}
+                  disabled={isConnecting}
+                  style={{
+                    padding: '8px 16px',
+                    fontSize: '13px',
+                    fontWeight: 700,
+                    color: '#FFFFFF',
+                    backgroundColor: 'var(--color-danger)',
+                    border: 'none',
+                    borderRadius: 'var(--radius-md)',
+                    cursor: isConnecting ? 'wait' : 'pointer',
+                    transition: 'background-color 0.15s ease',
+                  }}
+                >
+                  {isConnecting && connectingProvider === 'drive' ? 'Redirecting to Google Drive...' : 'Reconnect Google Drive now'}
+                </button>
+              ) : (
+                <>
+                  <button
+                    onClick={() => void triggerDriveSync(false)}
+                    disabled={isSyncing}
+                    title="Pull new and updated Drive files since the last checkpoint"
+                    style={{
+                      padding: '7px 12px',
+                      fontSize: '12px',
+                      fontWeight: 600,
+                      color: 'var(--text-primary)',
+                      backgroundColor: 'var(--bg-surface)',
+                      border: '1px solid var(--border-strong)',
+                      borderRadius: 'var(--radius-md)',
+                      cursor: isSyncing ? 'wait' : 'pointer',
+                    }}
+                  >
+                    {isSyncing ? 'Syncing...' : 'Sync Now'}
+                  </button>
+                  <button
+                    onClick={() => void triggerDriveSync(true)}
+                    disabled={isSyncing}
+                    title="Re-run the full Drive import (lists all files again)"
+                    style={{
+                      padding: '7px 12px',
+                      fontSize: '12px',
+                      fontWeight: 600,
+                      color: 'var(--text-primary)',
+                      backgroundColor: 'var(--bg-surface)',
+                      border: '1px solid var(--border-strong)',
+                      borderRadius: 'var(--radius-md)',
+                      cursor: isSyncing ? 'wait' : 'pointer',
+                    }}
+                  >
+                    {isSyncing ? 'Working...' : 'Full Import'}
+                  </button>
+                  <button
+                    onClick={handleConnectDrive}
+                    disabled={isConnecting}
+                    style={{
+                      padding: '7px 12px',
+                      fontSize: '12px',
+                      fontWeight: 600,
+                      color: 'var(--text-secondary)',
+                      backgroundColor: 'transparent',
+                      border: '1px solid var(--border-subtle)',
+                      borderRadius: 'var(--radius-md)',
+                      cursor: isConnecting ? 'wait' : 'pointer',
+                    }}
+                  >
+                    Reconnect
+                  </button>
+                </>
+              )}
             </div>
           </div>
         </div>

@@ -11,6 +11,7 @@ watch setup, and pull sync all build on):
 """
 
 from datetime import UTC, datetime, timedelta
+from urllib.parse import urlparse
 
 import redis
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -41,6 +42,50 @@ from zellovest_ingestion.services.drive_watch import (
 logger = get_logger(__name__)
 router = APIRouter(prefix="/integrations/google-drive", tags=["integrations"])
 
+# Must match the redirect URI registered on the Google Cloud OAuth client.
+ACCEPTED_CALLBACK_SUFFIXES = ("/api/v1/integrations/google-drive/callback",)
+
+
+def _require_drive_oauth_config(settings: IngestionAPISettings) -> None:
+    """Fail fast when Google Drive OAuth env vars are missing or malformed.
+
+    Building an authorize URL with an empty ``client_id`` / ``redirect_uri``
+    makes Google return an opaque ``400 invalid_request`` page; surfacing the
+    misconfiguration here gives the UI an actionable error instead.
+
+    Args:
+        settings: Current ingestion API settings.
+
+    Raises:
+        HTTPException: 400 when credentials or the callback URI are missing,
+            or when the redirect path does not match the registered callback.
+    """
+    if (
+        not settings.google_drive_client_id
+        or not settings.google_drive_client_secret
+        or not settings.google_drive_redirect_uri
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Google Drive OAuth is not configured (need GOOGLE_DRIVE_CLIENT_ID, "
+                "GOOGLE_DRIVE_CLIENT_SECRET, GOOGLE_DRIVE_REDIRECT_URI); update "
+                "backend/.env and restart the ingestion API"
+            ),
+        )
+    callback_path = urlparse(settings.google_drive_redirect_uri).path or ""
+    if not callback_path.endswith(ACCEPTED_CALLBACK_SUFFIXES):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"GOOGLE_DRIVE_REDIRECT_URI path must end with "
+                f"{ACCEPTED_CALLBACK_SUFFIXES[0]!r} (got "
+                f"{settings.google_drive_redirect_uri!r}); fix backend/.env, "
+                "register the exact same URL on the Google Cloud OAuth client, "
+                "and restart the ingestion API"
+            ),
+        )
+
 
 @router.post("/connect", response_model=ConnectResponse, status_code=200)
 def connect(
@@ -56,6 +101,7 @@ def connect(
     Returns:
         Authorization URL + single-use state token.
     """
+    _require_drive_oauth_config(settings)
     tenant_id = body.tenant_id if (body and body.tenant_id) else "default-org"
     scopes = body.scopes if (body and body.scopes) else DEFAULT_DRIVE_SCOPES
     state = create_state(

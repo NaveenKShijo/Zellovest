@@ -13,16 +13,21 @@ import inspect
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from zellovest_shared.db.models import TenantIntegration, effective_connection_status
+from zellovest_shared.logging_conf import get_logger
 
 from zellovest_ingestion.api.deps import get_db_session
-from zellovest_ingestion.schemas.sync import DriveSyncRequest, OktaSyncRequest, SyncRequest, SyncResponse
+from zellovest_ingestion.schemas.sync import (
+    DriveSyncRequest,
+    OktaSyncRequest,
+    SyncRequest,
+    SyncResponse,
+)
 from zellovest_ingestion.services.sync_dispatcher import (
     dispatch_drive_sync,
     dispatch_okta_sync,
     dispatch_sync_task,
 )
-from zellovest_shared.db.models import TenantIntegration, effective_connection_status
-from zellovest_shared.logging_conf import get_logger
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/sync", tags=["sync"])
@@ -118,6 +123,13 @@ async def trigger_drive_sync(
     session: AsyncSession = Depends(get_db_session),
 ) -> SyncResponse:
     """Enqueue a Google Drive pull-sync task (``changes.list`` from cursor)."""
+    logger.info(
+        "drive_sync_api_called",
+        tenant_id=body.tenant_id,
+        cursor=body.cursor,
+        full_sync=body.full_sync,
+        page_size=body.page_size,
+    )
     sync_id, task_id, created = await dispatch_drive_sync(
         session,
         tenant_id=body.tenant_id,
@@ -127,12 +139,17 @@ async def trigger_drive_sync(
     )
     await session.commit()
     logger.info(
-        "drive_sync_triggered",
+        "drive_sync_api_response",
         tenant_id=body.tenant_id,
-        full_sync=body.full_sync,
+        sync_id=str(sync_id),
+        task_id=task_id,
         created=created,
+        deduped=not created,
+        status="PENDING",
     )
-    return SyncResponse(sync_id=str(sync_id), task_id=task_id, status="PENDING", deduped=not created)
+    return SyncResponse(
+        sync_id=str(sync_id), task_id=task_id, status="PENDING", deduped=not created
+    )
 
 
 @router.post("/okta", response_model=SyncResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -165,4 +182,6 @@ async def trigger_okta_sync(
         entities=body.entities,
         created=created,
     )
-    return SyncResponse(sync_id=str(sync_id), task_id=task_id, status="PENDING", deduped=not created)
+    return SyncResponse(
+        sync_id=str(sync_id), task_id=task_id, status="PENDING", deduped=not created
+    )

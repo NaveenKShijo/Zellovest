@@ -23,6 +23,12 @@ os.environ.setdefault("RAMP_WEBHOOK_SECRET", "whsec-test")
 os.environ.setdefault("CREDENTIALS_ENCRYPTION_KEY", base64.b64encode(os.urandom(32)).decode())
 os.environ.setdefault("GCS_RAW_BUCKET", "tenant-bucket")
 os.environ.setdefault("JWT_SECRET_KEY", "test-jwt-secret")
+os.environ.setdefault("GOOGLE_DRIVE_CLIENT_ID", "test-drive-client")
+os.environ.setdefault("GOOGLE_DRIVE_CLIENT_SECRET", "test-drive-secret")
+os.environ.setdefault(
+    "GOOGLE_DRIVE_REDIRECT_URI",
+    "http://localhost:8003/api/v1/integrations/google-drive/callback",
+)
 os.environ.setdefault("GOOGLE_DRIVE_WEBHOOK_TOKEN", "drive-chan-secret")
 
 from zellovest_ingestion.api.deps import get_db_session  # noqa: E402
@@ -81,6 +87,19 @@ def test_drive_connect_defaults_to_default_org(client):
     resp = client.post("/api/v1/integrations/google-drive/connect", json={})
     assert resp.status_code == 200
     assert "accounts.google.com" in resp.json()["authorization_url"]
+
+
+def test_drive_connect_rejects_missing_config(client):
+    """POST /connect returns an actionable error when Drive OAuth is unset."""
+    settings = client.app.state.settings
+    original_client_id = settings.google_drive_client_id
+    settings.google_drive_client_id = ""
+    try:
+        resp = client.post("/api/v1/integrations/google-drive/connect", json={})
+        assert resp.status_code == 400
+        assert "not configured" in resp.json()["detail"]
+    finally:
+        settings.google_drive_client_id = original_client_id
 
 
 def test_oauth_state_is_provider_bound(client):

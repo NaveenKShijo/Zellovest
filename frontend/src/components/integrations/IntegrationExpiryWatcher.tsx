@@ -11,16 +11,17 @@ import {
 /**
  * IntegrationExpiryWatcher: global reconnect nudge for expired OAuth tokens.
  *
- * Polls Ramp + Okta status in the background and raises a persistent
- * `AlertBanner` entry (with a link to `/integrations`) whenever a provider
- * needs a reconnect — so expired access tokens are surfaced on every page
- * instead of failing silently inside sync jobs. Mounted once in
+ * Polls Ramp + Okta + Google Drive status in the background and raises a
+ * persistent `AlertBanner` entry (with a link to `/integrations`) whenever a
+ * provider needs a reconnect — so expired access tokens are surfaced on every
+ * page instead of failing silently inside sync jobs. Mounted once in
  * `AppProviders`; renders nothing itself.
  */
 
 const PROVIDER_LABELS: Record<IntegrationProvider, string> = {
   ramp: 'Ramp',
   okta: 'Okta',
+  drive: 'Google Drive',
 };
 
 export function IntegrationExpiryWatcher({
@@ -30,7 +31,7 @@ export function IntegrationExpiryWatcher({
 }) {
   const pathname = usePathname();
   const { addAlert, dismissAlert } = useToast();
-  const { ramp, okta, isLoading } = useIntegrationStatus(tenantId);
+  const { ramp, okta, drive, isLoading } = useIntegrationStatus(tenantId);
   // Active alert id per provider, so reconnect prompts are raised once and
   // cleared when the connection recovers.
   const activeAlerts = useRef<Partial<Record<IntegrationProvider, string>>>({});
@@ -45,6 +46,7 @@ export function IntegrationExpiryWatcher({
     }> = [
       { provider: 'ramp', needsReconnect: ramp?.needsReconnect === true },
       { provider: 'okta', needsReconnect: okta?.needsReconnect === true },
+      { provider: 'drive', needsReconnect: drive?.needsReconnect === true },
     ];
     for (const { provider, needsReconnect } of states) {
       const existingId = activeAlerts.current[provider];
@@ -63,7 +65,7 @@ export function IntegrationExpiryWatcher({
         delete activeAlerts.current[provider];
       }
     }
-  }, [isLoading, ramp, okta, pathname, addAlert, dismissAlert]);
+  }, [isLoading, ramp, okta, drive, pathname, addAlert, dismissAlert]);
 
   return null;
 }

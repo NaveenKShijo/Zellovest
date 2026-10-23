@@ -12,6 +12,7 @@ Key layout embeds the sync ticket so re-runs never overwrite history::
 from __future__ import annotations
 
 import gzip
+import importlib.util
 import json
 from typing import Any
 
@@ -47,7 +48,7 @@ def _to_jsonl_gz(records: list[dict[str, Any]]) -> bytes:
     lines = [json.dumps(r, default=str) for r in records]
     return gzip.compress(("\n".join(lines) + "\n").encode("utf-8"))
 
-def _make_storage_client(project: str | None):
+def make_storage_client(project: str | None):
     """Create a GCS client, using the configured service-account key file.
 
     ``google.auth.default()`` only inspects the process environment and
@@ -77,6 +78,55 @@ def _make_storage_client(project: str | None):
         )
         return storage.Client(project=project, credentials=credentials)
     return storage.Client(project=project)
+
+
+def write_bytes(
+    data: bytes,
+    *,
+    bucket: str,
+    key: str,
+    content_type: str,
+    project: str | None = None,
+) -> str:
+    """Write raw object bytes to GCS (Drive document copy).
+
+    Args:
+        data: Raw file payload.
+        bucket: GCS bucket name.
+        key: Object key (must embed the tenant prefix).
+        content_type: MIME type stored on the object.
+        project: GCP project id (uses default credentials when None).
+
+    Returns:
+        The GCS object key written.
+
+    Raises:
+        ValueError: When bucket/key/data are missing.
+        RuntimeError: When the upload fails or the dependency is missing.
+    """
+    if not bucket:
+        raise ValueError("bucket is required")
+    if not key:
+        raise ValueError("key is required")
+    if data is None:
+        raise ValueError("data is required")
+
+    try:
+        client = make_storage_client(project)
+        blob = client.bucket(bucket).blob(key)
+        blob.upload_from_string(data, content_type=content_type or "application/octet-stream")
+    except Exception as exc:
+        logger.error(
+            "gcs_bytes_write_failed",
+            bucket=bucket,
+            key=key,
+            size=len(data),
+            error_class=type(exc).__name__,
+        )
+        raise RuntimeError(f"failed to write GCS object {key!r}") from exc
+
+    logger.info("gcs_bytes_write_ok", bucket=bucket, key=key, size=len(data))
+    return key
 
 
 def write_records_gz(
@@ -118,15 +168,13 @@ def write_records_gz(
     key = f"raw/{entity_folder}/sync={sync_id}/{suffix}.jsonl.gz"
     payload = _to_jsonl_gz(records)
 
-    try:
-        from google.cloud import storage
-    except ImportError as exc:
+    if importlib.util.find_spec("google.cloud.storage") is None:
         raise RuntimeError(
             "google-cloud-storage is not installed; add it to shared dependencies"
-        ) from exc
+        )
 
     try:
-        client = _make_storage_client(project)
+        client = make_storage_client(project)
         blob = client.bucket(bucket).blob(key)
         blob.upload_from_string(payload, content_type="application/gzip")
 

@@ -19,6 +19,7 @@ from typing import Protocol
 from urllib.parse import quote
 
 from zellovest_shared.logging_conf import get_logger
+from zellovest_shared.workers.gcs_writer import make_storage_client
 
 logger = get_logger(__name__)
 
@@ -122,7 +123,7 @@ class GcsStorageSigner:
             ) from exc
 
         try:
-            client = storage.Client(project=self._project or None)
+            client = make_storage_client(self._project or None)
             blob = client.bucket(bucket).blob(key)
             expires_at = datetime.now(UTC) + timedelta(seconds=expires_secs)
             url = blob.generate_signed_url(
@@ -305,9 +306,7 @@ class GcsStorageReader:
 
     def _blob(self, bucket: str, key: str):  # type: ignore[no-untyped-def]
         """Return a Blob handle (lazy import keeps tests credential-free)."""
-        from google.cloud import storage
-
-        client = storage.Client(project=self._project or None)
+        client = make_storage_client(self._project or None)
         return client.bucket(bucket).blob(key)
 
     def get_object_info(self, *, bucket: str, key: str) -> BlobInfo | None:

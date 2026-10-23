@@ -239,13 +239,23 @@ async def acreate_pending_checkpoint(
     event_id: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
+    force_new: bool = False,
 ) -> tuple[IngestionSyncCheckpoint, bool]:
     """Create a PENDING checkpoint idempotently.
 
     Returns ``(checkpoint, created)`` where ``created=False`` means a
-    duplicate request mapped to an already-open checkpoint.
+    duplicate request mapped to an already-open checkpoint. When
+    ``force_new`` is True, any existing open checkpoint is ignored and a
+    fresh PENDING row is always created (used for explicit full re-imports).
     """
-    if event_id:
+    if force_new:
+        logger.info(
+            "checkpoint_force_new",
+            tenant_id=tenant_id,
+            entity=entity.value,
+            mode=mode.value,
+        )
+    elif event_id:
         existing = (
             await session.execute(
                 select(IngestionSyncCheckpoint).where(IngestionSyncCheckpoint.event_id == event_id)
@@ -292,6 +302,8 @@ async def acreate_pending_checkpoint(
         entity=entity.value,
         mode=mode.value,
         sync_id=str(checkpoint.sync_id),
+        cursor_token=cursor_token,
+        force_new=force_new,
     )
     return checkpoint, True
 
