@@ -8,14 +8,16 @@ seed script (first/demo user) or by claiming an invite.
 """
 
 import os
+from urllib.parse import quote
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import HTTPBearer
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from zellovest_shared.db.models import Invitation, User
+from zellovest_shared.db.models import Invitation, PasswordResetToken, User
 from zellovest_shared.logging_conf import get_logger
 from zellovest_shared.security.auth import (
     DEFAULT_INVITE_TTL_DAYS,
@@ -24,13 +26,17 @@ from zellovest_shared.security.auth import (
     get_invite_by_token,
     get_user_by_email,
     hash_invite_token,
+    generate_password_reset_token,
+    get_password_reset_by_token,
+    hash_password_reset_token,
     normalize_email,
     validate_email,
 )
 from zellovest_shared.security.jwt import create_user_access_token
-from zellovest_shared.security.passwords import verify_password
+from zellovest_shared.security.passwords import hash_password, verify_password
 from zellovest_ingestion.api.deps import get_current_user, get_db_session
 from zellovest_ingestion.config import get_ingestion_api_settings
+from zellovest_ingestion.services.password_reset_email import send_password_reset_email
 from zellovest_ingestion.schemas.auth import (
     AuthResponse,
     InviteAcceptRequest,
@@ -38,6 +44,8 @@ from zellovest_ingestion.schemas.auth import (
     InviteResponse,
     InviteValidateResponse,
     LoginRequest,
+    PasswordResetCompleteRequest,
+    PasswordResetRequest,
     UserResponse,
 )
 
@@ -54,6 +62,7 @@ def _invite_ttl_days() -> int:
 
 
 INVITE_TTL_DAYS = _invite_ttl_days()
+PASSWORD_RESET_TTL_MINUTES = 30
 
 
 def _to_user_response(user: User) -> UserResponse:
@@ -135,6 +144,75 @@ async def login(
     return AuthResponse(
         access_token=token, expires_in_minutes=_expiry_minutes(), user=_to_user_response(user)
     )
+
+
+@router.post("/password/forgot", status_code=status.HTTP_202_ACCEPTED)
+async def request_password_reset(
+    body: PasswordResetRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, str]:
+    """Send a one-time reset link without revealing whether an account exists."""
+    settings = get_ingestion_api_settings()
+    if not settings.email_smtp_host or not settings.email_from:
+        logger.error("password_reset_email_not_configured")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Password reset email is not configured. Contact your administrator.",
+        )
+    email = normalize_email(body.email)
+    user = await get_user_by_email(session, email)
+    if user is not None and user.is_active and not getattr(user, "is_demo", False):
+        now = datetime.now(UTC)
+        raw_token = generate_password_reset_token()
+        session.add(
+            PasswordResetToken(
+                user_id=user.id,
+                token_hash=hash_password_reset_token(raw_token),
+                expires_at=now + timedelta(minutes=PASSWORD_RESET_TTL_MINUTES),
+            )
+        )
+        link = f"{settings.frontend_url.rstrip('/')}/reset-password?token={quote(raw_token)}"
+        try:
+            await run_in_threadpool(
+                send_password_reset_email, settings, user.email, link
+            )
+        except Exception as exc:
+            logger.error(
+                "password_reset_email_failed",
+                error_class=type(exc).__name__,
+                error=str(exc),
+            )
+            await session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Unable to send reset email. Please try again later.",
+            ) from exc
+        await session.commit()
+        logger.info("password_reset_email_sent")
+    return {"message": "If an active account exists for that email, a reset link has been sent."}
+
+
+@router.post("/password/reset", status_code=status.HTTP_204_NO_CONTENT)
+async def reset_password(
+    body: PasswordResetCompleteRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> None:
+    """Consume a valid reset token and replace the user's password hash."""
+    reset_token = await get_password_reset_by_token(session, body.token)
+    now = datetime.now(UTC)
+    expires_at = reset_token.expires_at if reset_token else None
+    if expires_at is not None and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    if reset_token is None or reset_token.used_at is not None or expires_at <= now:
+        raise HTTPException(status_code=404, detail="This reset link is invalid or expired.")
+    user_result = await session.execute(select(User).where(User.id == reset_token.user_id))
+    user = user_result.scalars().first()
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=404, detail="This reset link is invalid or expired.")
+    reset_token.used_at = now
+    user.password_hash = hash_password(body.password)
+    await session.commit()
+    logger.info("user_password_reset", user_id=str(user.id))
 
 
 @router.post("/demo", response_model=AuthResponse)

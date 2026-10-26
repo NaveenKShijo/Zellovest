@@ -22,6 +22,11 @@ class IngestionAPISettings(BaseSettings):
     service_port: int = Field(default=8003, alias="SERVICE_PORT")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     frontend_url: str = Field(default="http://localhost:3000", alias="FRONTEND_URL")
+    email_smtp_host: str = Field(default="", alias="EMAIL_SMTP_HOST")
+    email_smtp_port: int = Field(default=587, alias="EMAIL_SMTP_PORT")
+    email_smtp_username: str = Field(default="", alias="EMAIL_SMTP_USERNAME")
+    email_smtp_password: str = Field(default="", alias="EMAIL_SMTP_PASSWORD")
+    email_from: str = Field(default="", alias="EMAIL_FROM")
 
     # Database
     database_url: str = Field(alias="DATABASE_URL")

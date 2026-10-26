@@ -24,7 +24,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from zellovest_shared.db.models import Invitation, User
+from zellovest_shared.db.models import Invitation, PasswordResetToken, User
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 MIN_PASSWORD_LENGTH = 8
@@ -124,6 +124,26 @@ def hash_invite_token(raw_token: str) -> str:
     links. The raw token is shown to the inviter exactly once.
     """
     return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+def generate_password_reset_token() -> str:
+    """Generate an unguessable password reset token."""
+    return secrets.token_urlsafe(INVITE_TOKEN_BYTES)
+
+
+def hash_password_reset_token(raw_token: str) -> str:
+    """Return the SHA-256 digest stored for a reset token."""
+    return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+async def get_password_reset_by_token(session: Any, raw_token: str) -> PasswordResetToken | None:
+    """Fetch a reset token by digest without persisting its raw value."""
+    result = await session.execute(
+        select(PasswordResetToken).where(
+            PasswordResetToken.token_hash == hash_password_reset_token(raw_token)
+        ).with_for_update()
+    )
+    return result.scalars().first()
 
 
 async def get_invite_by_token(session: Any, raw_token: str) -> Invitation | None:

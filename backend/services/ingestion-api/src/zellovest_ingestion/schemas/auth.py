@@ -57,3 +57,16 @@ class InviteAcceptRequest(BaseModel):
     token: str = Field(min_length=16, max_length=128)
     name: str = Field(default="", max_length=256)
     password: str = Field(min_length=8, max_length=128)
+
+
+class PasswordResetRequest(BaseModel):
+    """Request a password reset email."""
+
+    email: str = Field(min_length=3, max_length=320)
+
+
+class PasswordResetCompleteRequest(BaseModel):
+    """Set a new password using a single-use reset token."""
+
+    token: str = Field(min_length=16, max_length=128)
+    password: str = Field(min_length=8, max_length=128)
