@@ -7,6 +7,7 @@ never touch Redis.
 """
 
 import re
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -634,6 +635,7 @@ def _fan_out_drive_file(
     *,
     tenant_id: str,
     file: dict[str, Any],
+    force_reprocess: bool = False,
 ) -> bool:
     """Copy one Drive file to GCS and enqueue OCR/extraction.
 
@@ -641,10 +643,21 @@ def _fan_out_drive_file(
     enqueued (mirrors ``stage_document``) so duplicate change records cannot
     double-process a file.
 
+    Args:
+        force_reprocess: When True, ignore the existing PENDING/PROCESSING
+            lease and re-download + re-upload + re-enqueue the file. Used by
+            full backfills so a previously-stuck file is not skipped forever.
+
     Returns:
         True when a new processing task was enqueued.
     """
     if not _is_processable_drive_file(file):
+        logger.debug(
+            "drive_file_not_processable",
+            tenant_id=tenant_id,
+            file_id=str(file.get("id") or ""),
+            mime_type=str(file.get("mimeType") or ""),
+        )
         return False
     file_id = str(file.get("id") or "")
     mime_type = str(file.get("mimeType") or "application/octet-stream")
@@ -653,22 +666,42 @@ def _fan_out_drive_file(
     row = session.execute(
         select(UploadRow).where(UploadRow.gcs_key == gcs_key)
     ).scalar_one_or_none()
-    if row is not None and row.status in (
-        DbUploadStatus.PENDING,
-        DbUploadStatus.PROCESSING,
+    if (
+        not force_reprocess
+        and row is not None
+        and row.status in (DbUploadStatus.PENDING, DbUploadStatus.PROCESSING)
     ):
         logger.info("drive_file_already_processing", tenant_id=tenant_id, file_id=file_id)
         return False
-    try:
-        data = client.download_file(file_id)
-    except DriveAuthError:
-        raise
-    except GoogleDriveError as exc:
+
+    # Download with retry for transient transport/API errors. Full backfills
+    # page through potentially large file sets; a single flaky download must
+    # not silently skip every remaining document.
+    data: bytes | None = None
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            data = client.download_file(file_id)
+            break
+        except DriveAuthError:
+            raise
+        except GoogleDriveError as exc:
+            last_exc = exc
+            logger.warning(
+                "drive_file_download_failed",
+                tenant_id=tenant_id,
+                file_id=file_id,
+                attempt=attempt + 1,
+                error_class=type(exc).__name__,
+            )
+            if attempt < 2:
+                time.sleep(0.5 * (2 ** attempt))
+    if data is None:
         logger.warning(
-            "drive_file_download_failed",
+            "drive_file_download_failed_all_retries",
             tenant_id=tenant_id,
             file_id=file_id,
-            error_class=type(exc).__name__,
+            error_class=type(last_exc).__name__ if last_exc else "unknown",
         )
         return False
     if not data:
@@ -761,6 +794,11 @@ def _sync_drive_full(
 ) -> tuple[str, int, int, int, list[str], dict[str, Any]]:
     """Run a full Drive backfill and return the cursor for later increments.
 
+    Every discovered file is recorded to the bronze lake. Processable files
+    (PDF/image) are downloaded to GCS and fanned out to OCR. Per-file
+    failures are logged and skipped so one bad file cannot abort the entire
+    backfill.
+
     Returns:
         Tuple of (start cursor, pages, records, processed, keys, stats).
     """
@@ -771,6 +809,7 @@ def _sync_drive_full(
     pages = 0
     total_records = 0
     total_processed = 0
+    total_skipped = 0
     keys: list[str] = []
     for target_index, folder_id in enumerate(targets):
         page_token: str | None = None
@@ -797,10 +836,32 @@ def _sync_drive_full(
                         change_time=None,
                     )
                 )
-                if not _is_drive_folder(file) and _fan_out_drive_file(
-                    session, client, settings, tenant_id=tenant_id, file=file
-                ):
+                if _is_drive_folder(file):
+                    total_skipped += 1
+                    continue
+                try:
+                    fanned = _fan_out_drive_file(
+                        session,
+                        client,
+                        settings,
+                        tenant_id=tenant_id,
+                        file=file,
+                        force_reprocess=True,
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "drive_full_sync_file_failed",
+                        tenant_id=tenant_id,
+                        file_id=file_id,
+                        file_name=str(file.get("name") or ""),
+                        error_class=type(exc).__name__,
+                    )
+                    total_skipped += 1
+                    continue
+                if fanned:
                     total_processed += 1
+                else:
+                    total_skipped += 1
             key = _write_drive_records(
                 records,
                 settings,
@@ -812,6 +873,24 @@ def _sync_drive_full(
             total_records += len(records)
             if not page_token:
                 break
+    logger.info(
+        "drive_full_sync_summary",
+        tenant_id=tenant_id,
+        sync_id=sync_id,
+        pages=pages,
+        records=total_records,
+        processed=total_processed,
+        skipped=total_skipped,
+        folders=folder_ids or ["*"],
+    )
+    if total_records > 0 and total_processed == 0:
+        logger.warning(
+            "drive_full_sync_no_files_processed",
+            tenant_id=tenant_id,
+            sync_id=sync_id,
+            records=total_records,
+            folders=folder_ids or ["*"],
+        )
     return start_token, pages, total_records, total_processed, keys, {
         "mode": "full",
         "folders": folder_ids or ["*"],
@@ -831,6 +910,10 @@ def _sync_drive_changes(
 ) -> tuple[str, int, int, int, list[str], dict[str, Any]]:
     """Page ``changes.list`` from a cursor, writing records and fanning out.
 
+    Every discovered change is recorded to the bronze lake. Processable files
+    (PDF/image) are downloaded to GCS and fanned out to OCR. Per-file
+    failures are logged and skipped so one bad file cannot abort the sync.
+
     Returns:
         Tuple of (next cursor, pages, records, processed, keys, stats).
     """
@@ -838,6 +921,7 @@ def _sync_drive_changes(
     pages = 0
     total_records = 0
     total_processed = 0
+    total_skipped = 0
     keys: list[str] = []
     processed_ids: set[str] = set()
     while True:
@@ -867,10 +951,26 @@ def _sync_drive_changes(
                 and not _is_drive_folder(file)
             ):
                 processed_ids.add(file_id)
-                if _fan_out_drive_file(
-                    session, client, settings, tenant_id=tenant_id, file=file
-                ):
+                try:
+                    fanned = _fan_out_drive_file(
+                        session, client, settings, tenant_id=tenant_id, file=file
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "drive_inc_sync_file_failed",
+                        tenant_id=tenant_id,
+                        file_id=file_id,
+                        file_name=str(file.get("name") or ""),
+                        error_class=type(exc).__name__,
+                    )
+                    total_skipped += 1
+                    continue
+                if fanned:
                     total_processed += 1
+                else:
+                    total_skipped += 1
+            else:
+                total_skipped += 1
         key = _write_drive_records(
             records,
             settings,
@@ -894,6 +994,16 @@ def _sync_drive_changes(
             continue
         token = new_start or token
         break
+    logger.info(
+        "drive_inc_sync_summary",
+        tenant_id=tenant_id,
+        sync_id=sync_id,
+        pages=pages,
+        records=total_records,
+        processed=total_processed,
+        skipped=total_skipped,
+        cursor=token,
+    )
     return token, pages, total_records, total_processed, keys, {"mode": "incremental"}
 
 
@@ -1020,6 +1130,88 @@ def _sync_drive(
             **stats,
         }
     except DriveAuthError as exc:
+        # Google rejected the access token. Before forcing a reconnect,
+        # attempt a refresh-token grant so the user does not have to
+        # re-authorize when only the short-lived access token lapsed.
+        if auth.get("refresh_token"):
+            try:
+                refreshed = _refresh_drive_token(
+                    session, tenant_id, settings, auth
+                )
+                client = GoogleDriveClient(access_token=refreshed)
+                try:
+                    if cursor:
+                        try:
+                            result = _sync_drive_changes(
+                                session,
+                                client,
+                                settings,
+                                checkpoint,
+                                tenant_id=tenant_id,
+                                cursor=cursor,
+                                sync_id=sync_id,
+                                page_size=page_size,
+                            )
+                        except DriveCursorExpiredError:
+                            logger.warning(
+                                "drive_cursor_expired_reseeding",
+                                tenant_id=tenant_id,
+                                sync_id=sync_id,
+                            )
+                            result = _sync_drive_full(
+                                session,
+                                client,
+                                settings,
+                                tenant_id=tenant_id,
+                                sync_id=sync_id,
+                                page_size=page_size,
+                            )
+                    else:
+                        result = _sync_drive_full(
+                            session,
+                            client,
+                            settings,
+                            tenant_id=tenant_id,
+                            sync_id=sync_id,
+                            page_size=page_size,
+                        )
+                finally:
+                    client.close()
+
+                final_cursor, pages, total_records, total_processed, keys, stats = result
+                if checkpoint is not None:
+                    mark_checkpoint(
+                        session,
+                        checkpoint,
+                        status=SyncStatus.SUCCESS,
+                        cursor_token=final_cursor,
+                    )
+                    session.commit()
+                logger.info(
+                    "drive_sync_complete_after_refresh",
+                    tenant_id=tenant_id,
+                    sync_id=sync_id,
+                    pages=pages,
+                    records=total_records,
+                    processed=total_processed,
+                    **stats,
+                )
+                return {
+                    "sync_id": sync_id,
+                    "cursor": final_cursor,
+                    "pages": pages,
+                    "records": total_records,
+                    "processed": total_processed,
+                    "keys": keys,
+                    **stats,
+                }
+            except (PermanentDriveError, DriveTokenRefreshError) as refresh_exc:
+                logger.warning(
+                    "drive_refresh_failed_forcing_reconnect",
+                    tenant_id=tenant_id,
+                    sync_id=sync_id,
+                    error_class=type(refresh_exc).__name__,
+                )
         _mark_provider_status(
             session,
             tenant_id,

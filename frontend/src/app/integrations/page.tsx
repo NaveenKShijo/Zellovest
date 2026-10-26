@@ -204,8 +204,8 @@ export default function IntegrationsPage() {
         if (res.ok) {
           setSyncFeedback(
             data.deduped
-              ? `${label} already running (Job: ${data.sync_id})`
-              : `${label} started (Job: ${data.sync_id || 'queued'})`
+              ? `${label} already running`
+              : `${label} started`
           );
         } else if (res.status === 409 && isReconnectError(data.detail || '')) {
           setBannerNotice({
@@ -479,9 +479,25 @@ export default function IntegrationsPage() {
             border: '1px solid var(--border-subtle)',
             color: 'var(--text-primary)',
             fontSize: '13px',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
           }}
         >
-          {syncFeedback}
+          <span>{syncFeedback}</span>
+          <button
+            onClick={() => setSyncFeedback(null)}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: 'inherit',
+              cursor: 'pointer',
+              fontWeight: 700,
+              fontSize: '16px',
+            }}
+          >
+            ×
+          </button>
         </div>
       )}
 
@@ -1012,7 +1028,7 @@ export default function IntegrationsPage() {
                 </div>
               )}
 
-              {driveStatus?.connected && (
+              {!driveNeedsReconnect && driveStatus?.connected && (
                 <div style={{ marginBottom: '12px', fontSize: '11.5px', color: 'var(--text-muted)' }}>
                   <div>Scopes: <strong style={{ color: 'var(--text-primary)' }}>{driveStatus.scopes.join(', ') || 'drive.readonly'}</strong></div>
                   <div style={{ marginTop: '4px' }}>

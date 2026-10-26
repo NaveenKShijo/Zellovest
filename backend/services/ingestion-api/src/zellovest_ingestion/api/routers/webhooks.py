@@ -430,13 +430,61 @@ async def google_drive_webhook(
         )
         tenant_id = _DEFAULT_TENANT
 
-    background_tasks.add_task(
-        process_google_drive_notification,
-        channel_id,
-        resource_state,
-        tenant_id,
-        settings.async_database_url if hasattr(settings, "async_database_url") else None,
-    )
+    # --- Debounce gate (5-second window, same as Ramp/Okta) ---
+    debounce = WebhookDebounce(redis_client)
+    result = await debounce.check("google_drive", tenant_id)
+
+    if result.action == DebounceAction.IGNORE:
+        logger.info(
+            "drive_webhook_ignored",
+            channel_id=channel_id,
+            tenant_id=tenant_id,
+            reason="sync_in_progress",
+        )
+        return {
+            "received": True,
+            "channel_id": channel_id,
+            "resource_state": resource_state,
+        }
+
+    if result.action == DebounceAction.JOIN_WINDOW:
+        logger.info(
+            "drive_webhook_joined_window",
+            channel_id=channel_id,
+            tenant_id=tenant_id,
+            trigger_count=result.trigger_count,
+        )
+        return {
+            "received": True,
+            "channel_id": channel_id,
+            "resource_state": resource_state,
+        }
+
+    # OPEN_WINDOW: schedule one incremental pull after the 5s window.
+    async def _fire_drive_sync() -> None:
+        from zellovest_shared.db.session import async_session_scope
+        from zellovest_ingestion.services.sync_dispatcher import dispatch_drive_sync
+
+        await asyncio.sleep(DEBOUNCE_WINDOW_SECONDS)
+
+        await debounce.begin_sync("google_drive", tenant_id)
+        try:
+            async for db_session in async_session_scope(settings.async_database_url):
+                await dispatch_drive_sync(db_session, tenant_id=tenant_id)
+                await db_session.commit()
+                break
+        except Exception as exc:
+            logger.error(
+                "drive_debounce_sync_failed",
+                channel_id=channel_id,
+                tenant_id=tenant_id,
+                error_class=type(exc).__name__,
+            )
+        finally:
+            await debounce.end_sync("google_drive", tenant_id)
+
+    background_tasks.add_task(_fire_drive_sync)
+
     logger.info(
         "drive_webhook_enqueued",
         channel_id=channel_id,
@@ -444,4 +492,8 @@ async def google_drive_webhook(
         message_number=message_number,
         tenant_id=tenant_id,
     )
-    return {"received": True, "channel_id": channel_id, "resource_state": resource_state}
+    return {
+        "received": True,
+        "channel_id": channel_id,
+        "resource_state": resource_state,
+    }

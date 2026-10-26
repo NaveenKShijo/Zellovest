@@ -8,6 +8,7 @@ provider-bound OAuth state, and the removal of the generic ``/connectors`` APIs.
 import base64
 import json
 import os
+import time
 import uuid as _uuid
 from unittest.mock import AsyncMock, MagicMock
 
@@ -463,14 +464,28 @@ def test_drive_webhook_sync_ack(client):
 def test_drive_webhook_change_enqueues_background(client, monkeypatch):
     """Change events resolve the tenant from the watch mapping and enqueue a pull."""
     import zellovest_ingestion.api.routers.webhooks as wh
+    import zellovest_ingestion.services.sync_dispatcher as dispatcher
 
     client.app.state.redis.set("drive:watch:ch-9", "t-drive")
+    # No 5s wait in tests
+    monkeypatch.setattr(wh, "DEBOUNCE_WINDOW_SECONDS", 0.0)
+
     calls: list = []
 
-    async def fake_process(channel_id, resource_state, tenant_id="default-org", async_database_url=None):
-        calls.append((channel_id, resource_state, tenant_id))
+    async def fake_scope(url):
+        mock_session = AsyncMock()
+        mock_session.commit = AsyncMock()
+        yield mock_session
 
-    monkeypatch.setattr(wh, "process_google_drive_notification", fake_process)
+    monkeypatch.setattr(
+        "zellovest_shared.db.session.async_session_scope", fake_scope
+    )
+
+    async def fake_dispatch(session, *, tenant_id, cursor=None, full_sync=False, page_size=100):
+        calls.append(tenant_id)
+        return (_uuid.uuid4(), "task-1", True)
+
+    monkeypatch.setattr(dispatcher, "dispatch_drive_sync", fake_dispatch)
     resp = client.post(
         "/api/v1/webhooks/google-drive",
         headers={
@@ -482,19 +497,33 @@ def test_drive_webhook_change_enqueues_background(client, monkeypatch):
     )
     assert resp.status_code == 200
     assert resp.json() == {"received": True, "channel_id": "ch-9", "resource_state": "update"}
-    assert calls == [("ch-9", "update", "t-drive")]
+    assert calls == ["t-drive"]
 
 
 def test_drive_webhook_unknown_channel_falls_back_to_default_tenant(client, monkeypatch):
     """Unmapped channels fall back to the single-tenant default."""
     import zellovest_ingestion.api.routers.webhooks as wh
+    import zellovest_ingestion.services.sync_dispatcher as dispatcher
+
+    # No 5s wait in tests
+    monkeypatch.setattr(wh, "DEBOUNCE_WINDOW_SECONDS", 0.0)
 
     calls: list = []
 
-    async def fake_process(channel_id, resource_state, tenant_id="default-org", async_database_url=None):
-        calls.append(tenant_id)
+    async def fake_scope(url):
+        mock_session = AsyncMock()
+        mock_session.commit = AsyncMock()
+        yield mock_session
 
-    monkeypatch.setattr(wh, "process_google_drive_notification", fake_process)
+    monkeypatch.setattr(
+        "zellovest_shared.db.session.async_session_scope", fake_scope
+    )
+
+    async def fake_dispatch(session, *, tenant_id, cursor=None, full_sync=False, page_size=100):
+        calls.append(tenant_id)
+        return (_uuid.uuid4(), "task-1", True)
+
+    monkeypatch.setattr(dispatcher, "dispatch_drive_sync", fake_dispatch)
     resp = client.post(
         "/api/v1/webhooks/google-drive",
         headers={
@@ -558,7 +587,128 @@ def test_process_notification_without_database_skips(monkeypatch):
     asyncio.run(go())
 
 
-# --- Watch bookkeeping + OAuth helpers ----------------------------------------
+# --- Drive webhook debounce (5-second window, same as Ramp/Okta) ---
+
+
+def test_drive_webhook_debounce_open_window_schedules_sync(client, monkeypatch):
+    """First change webhook opens a 5s window and schedules one pull sync."""
+    import zellovest_ingestion.api.routers.webhooks as wh
+    import zellovest_ingestion.services.sync_dispatcher as dispatcher
+
+    client.app.state.redis.set("drive:watch:ch-1", "t-drive")
+    # No prior debounce state -> OPEN_WINDOW
+    monkeypatch.setattr(wh, "DEBOUNCE_WINDOW_SECONDS", 0.0)
+
+    calls: list = []
+
+    async def fake_dispatch(session, *, tenant_id, cursor=None, full_sync=False, page_size=100):
+        calls.append(tenant_id)
+        return (_uuid.uuid4(), "task-1", True)
+
+    monkeypatch.setattr(dispatcher, "dispatch_drive_sync", fake_dispatch)
+
+    resp = client.post(
+        "/api/v1/webhooks/google-drive",
+        headers={
+            "X-Goog-Channel-ID": "ch-1",
+            "X-Goog-Resource-State": "add",
+            "X-Goog-Channel-Token": "drive-chan-secret",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["resource_state"] == "add"
+    # Debounce window collapsed to one sync (0s delay in test).
+    assert calls == ["t-drive"]
+
+
+def test_drive_webhook_debounce_join_window_no_dispatch(client, monkeypatch):
+    """Second webhook within the 5s window joins it; no second sync is dispatched."""
+    import zellovest_ingestion.api.routers.webhooks as wh
+    import zellovest_ingestion.services.sync_dispatcher as dispatcher
+
+    client.app.state.redis.set("drive:watch:ch-2", "t-drive")
+    # Pre-set debounce state to "window" (simulates a webhook just arrived).
+    now = time.time()
+    client.app.state.redis.hset(
+        "zellovest:debounce:google_drive:t-drive",
+        mapping={
+            "phase": "window",
+            "window_start": str(now),
+            "trigger_count": "1",
+            "sync_lock": "0",
+        },
+    )
+    client.app.state.redis.expire("zellovest:debounce:google_drive:t-drive", 30)
+
+    calls: list = []
+
+    async def fake_dispatch(session, *, tenant_id, cursor=None, full_sync=False, page_size=100):
+        calls.append(tenant_id)
+        return (_uuid.uuid4(), "task-1", True)
+
+    monkeypatch.setattr(dispatcher, "dispatch_drive_sync", fake_dispatch)
+
+    resp = client.post(
+        "/api/v1/webhooks/google-drive",
+        headers={
+            "X-Goog-Channel-ID": "ch-2",
+            "X-Goog-Resource-State": "update",
+            "X-Goog-Channel-Token": "drive-chan-secret",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["resource_state"] == "update"
+    assert calls == []  # joined window, no dispatch
+
+
+def test_drive_webhook_debounce_ignore_while_syncing(client, monkeypatch):
+    """Webhook while a sync is running is ignored entirely; no dispatch."""
+    import zellovest_ingestion.api.routers.webhooks as wh
+    import zellovest_ingestion.services.sync_dispatcher as dispatcher
+
+    client.app.state.redis.set("drive:watch:ch-3", "t-drive")
+    # Pre-set debounce state to "syncing" (sync in progress).
+    client.app.state.redis.hset(
+        "zellovest:debounce:google_drive:t-drive",
+        mapping={"phase": "syncing", "sync_lock": "1"},
+    )
+    client.app.state.redis.expire("zellovest:debounce:google_drive:t-drive", 30)
+
+    calls: list = []
+
+    async def fake_dispatch(session, *, tenant_id, cursor=None, full_sync=False, page_size=100):
+        calls.append(tenant_id)
+        return (_uuid.uuid4(), "task-1", True)
+
+    monkeypatch.setattr(dispatcher, "dispatch_drive_sync", fake_dispatch)
+
+    resp = client.post(
+        "/api/v1/webhooks/google-drive",
+        headers={
+            "X-Goog-Channel-ID": "ch-3",
+            "X-Goog-Resource-State": "delete",
+            "X-Goog-Channel-Token": "drive-chan-secret",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["resource_state"] == "delete"
+    assert calls == []  # ignored, no dispatch
+
+
+def test_drive_webhook_sync_handshake_still_immediate(client):
+    """'sync' handshake is acked immediately without debounce gate."""
+    resp = client.post(
+        "/api/v1/webhooks/google-drive",
+        headers={
+            "X-Goog-Channel-ID": "ch-1",
+            "X-Goog-Resource-State": "sync",
+            "X-Goog-Channel-Token": "drive-chan-secret",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["resource_state"] == "sync"
+
+# --- Watch bookkeeping + OAuth helpers ---
 
 
 def test_ensure_drive_watch_skipped_without_callback():
