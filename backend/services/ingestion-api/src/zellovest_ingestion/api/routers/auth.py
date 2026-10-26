@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import HTTPBearer
 from starlette.concurrency import run_in_threadpool
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from zellovest_shared.db.models import Invitation, PasswordResetToken, User
@@ -163,11 +163,6 @@ async def request_password_reset(
     user = await get_user_by_email(session, email)
     if user is not None and user.is_active and not getattr(user, "is_demo", False):
         now = datetime.now(UTC)
-        await session.execute(
-            update(PasswordResetToken)
-            .where(PasswordResetToken.user_id == user.id, PasswordResetToken.used_at.is_(None))
-            .values(used_at=now)
-        )
         raw_token = generate_password_reset_token()
         session.add(
             PasswordResetToken(
@@ -176,22 +171,24 @@ async def request_password_reset(
                 expires_at=now + timedelta(minutes=PASSWORD_RESET_TTL_MINUTES),
             )
         )
-        await session.commit()
         link = f"{settings.frontend_url.rstrip('/')}/reset-password?token={quote(raw_token)}"
         try:
             await run_in_threadpool(
                 send_password_reset_email, settings, user.email, link
             )
         except Exception as exc:
-            logger.error("password_reset_email_failed", error_class=type(exc).__name__)
-            await session.execute(
-                update(PasswordResetToken)
-                .where(PasswordResetToken.token_hash == hash_password_reset_token(raw_token))
-                .values(used_at=datetime.now(UTC))
+            logger.error(
+                "password_reset_email_failed",
+                error_class=type(exc).__name__,
+                error=str(exc),
             )
-            await session.commit()
-        else:
-            logger.info("password_reset_email_sent")
+            await session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Unable to send reset email. Please try again later.",
+            ) from exc
+        await session.commit()
+        logger.info("password_reset_email_sent")
     return {"message": "If an active account exists for that email, a reset link has been sent."}
 
 
