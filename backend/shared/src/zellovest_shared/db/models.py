@@ -27,6 +27,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     LargeBinary,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -328,6 +329,10 @@ class Upload(Base):
     mime_type: Mapped[str] = mapped_column(String(128), nullable=False)
     size_expected: Mapped[int] = mapped_column(BigInteger, nullable=False)
     document_type: Mapped[str] = mapped_column(String(32), nullable=False, default="other")
+    document_type_confidence: Mapped[float | None] = mapped_column(
+        Numeric(5, 4), nullable=True
+    )
+    classification_method: Mapped[str | None] = mapped_column(String(32), nullable=True)
     status: Mapped[UploadStatus] = mapped_column(
         Enum(UploadStatus, name="upload_status",
              values_callable=lambda x: [e.value for e in x]),
@@ -337,6 +342,56 @@ class Upload(Base):
     expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        server_default=func.now(), onupdate=func.now(),
+    )
+
+
+class ExtractionArtifact(Base):
+    """Persisted extraction output metadata for one processed upload.
+
+    The bulky extraction payload (full text, pages, blocks, tables,
+    provenance chain) lives in GCS under ``artifact_gcs_key`` (PRD §27.5.4
+    "Extracted OCR artifacts"); this row stores the queryable metadata plus
+    the first ~4k chars of extracted text as the Stage-2 Jev classification
+    working set (so classification is a pure Postgres read).
+
+    One row per upload: the row is upserted by the document worker when
+    ``process_document`` finishes extraction, then updated in place by
+    ``classify_upload`` when Stage-2 classification lands.
+    """
+
+    __tablename__ = "extraction_artifacts"
+    __table_args__ = (
+        UniqueConstraint("upload_id", name="uq_extraction_artifacts_upload_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    upload_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("uploads.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_gcs_key: Mapped[str] = mapped_column(Text, nullable=False)
+    artifact_gcs_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    route: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    file_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    text_chars: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    extraction_method: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="unknown"
+    )
+    extraction_confidence: Mapped[float | None] = mapped_column(
+        Numeric(5, 4), nullable=True
+    )
+    text_snippet: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    classification: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

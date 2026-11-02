@@ -69,6 +69,25 @@ class GcsSigner(Protocol):
         """
         ...
 
+    def generate_download_url(
+        self,
+        *,
+        bucket: str,
+        key: str,
+        expires_secs: int,
+    ) -> tuple[str, datetime]:
+        """Mint a V4 GET signed URL for one object key.
+
+        Args:
+            bucket: GCS bucket name.
+            key: Object key to read, e.g. the lease's ``gcs_key``.
+            expires_secs: URL lifetime in seconds (must be positive).
+
+        Returns:
+            Tuple of (signed_url, expires_at_utc).
+        """
+        ...
+
 
 class GcsStorageSigner:
     """Real signer backed by ``google-cloud-storage``.
@@ -151,6 +170,72 @@ class GcsStorageSigner:
         )
         return url, expires_at
 
+    def generate_download_url(
+        self,
+        *,
+        bucket: str,
+        key: str,
+        expires_secs: int,
+    ) -> tuple[str, datetime]:
+        """Generate a V4 GET signed URL for reading one object.
+
+        Used by the documents API to hand short-lived viewer/download
+        URLs for a stored file (never a public object URL).
+
+        Args:
+            bucket: GCS bucket name.
+            key: Object key to read.
+            expires_secs: Signed URL lifetime in seconds.
+
+        Returns:
+            Tuple of (signed_url, expires_at_utc).
+
+        Raises:
+            StorageNotConfiguredError: If bucket is empty.
+            ValueError: If expires_secs is not positive.
+            GcsSigningError: If signing fails or dependency is missing.
+        """
+        if not bucket:
+            raise StorageNotConfiguredError("GCS_RAW_BUCKET is not configured")
+        if expires_secs <= 0:
+            raise ValueError("expires_secs must be positive")
+
+        try:
+            # Lazy import: keeps unit tests credential-free.
+            from google.cloud import storage
+        except ImportError as exc:
+            raise GcsSigningError(
+                "google-cloud-storage is not installed; add it to ingestion-api dependencies"
+            ) from exc
+
+        try:
+            client = make_storage_client(self._project or None)
+            blob = client.bucket(bucket).blob(key)
+            expires_at = datetime.now(UTC) + timedelta(seconds=expires_secs)
+            url = blob.generate_signed_url(
+                version="v4",
+                method="GET",
+                expiration=expires_at,
+            )
+        except (StorageNotConfiguredError, ValueError):
+            raise
+        except Exception as exc:
+            logger.error(
+                "gcs_download_sign_failed",
+                bucket=bucket,
+                key=key,
+                error_class=type(exc).__name__,
+            )
+            raise GcsSigningError(f"failed to sign GCS view URL for key={key!r}") from exc
+
+        logger.info(
+            "gcs_download_sign_issued",
+            bucket=bucket,
+            key=key,
+            expires_secs=expires_secs,
+        )
+        return url, expires_at
+
 
 class FakeGcsSigner:
     """Deterministic fake for unit tests (no network, no credentials)."""
@@ -185,6 +270,27 @@ class FakeGcsSigner:
         del content_type  # fake does not enforce content-type
         expires_at = datetime.now(UTC) + timedelta(seconds=expires_secs)
         url = f"{self._base_url}/{bucket}/{quote(key, safe='/')}?sig=test&exp={expires_secs}"
+        return url, expires_at
+
+    def generate_download_url(
+        self,
+        *,
+        bucket: str,
+        key: str,
+        expires_secs: int,
+    ) -> tuple[str, datetime]:
+        """Return a predictable fake GET URL embedding bucket and key.
+
+        Args:
+            bucket: Fake bucket name echoed into the URL.
+            key: Fake object key echoed into the URL.
+            expires_secs: Lifetime echoed as ``exp`` query param.
+
+        Returns:
+            Tuple of (fake_url, expires_at_utc).
+        """
+        expires_at = datetime.now(UTC) + timedelta(seconds=expires_secs)
+        url = f"{self._base_url}/{bucket}/{quote(key, safe='/')}?sig=test&exp={expires_secs}&get=1"
         return url, expires_at
 
 
@@ -378,12 +484,3 @@ def get_gcs_reader(project: str = "", *, use_fake: bool = False) -> GcsObjectRea
     if use_fake:
         return FakeGcsReader()
     return GcsStorageReader(project=project)
-
-def make_storage_client(project: str | None, credentials_path: str | None):
-    from google.cloud import storage
-    from google.oauth2 import service_account
-
-    if credentials_path:
-        creds = service_account.Credentials.from_service_account_file(credentials_path)
-        return storage.Client(project=project, credentials=creds)
-    return storage.Client(project=project)

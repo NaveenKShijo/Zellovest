@@ -58,7 +58,9 @@ class UploadListResponse(BaseModel):
 
 # --- Direct-to-GCS init flow (V1) ---
 
-DEFAULT_TENANT_ID = "default_org"
+# Single-tenant V1 id. Must match the spelling used by the Drive fan-out, Okta
+# flows and the frontend (`default-org`); underscore variants are a bug source.
+DEFAULT_TENANT_ID = "default-org"
 
 ALLOWED_MIMES_V1: set[str] = {
     "application/pdf",

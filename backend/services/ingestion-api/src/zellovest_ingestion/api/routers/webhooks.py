@@ -366,134 +366,134 @@ async def verify_okta_webhook(request: Request,
     return {"verification": challenge}
 
 
-@router.post("/google-drive", status_code=200)
-async def google_drive_webhook(
-    request: Request,
-    background_tasks: BackgroundTasks,
-    settings: IngestionAPISettings = Depends(get_app_settings),
-    redis_client: redis.Redis = Depends(get_redis_client),
-) -> dict:
-    """Receive a Google Drive push notification (``changes.watch`` callback).
-
-    Verifies ``X-Goog-Channel-ID`` / ``X-Goog-Channel-Token`` /
-    ``X-Goog-Resource-State``. ``sync`` handshakes are acked immediately;
-    change events resolve the owning tenant from the watch mapping recorded
-    at OAuth connect time, enqueue a background pull, and return 200 within
-    500ms.
-
-    Raises:
-        HTTPException: 400 on missing/invalid Goog headers, 401 on bad channel token.
-    """
-    channel_id = request.headers.get("X-Goog-Channel-ID")
-    channel_token = request.headers.get("X-Goog-Channel-Token")
-    resource_state = (request.headers.get("X-Goog-Resource-State") or "").lower()
-    resource_id = request.headers.get("X-Goog-Resource-ID")
-    message_number = request.headers.get("X-Goog-Message-Number")
-
-    if not channel_id:
-        logger.warning("drive_webhook_missing_channel")
-        raise HTTPException(status_code=400, detail="missing X-Goog-Channel-ID")
-    if not resource_state or resource_state not in _ALLOWED_DRIVE_STATES:
-        logger.warning("drive_webhook_bad_state", resource_state=resource_state)
-        raise HTTPException(
-            status_code=400,
-            detail=f"invalid X-Goog-Resource-State: {resource_state or '<missing>'}",
-        )
-
-    expected_token = (settings.google_drive_webhook_token or "").strip()
-    if expected_token:
-        if not channel_token or channel_token != expected_token:
-            logger.warning("drive_webhook_bad_token", channel_id=channel_id)
-            raise HTTPException(status_code=401, detail="invalid channel token")
-
-    # Drain body (Drive posts an empty body); do not block on it.
-    try:
-        await request.body()
-    except Exception:
-        pass
-
-    if resource_state == "sync":
-        logger.info(
-            "drive_webhook_sync_ack",
-            channel_id=channel_id,
-            resource_id=resource_id,
-        )
-        return {"received": True, "channel_id": channel_id, "resource_state": "sync"}
-
-    try:
-        tenant_id = resolve_watch_tenant(redis_client, channel_id) or _DEFAULT_TENANT
-    except Exception as exc:
-        logger.warning(
-            "drive_watch_lookup_failed",
-            channel_id=channel_id,
-            error_class=type(exc).__name__,
-        )
-        tenant_id = _DEFAULT_TENANT
-
-    # --- Debounce gate (5-second window, same as Ramp/Okta) ---
-    debounce = WebhookDebounce(redis_client)
-    result = await debounce.check("google_drive", tenant_id)
-
-    if result.action == DebounceAction.IGNORE:
-        logger.info(
-            "drive_webhook_ignored",
-            channel_id=channel_id,
-            tenant_id=tenant_id,
-            reason="sync_in_progress",
-        )
-        return {
-            "received": True,
-            "channel_id": channel_id,
-            "resource_state": resource_state,
-        }
-
-    if result.action == DebounceAction.JOIN_WINDOW:
-        logger.info(
-            "drive_webhook_joined_window",
-            channel_id=channel_id,
-            tenant_id=tenant_id,
-            trigger_count=result.trigger_count,
-        )
-        return {
-            "received": True,
-            "channel_id": channel_id,
-            "resource_state": resource_state,
-        }
-
-    # OPEN_WINDOW: schedule one incremental pull after the 5s window.
-    async def _fire_drive_sync() -> None:
-        from zellovest_shared.db.session import async_session_scope
-        from zellovest_ingestion.services.sync_dispatcher import dispatch_drive_sync
-
-        await asyncio.sleep(DEBOUNCE_WINDOW_SECONDS)
-
-        await debounce.begin_sync("google_drive", tenant_id)
-        try:
-            async for db_session in async_session_scope(settings.async_database_url):
-                await dispatch_drive_sync(db_session, tenant_id=tenant_id)
-                await db_session.commit()
-                break
-        except Exception as exc:
-            logger.error(
-                "drive_debounce_sync_failed",
-                channel_id=channel_id,
-                tenant_id=tenant_id,
-                error_class=type(exc).__name__,
-            )
-        finally:
-            await debounce.end_sync("google_drive", tenant_id)
-
-    background_tasks.add_task(_fire_drive_sync)
-
-    logger.info(
-        "drive_webhook_enqueued",
-        channel_id=channel_id,
-        resource_state=resource_state,
-        message_number=message_number,
-        tenant_id=tenant_id,
-    )
-    return {
-        "received": True,
-        "channel_id": channel_id,
-        "resource_state": resource_state,
-    }
+# @router.post("/google-drive", status_code=200)
+# async def google_drive_webhook(
+#     request: Request,
+#     background_tasks: BackgroundTasks,
+#     settings: IngestionAPISettings = Depends(get_app_settings),
+#     redis_client: redis.Redis = Depends(get_redis_client),
+# ) -> dict:
+#     """Receive a Google Drive push notification (``changes.watch`` callback).
+# 
+#     Verifies ``X-Goog-Channel-ID`` / ``X-Goog-Channel-Token`` /
+#     ``X-Goog-Resource-State``. ``sync`` handshakes are acked immediately;
+#     change events resolve the owning tenant from the watch mapping recorded
+#     at OAuth connect time, enqueue a background pull, and return 200 within
+#     500ms.
+# 
+#     Raises:
+#         HTTPException: 400 on missing/invalid Goog headers, 401 on bad channel token.
+#     """
+#     channel_id = request.headers.get("X-Goog-Channel-ID")
+#     channel_token = request.headers.get("X-Goog-Channel-Token")
+#     resource_state = (request.headers.get("X-Goog-Resource-State") or "").lower()
+#     resource_id = request.headers.get("X-Goog-Resource-ID")
+#     message_number = request.headers.get("X-Goog-Message-Number")
+# 
+#     if not channel_id:
+#         logger.warning("drive_webhook_missing_channel")
+#         raise HTTPException(status_code=400, detail="missing X-Goog-Channel-ID")
+#     if not resource_state or resource_state not in _ALLOWED_DRIVE_STATES:
+#         logger.warning("drive_webhook_bad_state", resource_state=resource_state)
+#         raise HTTPException(
+#             status_code=400,
+#             detail=f"invalid X-Goog-Resource-State: {resource_state or '<missing>'}",
+#         )
+# 
+#     expected_token = (settings.google_drive_webhook_token or "").strip()
+#     if expected_token:
+#         if not channel_token or channel_token != expected_token:
+#             logger.warning("drive_webhook_bad_token", channel_id=channel_id)
+#             raise HTTPException(status_code=401, detail="invalid channel token")
+# 
+#     # Drain body (Drive posts an empty body); do not block on it.
+#     try:
+#         await request.body()
+#     except Exception:
+#         pass
+# 
+#     if resource_state == "sync":
+#         logger.info(
+#             "drive_webhook_sync_ack",
+#             channel_id=channel_id,
+#             resource_id=resource_id,
+#         )
+#         return {"received": True, "channel_id": channel_id, "resource_state": "sync"}
+# 
+#     try:
+#         tenant_id = resolve_watch_tenant(redis_client, channel_id) or _DEFAULT_TENANT
+#     except Exception as exc:
+#         logger.warning(
+#             "drive_watch_lookup_failed",
+#             channel_id=channel_id,
+#             error_class=type(exc).__name__,
+#         )
+#         tenant_id = _DEFAULT_TENANT
+# 
+#     # --- Debounce gate (5-second window, same as Ramp/Okta) ---
+#     debounce = WebhookDebounce(redis_client)
+#     result = await debounce.check("google_drive", tenant_id)
+# 
+#     if result.action == DebounceAction.IGNORE:
+#         logger.info(
+#             "drive_webhook_ignored",
+#             channel_id=channel_id,
+#             tenant_id=tenant_id,
+#             reason="sync_in_progress",
+#         )
+#         return {
+#             "received": True,
+#             "channel_id": channel_id,
+#             "resource_state": resource_state,
+#         }
+# 
+#     if result.action == DebounceAction.JOIN_WINDOW:
+#         logger.info(
+#             "drive_webhook_joined_window",
+#             channel_id=channel_id,
+#             tenant_id=tenant_id,
+#             trigger_count=result.trigger_count,
+#         )
+#         return {
+#             "received": True,
+#             "channel_id": channel_id,
+#             "resource_state": resource_state,
+#         }
+# 
+#     # OPEN_WINDOW: schedule one incremental pull after the 5s window.
+#     async def _fire_drive_sync() -> None:
+#         from zellovest_shared.db.session import async_session_scope
+#         from zellovest_ingestion.services.sync_dispatcher import dispatch_drive_sync
+# 
+#         await asyncio.sleep(DEBOUNCE_WINDOW_SECONDS)
+# 
+#         await debounce.begin_sync("google_drive", tenant_id)
+#         try:
+#             async for db_session in async_session_scope(settings.async_database_url):
+#                 await dispatch_drive_sync(db_session, tenant_id=tenant_id)
+#                 await db_session.commit()
+#                 break
+#         except Exception as exc:
+#             logger.error(
+#                 "drive_debounce_sync_failed",
+#                 channel_id=channel_id,
+#                 tenant_id=tenant_id,
+#                 error_class=type(exc).__name__,
+#             )
+#         finally:
+#             await debounce.end_sync("google_drive", tenant_id)
+# 
+#     background_tasks.add_task(_fire_drive_sync)
+# 
+#     logger.info(
+#         "drive_webhook_enqueued",
+#         channel_id=channel_id,
+#         resource_state=resource_state,
+#         message_number=message_number,
+#         tenant_id=tenant_id,
+#     )
+#     return {
+#         "received": True,
+#         "channel_id": channel_id,
+#         "resource_state": resource_state,
+#     }

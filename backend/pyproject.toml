@@ -28,7 +28,10 @@ dependencies = [
     # whose absence turned every successful login into a 500.
     # NOTE: pinned to the version vendored in backend/wheels/ (this env has
     # no PyPI access to fetch newer wheels). Relax once network is back.
-    "python-multipart==0.0.21",
+
+    "python-multipart==0.0.21",    
+    "pymupdf==2.0",
+    "pdfplumber==0.11.10",
 ]
 
 # The root is a dev/test umbrella, not an installable package (there is no

@@ -98,9 +98,18 @@ class Settings(BaseSettings):
     llm_model: str = Field(default="gpt-4-turbo", alias="LLM_MODEL")
 
     # Document AI
-    document_ai_project_id: str = Field(default="", alias="DOCUMENT_AI_PROJECT_ID")
-    document_ai_location: str = Field(default="us", alias="DOCUMENT_AI_LOCATION")
-    document_ai_processor_id: str = Field(default="", alias="DOCUMENT_AI_PROCESSOR_ID")
+    document_ai_project_id: str = Field(default="1080160888424")
+    document_ai_location: str = Field(default="asia-south1", alias="DOCUMENT_AI_LOCATION")
+    document_ai_processor_id: str = Field(default="e38952ab29fc489b",
+        alias="DOCUMENT_AI_PROCESSOR_ID")
+
+    # Jev AI (TypeSafe AI) document classification, accessed via OpenRouter.
+    jev_api_key: str = Field(default="", alias="OPENROUTER_API_KEY")
+    jev_api_url: str = Field(
+        default="https://openrouter.ai/api/v1", alias="JEV_API_URL"
+    )
+    jev_model: str = Field(default="openai/gpt-4o-mini", alias="JEV_MODEL")
+    jev_timeout_seconds: float = Field(default=30.0, alias="JEV_TIMEOUT_SECONDS")
 
     # Ingestion tuning
     poll_batch_size: int = Field(default=100, alias="POLL_BATCH_SIZE")

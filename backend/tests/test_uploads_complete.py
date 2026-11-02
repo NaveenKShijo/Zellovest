@@ -103,10 +103,10 @@ def _make_row(**overrides: Any) -> UploadRow:
     now = datetime.now(UTC)
     defaults: dict[str, Any] = {
         "id": uuid.uuid4(),
-        "tenant_id": "default_org",
+        "tenant_id": "default-org",
         "vendor_id": None,
         "filename": "a.pdf",
-        "gcs_key": "uploads/default_org/contract/abc/a.pdf",
+        "gcs_key": "uploads/default-org/contract/abc/a.pdf",
         "mime_type": "application/pdf",
         "size_expected": 4,
         "document_type": "contract",
@@ -170,7 +170,7 @@ def test_complete_happy_path(monkeypatch: Any) -> None:
     assert body["task_id"] == "task-1"
     assert row.status == DbUploadStatus.STAGED
     assert calls and calls[0]["gcs_key"] == row.gcs_key
-    assert calls[0]["tenant_id"] == "default_org"
+    assert calls[0]["tenant_id"] == "default-org"
     FakeGcsBucket.clear()
 
 

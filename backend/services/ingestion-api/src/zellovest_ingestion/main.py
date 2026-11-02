@@ -21,7 +21,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from zellovest_ingestion.api.routers import integrations, integrations_drive, integrations_okta, sync, uploads, webhooks, auth
+from zellovest_ingestion.api.routers import documents, integrations, integrations_drive, integrations_okta, sync, uploads, webhooks, auth
 from zellovest_ingestion.api.routers.integrations_okta import alias_router as integrations_okta_alias_router
 from zellovest_ingestion.config import get_ingestion_api_settings
 from zellovest_shared.logging_conf import configure_logging, get_logger
@@ -84,6 +84,7 @@ def create_app(settings=None) -> FastAPI:
     app.include_router(integrations_okta_alias_router, tags=["integrations"])
     app.include_router(webhooks.router, prefix=prefix, tags=["webhooks"])
     app.include_router(uploads.router, prefix=prefix, tags=["uploads"])
+    app.include_router(documents.router, prefix=prefix, tags=["documents"])
     app.include_router(sync.router, prefix=prefix, tags=["sync"])
 
     @app.get("/healthz", tags=["ops"])

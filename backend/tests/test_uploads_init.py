@@ -101,7 +101,7 @@ def test_init_happy_path_sanitizes_traversal() -> None:
     )
     assert response.status_code == 201
     body = response.json()
-    assert body["gcs_key"].startswith("uploads/default_org/invoice/")
+    assert body["gcs_key"].startswith("uploads/default-org/invoice/")
     assert ".." not in body["gcs_key"]
     assert body["gcs_key"].endswith("/passwd")
     assert "fake-gcs.local/tenant-bucket/" in body["signed_url"]

@@ -5,16 +5,19 @@ description = "Zellovest background workers: ingestion, document OCR, AP audit, 
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "zellovest-shared @ file://../../shared",
+    "zellovest-shared",
     "celery[redis]>=5.3",
     "redis>=5.0",
     "sqlalchemy>=2.0",
     "psycopg[binary]>=3.2",
     "httpx>=0.26",
     "google-cloud-storage>=2.18",
+    "google-cloud-documentai>=3.0",
     "scikit-learn>=1.4",
     "numpy>=1.26",
     "pandas>=2.2",
+    "pymupdf==2.0",
+    "pdfplumber==0.11.10",
 ]
 
 [project.optional-dependencies]
@@ -39,3 +42,6 @@ python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
+
+[tool.uv.sources]
+zellovest-shared = { path = "../../shared", editable = true }

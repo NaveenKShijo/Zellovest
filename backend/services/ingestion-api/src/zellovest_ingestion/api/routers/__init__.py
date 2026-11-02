@@ -1,9 +1,10 @@
 """API routers package exports."""
 
-from zellovest_ingestion.api.routers import integrations, integrations_drive, integrations_okta, sync, uploads, webhooks
+from zellovest_ingestion.api.routers import documents, integrations, integrations_drive, integrations_okta, sync, uploads, webhooks
 from zellovest_ingestion.api.routers.integrations_okta import alias_router as integrations_okta_alias_router
 
 __all__ = [
+    "documents",
     "integrations",
     "integrations_drive",
     "integrations_okta",
