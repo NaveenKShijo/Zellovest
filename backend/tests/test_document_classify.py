@@ -1,4 +1,4 @@
-"""Stage-2 document classification tests (Jev via OpenRouter + fallback)."""
+"""Stage-2 document classification tests (Jev via OpenRouter Decisions API)."""
 
 from __future__ import annotations
 
@@ -8,56 +8,8 @@ from zellovest_workers.tasks.document_classify import (
     ClassificationResult,
     JevClassifyError,
     OpenRouterJevClassifier,
-    _parse_jev_content,
     run_classification,
 )
-
-
-# --- OpenRouterJevClassifier._parse_jev_content ---
-
-
-def test_parse_clean_json() -> None:
-    """A clean JSON answer parses into a validated doc type + confidence."""
-    doc_type, confidence = _parse_jev_content(
-        '{"doc_type": "invoice", "confidence": 0.93}'
-    )
-    assert doc_type == "invoice"
-    assert confidence == pytest.approx(0.93)
-
-
-def test_parse_fenced_json() -> None:
-    """Markdown-fenced answers parse via fence stripping."""
-    content = '```json\n{"doc_type": "purchase_order", "confidence": 0.87}\n```'
-    doc_type, confidence = _parse_jev_content(content)
-    assert doc_type == "purchase_order"
-    assert confidence == pytest.approx(0.87)
-
-
-def test_parse_json_surrounded_by_prose() -> None:
-    """Prose-wrapped JSON is recovered via brace scanning."""
-    content = 'Sure! Here is my answer: {"doc_type": "contract", "confidence": 0.72}.'
-    doc_type, _ = _parse_jev_content(content)
-    assert doc_type == "contract"
-
-
-def test_parse_document_type_alias() -> None:
-    """Common variants/coercions map onto the canonical types."""
-    doc_type, _ = _parse_jev_content('{"doc_type": "Purchase Order", "confidence": 0.8}')
-    assert doc_type == "purchase_order"
-
-
-def test_parse_confidence_clamped() -> None:
-    """Out-of-range confidences clamp to [0, 1]."""
-    _, high = _parse_jev_content('{"doc_type": "other", "confidence": 1.7}')
-    assert high == 1.0
-    _, low = _parse_jev_content('{"doc_type": "other", "confidence": -0.4}')
-    assert low == 0.0
-
-
-def test_parse_unknown_doc_type_raises() -> None:
-    """An unrecognized type raises so the fallback path engages."""
-    with pytest.raises(JevClassifyError):
-        _parse_jev_content('{"doc_type": "receipt", "confidence": 0.9}')
 
 
 # --- OpenRouterJevClassifier construction guards ---
@@ -68,8 +20,8 @@ def test_missing_api_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:
 
     class _Settings:
         jev_api_key = ""
-        jev_api_url = "https://openrouter.ai/api/v1"
-        jev_model = "openai/gpt-4o-mini"
+        jev_api_url = "https://openrouter.ai/api/alpha/decisions"
+        jev_model = "typesafe/jev-1.14"
         jev_timeout_seconds = 5.0
 
     monkeypatch.setattr(
@@ -79,15 +31,15 @@ def test_missing_api_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:
         OpenRouterJevClassifier()
 
 
-def test_classifier_builds_http_payload(
+def test_classifier_builds_decisions_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """classify() posts an OpenRouter chat-completions request and parses."""
+    """classify() posts Jev Decisions request (state + questions) and parses answer."""
 
     class _Settings:
         jev_api_key = "test-key"
-        jev_api_url = "https://openrouter.ai/api/v1/"
-        jev_model = "openai/gpt-4o-mini"
+        jev_api_url = "https://openrouter.ai/api/alpha/decisions/"
+        jev_model = "typesafe/jev-1.14"
         jev_timeout_seconds = 5.0
 
     monkeypatch.setattr(
@@ -97,17 +49,24 @@ def test_classifier_builds_http_payload(
 
     class _Response:
         status_code = 200
+        text = '{"answers": {"doc_type": {"type": "choice", "choice": "invoice", "confidence": 0.93}}}'
 
         @staticmethod
         def json() -> dict:
             return {
-                "choices": [
-                    {
-                        "message": {
-                            "content": '{"doc_type": "invoice", "confidence": 0.99}'
-                        }
+                "answers": {
+                    "doc_type": {
+                        "type": "choice",
+                        "choice": "invoice",
+                        "confidence": 0.93,
+                        "probabilities": {
+                            "invoice": 0.93,
+                            "purchase_order": 0.04,
+                            "contract": 0.02,
+                            "other": 0.01,
+                        },
                     }
-                ]
+                }
             }
 
     def _fake_post(url, *, json, headers, timeout):  # noqa: ANN001
@@ -122,12 +81,56 @@ def test_classifier_builds_http_payload(
     result = OpenRouterJevClassifier().classify(
         extracted_text="INVOICE #123 amount due", filename="inv-1.pdf"
     )
-    assert captured["url"] == "https://openrouter.ai/api/v1/chat/completions"
+    assert captured["url"] == "https://openrouter.ai/api/alpha/decisions"
     assert captured["headers"]["Authorization"] == "Bearer test-key"
-    assert "INVOICE #123" in captured["json"]["messages"][1]["content"]
+    state = captured["json"]["state"]
+    assert "INVOICE #123" in state["extracted_text"]
+    assert state["filename"] == "inv-1.pdf"
+    assert captured["json"]["questions"]["doc_type"]["type"] == "choice"
+    assert "invoice" in captured["json"]["questions"]["doc_type"]["criteria"]
     assert result.doc_type == "invoice"
-    assert result.confidence == pytest.approx(0.99)
+    assert result.confidence == pytest.approx(0.93)
     assert result.method == "jev_choice"
+
+
+def test_classifier_rejects_non_choice_answer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-choice answer type raises so fallback engages."""
+
+    class _Settings:
+        jev_api_key = "test-key"
+        jev_api_url = "https://openrouter.ai/api/alpha/decisions"
+        jev_model = "typesafe/jev-1.14"
+        jev_timeout_seconds = 5.0
+
+    monkeypatch.setattr(
+        "zellovest_shared.config.get_settings", lambda: _Settings()
+    )
+
+    class _Response:
+        status_code = 200
+        text = '{"answers": {"doc_type": {"type": "choice", "choice": "invoice", "confidence": 0.93}}}'
+
+        @staticmethod
+        def json() -> dict:
+            return {
+                "answers": {
+                    "doc_type": {
+                        "type": "noul",
+                        "noul": 0.5,
+                    }
+                }
+            }
+
+    def _fake_post(url, *, json, headers, timeout):  # noqa: ANN001
+        return _Response()
+
+    monkeypatch.setattr(
+        "zellovest_workers.tasks.document_classify.httpx.post", _fake_post
+    )
+    with pytest.raises(JevClassifyError):
+        OpenRouterJevClassifier().classify(
+            extracted_text="text", filename="x.pdf"
+        )
 
 
 # --- run_classification fallback semantics ---

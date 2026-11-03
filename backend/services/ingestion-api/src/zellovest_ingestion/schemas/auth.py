@@ -27,6 +27,7 @@ class AuthResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     expires_in_minutes: int
+    refresh_token: str | None = None
     user: UserResponse
 
 
@@ -70,3 +71,9 @@ class PasswordResetCompleteRequest(BaseModel):
 
     token: str = Field(min_length=16, max_length=128)
     password: str = Field(min_length=8, max_length=128)
+
+
+class RefreshRequest(BaseModel):
+    """Refresh an expired access token using a refresh token."""
+
+    refresh_token: str = Field(min_length=16)

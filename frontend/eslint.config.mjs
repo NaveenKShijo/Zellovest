@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Third-party bundles with pre-existing lint issues:
+    "node_modules/react-pdf/**",
+    "node_modules/pdfjs-dist/**",
   ]),
 ]);
 

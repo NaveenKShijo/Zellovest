@@ -8,11 +8,13 @@ Output: ``doc_type`` (invoice / purchase_order / contract / other) with a
         ``classification_method``) and into the artifact row's
         ``classification`` JSON for audit.
 
-Transport: Jev (TypeSafe AI) is accessed through the OpenRouter
-chat-completions API (``OPENROUTER_API_KEY``; model/URL configurable via
-``JEV_MODEL`` / ``JEV_API_URL``). On any Jev failure the task falls back to
-the existing keyword classifier (``document_ocr.classify_document``) so the
-pipeline never stalls: the row keeps a usable doc type annotated with
+Transport: Jev (TypeSafe AI) is accessed through OpenRouter's Decisions API
+(``https://openrouter.ai/api/alpha/decisions``; model default ``typesafe/jev-1.14``).
+A single ``choice`` question is submitted per document: given state
+(filename + text snippet), Jev picks one of four options and returns a
+calibrated confidence. On any Jev failure the task falls back to the existing
+keyword classifier (``document_ocr.classify_document``) so the pipeline never
+stalls: the row keeps a usable doc type annotated with
 ``classification_method="keyword_fallback"``.
 
 Execution model: ``process_document`` persists the extraction artifact, marks
@@ -22,8 +24,6 @@ cannot fail an extraction — retries only re-refine classification.
 
 from __future__ import annotations
 
-import json
-import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -51,23 +51,12 @@ CLASSIFICATION_SNIPPET_CHARS = 4000
 _METHOD_JEV = "jev_choice"
 _METHOD_FALLBACK = "keyword_fallback"
 
-_SYSTEM_PROMPT = """\
-You are Jev, TypeSafe AI's document classifier for Zellovest, an AI \
-procurement platform.
-Given a filename and the first characters of a document's extracted text, \
-classify the document into exactly one of:
-invoice, purchase_order, contract, other.
-
-Rules:
-- "invoice": bills, invoices, statements of amounts due, payment requests.
-- "purchase_order": POs, requisitions, order confirmations.
-- "contract": agreements, MSAs, SOWs, terms and conditions, renewals.
-- "other": anything that does not clearly fit the above.
-
-Respond ONLY with a JSON object of the exact shape:
-{"doc_type": "<one of the four types>", "confidence": <number 0..1>}
-"confidence" is your calibrated probability that the chosen type is correct.
-"""
+_DOC_TYPE_CRITERIA: dict[str, str] = {
+    "invoice": "Bills, invoices, statements of amounts due, payment requests.",
+    "purchase_order": "POs, requisitions, order confirmations.",
+    "contract": "Agreements, MSAs, SOWs, terms and conditions, renewals.",
+    "other": "Anything that does not clearly fit the above.",
+}
 
 
 class JevClassifyError(Exception):
@@ -115,7 +104,7 @@ class DocumentClassifier(Protocol):
 
 
 class OpenRouterJevClassifier:
-    """Jev document classifier backed by the OpenRouter chat-completions API."""
+    """Jev document classifier backed by OpenRouter's Decisions API."""
 
     def __init__(
         self,
@@ -128,9 +117,9 @@ class OpenRouterJevClassifier:
         """Initialize, defaulting every knob from shared settings.
 
         Args:
-            api_url: OpenRouter API base URL (default ``JEV_API_URL``).
+            api_url: OpenRouter Decisions API base URL (default ``JEV_API_URL``).
             api_key: OpenRouter API key (default ``OPENROUTER_API_KEY``).
-            model: Chat model id (default ``JEV_MODEL``).
+            model: Decision model id (default ``JEV_MODEL``).
             timeout_seconds: Request timeout (default ``JEV_TIMEOUT_SECONDS``).
 
         Raises:
@@ -144,21 +133,17 @@ class OpenRouterJevClassifier:
         except Exception as exc:  # pragma: no cover - settings misconfig
             raise JevClassifyError(f"settings unavailable: {exc}") from exc
 
-        self._api_url = (
-            api_url or settings.jev_api_url
-        ).rstrip("/")
+        self._api_url = (api_url or settings.jev_api_url).rstrip("/")
         self._api_key = api_key or settings.jev_api_key
         self._model = model or settings.jev_model
-        self._timeout_seconds = (
-            timeout_seconds or settings.jev_timeout_seconds
-        )
+        self._timeout_seconds = timeout_seconds or settings.jev_timeout_seconds
         if not self._api_key:
             raise JevClassifyError("OPENROUTER_API_KEY is not configured")
 
     def classify(
         self, *, extracted_text: str, filename: str
     ) -> ClassificationResult:
-        """Submit the typed Choice question to Jev via OpenRouter.
+        """Submit the typed Choice question to Jev via OpenRouter Decisions API.
 
         Args:
             extracted_text: First ~4k chars of the extracted document text.
@@ -171,32 +156,34 @@ class OpenRouterJevClassifier:
             JevClassifyError: On HTTP/auth errors, timeouts, or unparseable /
                 invalid model output.
         """
-        snippet = (extracted_text or "")[:CLASSIFICATION_SNIPPET_CHARS]
+        state = {
+            "filename": filename or "",
+            "extracted_text": (extracted_text or "")[:CLASSIFICATION_SNIPPET_CHARS],
+        }
+        questions = {
+            "doc_type": {
+                "type": "choice",
+                "instructions": (
+                    "Classify the document into exactly one type based on its "
+                    "filename and extracted text."
+                ),
+                "criteria": _DOC_TYPE_CRITERIA,
+            }
+        }
         payload = {
             "model": self._model,
-            "temperature": 0,
-            "messages": [
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": (
-                        f"filename: {filename}\n\n"
-                        "extracted_text (first "
-                        f"{CLASSIFICATION_SNIPPET_CHARS} chars):\n{snippet}"
-                    ),
-                },
-            ],
+            "state": state,
+            "questions": questions,
         }
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
             "X-Title": "Zellovest",
         }
-        url = f"{self._api_url}/chat/completions"
 
         try:
             response = httpx.post(
-                url,
+                self._api_url,
                 json=payload,
                 headers=headers,
                 timeout=self._timeout_seconds,
@@ -208,119 +195,45 @@ class OpenRouterJevClassifier:
 
         if response.status_code != 200:
             raise JevClassifyError(
-                f"Jev HTTP {response.status_code}: "
-                f"{response.text[:300]}"
+                f"Jev HTTP {response.status_code}: {response.text[:300]}"
             )
+
         try:
             body = response.json()
-            content = body["choices"][0]["message"]["content"]
-        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            answers = body["answers"]
+            answer = answers["doc_type"]
+        except (ValueError, KeyError, TypeError) as exc:
             raise JevClassifyError(
                 f"unexpected Jev response shape: {exc}"
             ) from exc
 
-        doc_type, confidence = _parse_jev_content(content)
+        if answer.get("type") != "choice":
+            raise JevClassifyError(
+                f"Jev answer type is not 'choice': {answer.get('type')!r}"
+            )
+        doc_type = answer.get("choice")
+        if doc_type not in DOCUMENT_TYPES:
+            raise JevClassifyError(f"unknown doc_type from Jev: {doc_type!r}")
+        try:
+            confidence = round(
+                min(
+                    max(float(answer.get("confidence", 0.0)), 0.0),
+                    1.0,
+                ),
+                4,
+            )
+        except (TypeError, ValueError) as exc:
+            raise JevClassifyError(
+                f"unusable confidence from Jev: {answer.get('confidence')!r}"
+            ) from exc
+
         return ClassificationResult(
             doc_type=doc_type,
             confidence=confidence,
             method=_METHOD_JEV,
             model=self._model,
-            raw_response=content or "",
+            raw_response=response.text[:500],
         )
-
-
-def _extract_json_object(content: str) -> dict[str, Any]:
-    """Extract the first JSON object from a model response string.
-
-    Tolerates markdown fences and surrounding prose.
-
-    Args:
-        content: Raw assistant message content.
-
-    Returns:
-        Parsed JSON object.
-
-    Raises:
-        JevClassifyError: When no JSON object can be parsed.
-    """
-    if not content:
-        raise JevClassifyError("empty Jev response")
-    candidate = content.strip()
-    fenced = re.search(r"```(?:json)?\s*(.*?)```", candidate, re.DOTALL)
-    if fenced:
-        candidate = fenced.group(1).strip()
-    try:
-        parsed = json.loads(candidate)
-    except ValueError:
-        start = candidate.find("{")
-        end = candidate.rfind("}")
-        if start == -1 or end <= start:
-            raise JevClassifyError(
-                f"no JSON object in Jev response: {content[:200]!r}"
-            )
-        try:
-            parsed = json.loads(candidate[start : end + 1])
-        except ValueError as exc:
-            raise JevClassifyError(
-                f"unparseable Jev response: {exc}"
-            ) from exc
-    if not isinstance(parsed, dict):
-        raise JevClassifyError("Jev response is not a JSON object")
-    return parsed
-
-
-def _normalize_doc_type(raw: Any) -> str:
-    """Normalize and validate a model-provided document type.
-
-    Args:
-        raw: Raw value from the model JSON (any scalar).
-
-    Returns:
-        One of ``DOCUMENT_TYPES`` (camel/space/hyphen variants coerced).
-
-    Raises:
-        JevClassifyError: When the value maps to no known type.
-    """
-    value = str(raw or "").strip().lower()
-    value = re.sub(r"[\s\-]+", "_", value)
-    aliases = {
-        "po": "purchase_order",
-        "purchaseorder": "purchase_order",
-        "contrat": "contract",
-    }
-    value = aliases.get(value, value)
-    if value not in DOCUMENT_TYPES:
-        raise JevClassifyError(f"unknown doc_type from Jev: {raw!r}")
-    return value
-
-
-def _parse_jev_content(content: str) -> tuple[str, float]:
-    """Parse (doc_type, confidence) out of the Jev answer.
-
-    Args:
-        content: Raw assistant message content.
-
-    Returns:
-        Tuple of a valid document type and a confidence clamped to [0, 1]
-        rounded to 4 decimals.
-
-    Raises:
-        JevClassifyError: On missing doc_type or unusable confidence.
-    """
-    parsed = _extract_json_object(content)
-    raw_type = parsed.get("doc_type") or parsed.get("document_type")
-    if raw_type is None:
-        raise JevClassifyError("Jev response missing 'doc_type'")
-    doc_type = _normalize_doc_type(raw_type)
-    raw_conf = parsed.get("confidence")
-    try:
-        confidence = float(raw_conf)
-    except (TypeError, ValueError) as exc:
-        raise JevClassifyError(
-            f"unusable confidence from Jev: {raw_conf!r}"
-        ) from exc
-    confidence = round(min(max(confidence, 0.0), 1.0), 4)
-    return doc_type, confidence
 
 
 def run_classification(
@@ -576,6 +489,22 @@ def classify_upload(
     provenance = _build_provenance(result, effective_filename)
     _apply_classification(upload_id, result, provenance, effective_filename)
 
+    # Chain promotion to the documents table for procurement-relevant types.
+    promote_task_id = None
+    if result.doc_type in {"invoice", "purchase_order", "contract", "amendment"}:
+        from zellovest_workers.tasks.document_promote import promote_document
+
+        promote_result = promote_document.delay(
+            tenant_id=tenant_id,
+            upload_id=upload_id,
+            document_type=result.doc_type,
+            filename=effective_filename,
+            gcs_key=artifact.source_gcs_key,
+            page_count=None,
+            classifier_confidence=result.confidence,
+        )
+        promote_task_id = str(promote_result.id)
+
     logger.info(
         "document_classified",
         tenant_id=tenant_id,
@@ -591,5 +520,6 @@ def classify_upload(
         "document_type": result.doc_type,
         "confidence": result.confidence,
         "classification_method": result.method,
+        "promotion_task_id": promote_task_id,
         "status": "completed",
     }

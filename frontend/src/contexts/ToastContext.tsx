@@ -87,7 +87,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
   // Persistent System Alert Banners
   const addAlert = useCallback((alert: Omit<SystemAlert, 'id' | 'timestamp'>): string => {
-    const id = `alert_${Date.now()}`;
+    const id = `alert_${crypto.randomUUID()}`;
     const newAlert: SystemAlert = {
       ...alert,
       id,

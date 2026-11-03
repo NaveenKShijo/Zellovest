@@ -1,8 +1,9 @@
 'use client';
 
 import React, { useState } from 'react';
+import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { Document, DocumentType } from '@/types';
+import { Document } from '@/types';
 import { DocumentList } from '@/components/vendors/DocumentList';
 
 const MOCK_DOCUMENTS: Document[] = [
@@ -61,7 +62,29 @@ export default function VendorDocumentsPage() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
         <h2 style={{ fontSize: '20px', fontWeight: 700, color: 'var(--text-primary)' }}>Documents ({documents.length})</h2>
-        <button
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+          <Link
+            href={`/documents?vendor=${encodeURIComponent(vendorId)}`}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '10px 16px',
+              borderRadius: 'var(--radius-md)',
+              backgroundColor: 'var(--bg-surface-tint)',
+              color: 'var(--color-brand)',
+              border: '1px solid var(--border-tint)',
+              fontSize: '13px',
+              fontWeight: 600,
+              textDecoration: 'none',
+            }}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+            </svg>
+            Open in Document Explorer
+          </Link>
+          <button
           onClick={() => setShowUpload(true)}
           style={{
             display: 'inline-flex',
@@ -83,7 +106,8 @@ export default function VendorDocumentsPage() {
             <line x1="12" y1="3" x2="12" y2="15" />
           </svg>
           Upload Document
-        </button>
+          </button>
+        </div>
       </div>
 
       {showUpload && (
@@ -109,7 +133,6 @@ export default function VendorDocumentsPage() {
 
 function UploadModal({ vendorId, onClose }: { vendorId: string; onClose: () => void }) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [documentType, setDocumentType] = useState<DocumentType>('contract');
   const [isUploading, setIsUploading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -154,7 +177,9 @@ function UploadModal({ vendorId, onClose }: { vendorId: string; onClose: () => v
     try {
       const formData = new FormData();
       formData.append('file', selectedFile);
-      formData.append('documentType', documentType);
+      // The legacy upload endpoint expects a type field; "other" is a neutral
+      // placeholder while the classification pipeline determines the type.
+      formData.append('documentType', 'other');
       formData.append('vendorId', vendorId);
 
       const response = await fetch('/api/documents/upload', {
@@ -231,35 +256,6 @@ function UploadModal({ vendorId, onClose }: { vendorId: string; onClose: () => v
           </div>
         )}
       </div>
-
-      {selectedFile && (
-        <div style={{ marginTop: '20px' }}>
-          <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '8px' }}>
-            Document Type
-          </label>
-          <select
-            value={documentType}
-            onChange={(e) => setDocumentType(e.target.value as DocumentType)}
-            style={{
-              width: '100%',
-              padding: '10px 12px',
-              borderRadius: 'var(--radius-sm)',
-              border: '1px solid var(--border-subtle)',
-              backgroundColor: 'var(--bg-app)',
-              fontSize: '13px',
-              color: 'var(--text-primary)',
-              outline: 'none',
-            }}
-          >
-            <option value="contract">Contract</option>
-            <option value="invoice">Invoice</option>
-            <option value="purchase_order">Purchase Order</option>
-            <option value="amendment">Amendment</option>
-            <option value="vendor_policy">Vendor Policy</option>
-            <option value="other">Other</option>
-          </select>
-        </div>
-      )}
 
       {error && (
         <div style={{ marginTop: '16px', padding: '12px', backgroundColor: 'var(--color-danger-subtle)', border: '1px solid var(--color-danger-border)', borderRadius: 'var(--radius-md)', color: 'var(--color-danger)', fontSize: '13px' }}>

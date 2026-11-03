@@ -5,7 +5,6 @@ import { UploadProvider, useUpload } from '@/components/upload/UploadProvider';
 import { DropZone } from '@/components/upload/DropZone';
 import { UploadQueue } from '@/components/upload/UploadQueue';
 import { useApi, UploadLease } from '@/lib/api';
-import { DocumentType } from '@/types';
 
 // Worker-side polling for GET /uploads/{id} after `complete` returns
 // `staged`: converge the row to completed/failed instead of leaving it
@@ -13,14 +12,9 @@ import { DocumentType } from '@/types';
 const POLL_INTERVAL_MS = 3000;
 const POLL_MAX_ATTEMPTS = 20;
 
-// Backend allows `policy`; the UI type calls it `vendor_policy`.
-const toBackendDocType = (t: DocumentType): string =>
-  t === 'vendor_policy' ? 'policy' : t;
-
 function UploadPageContent() {
   const { files, addFile, removeFile, retryFile, clearCompleted, updateFileStatus, setUploadId } = useUpload();
   const api = useApi();
-  const [documentType, setDocumentType] = useState<DocumentType>('contract');
   const [isUploading, setIsUploading] = useState(false);
   // In-flight PUTs keyed by queue row id, so Cancel can abort the bytes.
   const xhrRefs = useRef(new Map<string, XMLHttpRequest>());
@@ -40,9 +34,9 @@ function UploadPageContent() {
     }
   };
 
-  const handleFilesSelect = (newFiles: File[], type: DocumentType) => {
+  const handleFilesSelect = (newFiles: File[]) => {
     newFiles.forEach(file => {
-      addFile(file, type);
+      addFile(file);
     });
   };
 
@@ -93,7 +87,6 @@ function UploadPageContent() {
           filename: item.name,
           mime_type: item.type || 'application/octet-stream',
           size_bytes: item.size,
-          document_type: toBackendDocType(item.documentType),
           vendor_id: item.vendorId ?? null,
         });
 
@@ -200,7 +193,7 @@ function UploadPageContent() {
           Document Upload
         </h1>
         <p style={{ color: 'var(--text-secondary)', fontSize: '13.5px', marginTop: '3px' }}>
-          Upload contracts, invoices, purchase orders, and other procurement documents for AI-powered extraction.
+          Upload procurement documents for AI-powered classification and extraction. The document type is identified automatically.
         </p>
       </div>
 
@@ -211,8 +204,6 @@ function UploadPageContent() {
           </h2>
           <DropZone
             onFilesSelect={handleFilesSelect}
-            documentType={documentType}
-            setDocumentType={setDocumentType}
             disabled={isUploading}
             maxFiles={10}
             maxSizeMB={50}

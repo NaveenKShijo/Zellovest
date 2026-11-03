@@ -108,3 +108,13 @@ export async function acceptInviteRequest(token: string, name: string, password:
   if (!response.ok) throw new Error(await parseError(response));
   return (await response.json()) as AuthResponse;
 }
+
+export async function refreshTokenRequest(refreshToken: string): Promise<AuthResponse> {
+  const response = await fetch(`${API_BASE}/v1/auth/refresh`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  });
+  if (!response.ok) throw new Error(await parseError(response));
+  return (await response.json()) as AuthResponse;
+}

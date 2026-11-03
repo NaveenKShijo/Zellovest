@@ -119,6 +119,7 @@ class TokenPayload(BaseModel):
     exp: int
     iat: int
     jti: str
+    token_type: str | None = None  # "access" | "refresh" — distinguishes token kinds
     # User-token claims (absent on legacy tenant-scoped service tokens).
     user_id: str | None = None
     tenant_id: str | None = None
@@ -189,7 +190,43 @@ def create_user_access_token(
         role,
         expire,
         now,
-        extra={"user_id": user_id, "tenant_id": tenant_id, "email": email},
+        extra={"user_id": user_id, "tenant_id": tenant_id, "email": email, "token_type": "access"},
+    )
+
+
+def create_refresh_token(
+    user_id: str,
+    email: str,
+    tenant_id: str = "default",
+    expires_delta: timedelta | None = None,
+) -> str:
+    """Create a long-lived JWT refresh token for rotating access tokens.
+
+    A refresh token is a separate HS256 JWT with a much longer default
+    lifetime (7 days) and a ``token_type: "refresh"`` claim so it can never
+    be confused with an access token. It is stored client-side (localStorage)
+    and presented to ``POST /auth/refresh`` to mint a new access token
+    without re-entering credentials.
+
+    Args:
+        user_id: Primary key of the user row (goes in ``sub``).
+        email: User email (display + audit claim).
+        tenant_id: Single-tenant deployment id (V1 fixed, reserved).
+        expires_delta: Override for the default refresh lifetime.
+
+    Returns:
+        Signed HS256 JWT string.
+    """
+    secret, _algorithm, _lifetime = _jwt_settings()
+    now = datetime.now(UTC)
+    # Default refresh lifetime: 7 days. Overrideable via expires_delta.
+    expire = now + (expires_delta or timedelta(days=7))
+    return _encode_payload(
+        user_id,
+        "refresh",
+        expire,
+        now,
+        extra={"user_id": user_id, "tenant_id": tenant_id, "email": email, "token_type": "refresh"},
     )
 
 

@@ -218,14 +218,15 @@ class Contract(Base):
 class ContractTermsVersion(Base):
     """Versioned commercial terms — INSERT-only; history explains past invoices.
 
-    Overlap across versions of one contract is rejected by migration 0007's
+    Overlap across versions of one pricing line is rejected by the
     ``no_overlap_contract_terms`` EXCLUDE constraint (requires btree_gist).
     """
 
     __tablename__ = "contract_terms_versioned"
     __table_args__ = (
         UniqueConstraint(
-            "tenant_id", "contract_id", "version_no", name="uq_terms_tenant_contract_ver"
+            "tenant_id", "contract_id", "version_no", "line_no",
+            name="uq_terms_tenant_contract_ver_line",
         ),
         Index(
             "ix_ctv_tenant_contract_dates",
@@ -242,6 +243,7 @@ class ContractTermsVersion(Base):
         UUID(as_uuid=True), ForeignKey("contracts.id"), nullable=False
     )
     version_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    line_no: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     product_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     unit_price: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False)

@@ -28,7 +28,8 @@ function AcceptInviteForm() {
 
   useEffect(() => {
     if (!token) {
-      setStatus('invalid');
+      // Missing token renders 'invalid' via the derivation below — no
+      // synchronous setState here (cascading-render lint rule).
       return;
     }
     let cancelled = false;
@@ -46,6 +47,9 @@ function AcceptInviteForm() {
       cancelled = true;
     };
   }, [token]);
+
+  // Derived, not stored: an absent token is invalid regardless of fetch state.
+  const effectiveStatus: 'checking' | 'ready' | 'invalid' = !token ? 'invalid' : status;
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -81,13 +85,13 @@ function AcceptInviteForm() {
           Join your team on Zellovest
         </h1>
 
-        {status === 'checking' && (
+        {effectiveStatus === 'checking' && (
           <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginTop: '12px' }}>
             Checking your invite…
           </p>
         )}
 
-        {status === 'invalid' && (
+        {effectiveStatus === 'invalid' && (
           <div
             role="alert"
             style={{
@@ -105,7 +109,7 @@ function AcceptInviteForm() {
           </div>
         )}
 
-        {status === 'ready' && invite && (
+        {effectiveStatus === 'ready' && invite && (
           <>
             <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '24px' }}>
               Invited as <strong>{invite.email}</strong> — choose your name and password.

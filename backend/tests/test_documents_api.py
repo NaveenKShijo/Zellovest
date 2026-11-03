@@ -75,6 +75,7 @@ class _FakeSession:
         self,
         upload_row: Any = None,
         execute_results: list[Any] | None = None,
+        scalar_results: list[Any] | None = None,
     ) -> None:
         """Initialize with the row served by ``get`` and queued results.
 
@@ -82,18 +83,31 @@ class _FakeSession:
             upload_row: Row returned by ``session.get`` (None → 404).
             execute_results: FIFO queue of result wrappers consumed by
                 ``execute`` in router call order.
+            scalar_results: FIFO queue of values returned by ``scalar``.
         """
         self.upload_row = upload_row
         self._results = list(execute_results or [])
+        self._scalars = list(scalar_results or [])
+        self.added: list[Any] = []
         self.commits = 0
+        self.flushes = 0
+        self.rollbacks = 0
 
     def add(self, row: Any) -> None:
-        """Track added rows (unused for read-only tests)."""
-        del row
+        """Track added rows."""
+        self.added.append(row)
 
     async def commit(self) -> None:
         """Count commits."""
         self.commits += 1
+
+    async def rollback(self) -> None:
+        """Count rollbacks."""
+        self.rollbacks += 1
+
+    async def flush(self) -> None:
+        """Count flushes."""
+        self.flushes += 1
 
     async def get(self, model: Any, key: Any) -> Any:
         """Serve the preloaded lease row regardless of model/key."""
@@ -105,6 +119,12 @@ class _FakeSession:
         del stmt
         assert self._results, "router issued more executes than queued results"
         return self._results.pop(0)
+
+    async def scalar(self, stmt: Any) -> Any:
+        """Pop one queued scalar in router call order."""
+        del stmt
+        assert self._scalars, "router issued more scalars than queued results"
+        return self._scalars.pop(0)
 
 
 def _lease(**over: Any) -> SimpleNamespace:
@@ -148,6 +168,8 @@ def _artifact(**over: Any) -> SimpleNamespace:
         "extraction_confidence": Decimal("0.94"),
         "text_snippet": "INVOICE page snippet",
         "classification": {"document_type": "invoice", "confidence": 0.93},
+        "review_status": None,
+        "review_data": None,
         "created_at": now,
         "updated_at": now,
     }
@@ -212,16 +234,18 @@ def test_derived_status_mapping() -> None:
     assert derived_status("processing", None).value == "processing"
     assert derived_status("failed", None).value == "failed"
     assert (
-        derived_status("completed", 0.95).value == "extracted"
+        derived_status("completed", 0.80).value == "extracted"
     )  # exactly at threshold boundary is trusted
     assert derived_status("completed", Decimal("0.94")).value == "extracted"
     assert derived_status("completed", 0.4).value == "review_needed"
     assert derived_status("completed", None).value == "review_needed"
+    assert derived_status("completed", 0.4, "committed").value == "extracted"
+    assert derived_status("completed", 0.94, "pending").value == "review_needed"
 
 
-def test_extraction_threshold_is_seventy_percent() -> None:
+def test_extraction_threshold_is_eighty_percent() -> None:
     """Guard the PRD §7 human-in-the-loop threshold constant."""
-    assert EXTRACTED_CONFIDENCE_THRESHOLD == 0.70
+    assert EXTRACTED_CONFIDENCE_THRESHOLD == 0.80
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +379,7 @@ def test_detail_returns_parsed_artifact() -> None:
             _OptionalResult(artifact),
             _RowsResult([(vendor.id, vendor.name)]),
         ],
+        scalar_results=[None],  # no promoted structured document yet
     )
     reader = _FakeReader({artifact.artifact_gcs_key: payload_bytes})
     client = _make_client(session=session, reader=reader)
@@ -379,6 +404,7 @@ def test_detail_without_artifact_omits_payload() -> None:
             _OptionalResult(None),
             _RowsResult([(vendor.id, vendor.name)]),
         ],
+        scalar_results=[None],
     )
     client = _make_client(session=session)
     response = client.get(f"/api/v1/documents/{lease.id}")
@@ -408,6 +434,7 @@ def test_detail_bad_blob_still_returns_properties() -> None:
             _OptionalResult(artifact),
             _RowsResult([(vendor.id, vendor.name)]),
         ],
+        scalar_results=[None],
     )
     client = _make_client(session=session, reader=_FakeReader({}))  # blob absent
     response = client.get(f"/api/v1/documents/{lease.id}")
@@ -440,3 +467,183 @@ def test_file_unknown_document_returns_404() -> None:
     client = _make_client(session=session)
     response = client.get(f"/api/v1/documents/{uuid.uuid4()}/file")
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# POST /documents/{id}/review/commit (HITL → ledger)
+# ---------------------------------------------------------------------------
+
+
+def _review_document(document_type: str = "contract") -> SimpleNamespace:
+    """Build a duck-typed structured ``documents`` row for review commits."""
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        tenant_id="default-org",
+        upload_id=uuid.uuid4(),
+        document_type=SimpleNamespace(value=document_type),
+        vendor_id=None,
+        status="review_needed",
+    )
+
+
+def _review_payload() -> dict[str, Any]:
+    """Build a valid reviewer-corrected contract payload."""
+    return {
+        "contract_number": "MSA-2026-014",
+        "vendor_name": "Adobe Inc.",
+        "title": "Enterprise agreement",
+        "start_date": "2026-01-01",
+        "end_date": "2026-12-31",
+        "renewal_date": "2026-11-01",
+        "notice_period_days": 30,
+        "auto_renew": True,
+        "termination_clause": "Either party may terminate with 30 days notice.",
+        "terms": [
+            {
+                "product_code": "CC-ALL",
+                "description": "Creative Cloud all apps",
+                "unit_price": "120.00",
+                "currency": "usd",
+                "uom": "seat",
+                "qty_min": 10,
+                "qty_max": 50,
+                "discount_pct": 5,
+                "effective_from": "2026-01-01",
+                "effective_to": "2026-12-31",
+                "escalation_pct": 3,
+                "payment_terms": "Net 30",
+                "freight_terms": "N/A",
+                "tax_rule": "Exclusive of tax",
+            }
+        ],
+    }
+
+
+def test_review_commit_persists_verified_terms() -> None:
+    """A pending review commits a contract version + human provenance."""
+    lease = _lease(document_type="contract")
+    artifact = _artifact(
+        upload_id=lease.id,
+        review_status="pending",
+        review_data={"status": "pending", "field_confidence": {"unit_price": 0.55}},
+    )
+    document = _review_document()
+    document.upload_id = lease.id
+    vendor = SimpleNamespace(id=uuid.uuid4(), name="Adobe Inc.")
+    session = _FakeSession(
+        upload_row=lease,
+        execute_results=[
+            _OptionalResult(artifact),          # artifact with FOR UPDATE
+            _OptionalResult(document),          # structured document
+            _OptionalResult(vendor),            # vendor lookup
+            _OptionalResult(None),              # no existing contract
+        ],
+        scalar_results=[None],                  # max version → first version
+    )
+    client = _make_client(session=session)
+
+    response = client.post(f"/api/v1/documents/{lease.id}/review/commit", json=_review_payload())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["document_id"] == str(lease.id)
+    assert body["review_status"] == "committed"
+    assert len(body["term_version_ids"]) == 1
+    assert session.commits == 1
+    assert artifact.review_status == "committed"
+    assert artifact.review_data["status"] == "committed"
+    assert artifact.review_data["reviewer_email"] == "member@example.com"
+    assert document.status == "extracted"
+    # Contract + one term + nine header provenance + ten term provenance rows.
+    assert len(session.added) == 1 + 1 + 9 + 10
+
+
+def test_review_commit_rejects_missing_pending_review() -> None:
+    """Only a pending human review can be committed."""
+    lease = _lease(document_type="contract")
+    artifact = _artifact(upload_id=lease.id, review_status=None)
+    session = _FakeSession(
+        upload_row=lease,
+        execute_results=[_OptionalResult(artifact)],
+    )
+    client = _make_client(session=session)
+
+    response = client.post(f"/api/v1/documents/{lease.id}/review/commit", json=_review_payload())
+
+    assert response.status_code == 409
+    assert session.commits == 0
+
+
+def test_review_commit_rejects_non_contract_documents() -> None:
+    """Commercial-term review applies to contracts and amendments only."""
+    lease = _lease(document_type="invoice")
+    artifact = _artifact(upload_id=lease.id, review_status="pending")
+    document = _review_document("invoice")
+    document.upload_id = lease.id
+    session = _FakeSession(
+        upload_row=lease,
+        execute_results=[_OptionalResult(artifact), _OptionalResult(document)],
+    )
+    client = _make_client(session=session)
+
+    response = client.post(f"/api/v1/documents/{lease.id}/review/commit", json=_review_payload())
+
+    assert response.status_code == 422
+    assert session.commits == 0
+
+
+def test_review_commit_rejects_conflicting_contract_number() -> None:
+    """A different document cannot overwrite an existing contract number."""
+    lease = _lease(document_type="contract")
+    artifact = _artifact(upload_id=lease.id, review_status="pending")
+    document = _review_document()
+    document.upload_id = lease.id
+    vendor = SimpleNamespace(id=uuid.uuid4(), name="Adobe Inc.")
+    existing = SimpleNamespace(document_id=uuid.uuid4())
+    session = _FakeSession(
+        upload_row=lease,
+        execute_results=[
+            _OptionalResult(artifact),
+            _OptionalResult(document),
+            _OptionalResult(vendor),
+            _OptionalResult(existing),
+        ],
+    )
+    client = _make_client(session=session)
+
+    response = client.post(f"/api/v1/documents/{lease.id}/review/commit", json=_review_payload())
+
+    assert response.status_code == 409
+    assert session.commits == 0
+
+
+def test_detail_returns_pending_review_state() -> None:
+    """Detail exposes the review record so the drawer can render it."""
+    lease = _lease(document_type="contract")
+    review = {
+        "status": "pending",
+        "confidence_threshold": 0.8,
+        "field_confidence": {"unit_price": 0.55, "title": 0.92},
+        "data": {"contract_number": "MSA-2026-014"},
+        "reason": "unit price (55%) below threshold",
+    }
+    artifact = _artifact(
+        upload_id=lease.id,
+        review_status="pending",
+        review_data=review,
+        extraction_confidence=Decimal("0.62"),
+    )
+    session = _FakeSession(
+        upload_row=lease,
+        execute_results=[_OptionalResult(artifact), _RowsResult([])],
+        scalar_results=[None],  # contract document exists, but no ledger header
+    )
+    client = _make_client(session=session)
+
+    response = client.get(f"/api/v1/documents/{lease.id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "review_needed"
+    assert body["review"]["status"] == "pending"
+    assert body["review"]["field_confidence"]["unit_price"] == 0.55

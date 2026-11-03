@@ -1,16 +1,23 @@
 import type { Metadata } from "next";
-import { Plus_Jakarta_Sans } from "next/font/google";
+import localFont from "next/font/local";
+import "react-pdf/dist/Page/AnnotationLayer.css";
+import "react-pdf/dist/Page/TextLayer.css";
 import "./globals.css";
 import { AppProviders } from "@/contexts/AppProviders";
 import { ShellGate } from "@/components/layout/ShellGate";
 import { ToastContainer } from "@/components/ui/ToastContainer";
 import { AuthGuard } from "@/components/auth/AuthGuard";
 
-const plusJakarta = Plus_Jakarta_Sans({
-  subsets: ["latin"],
+/**
+ * Plus Jakarta Sans self-hosted as a variable TTF (weights 200-800, latin).
+ * next/font/local serves the file from the same origin — no Google Fonts
+ * network round-trip at build/dev time, so `next dev` works offline/proxied.
+ */
+const plusJakarta = localFont({
+  src: "./fonts/PlusJakartaSans-Variable.ttf",
+  weight: "200 800",
   variable: "--font-sans",
   display: "swap",
-  weight: ["400", "500", "600", "700", "800"],
 });
 
 export const metadata: Metadata = {

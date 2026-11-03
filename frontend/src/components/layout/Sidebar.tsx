@@ -35,6 +35,12 @@ const NAVIGATION_SECTIONS: NavSection[] = [
         badge: '142',
       },
       {
+        id: 'documents',
+        label: 'Documents',
+        href: '/documents',
+        iconName: 'folder',
+      },
+      {
         id: 'compliance',
         label: 'AP Audit',
         href: '/compliance',
@@ -511,6 +517,12 @@ function NavIcon({ name, active }: { name: string; active?: boolean }) {
           <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
           <rect x="8" y="2" width="8" height="4" rx="1" ry="1" />
           <polyline points="9 14 11 16 15 11" />
+        </svg>
+      );
+    case 'folder':
+      return (
+        <svg {...props}>
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
         </svg>
       );
     case 'credit-card':

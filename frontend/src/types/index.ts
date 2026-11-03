@@ -55,6 +55,7 @@ export interface UserSession {
   avatarUrl?: string;
   organizationName: string; // Single-tenant organization boundary
   accessToken?: string; // Custom JWT from POST /api/v1/auth/login|demo
+  refreshToken?: string; // Long-lived refresh JWT for rotating access tokens
   expiresAt?: number; // Access token expiry (epoch ms)
   isDemo?: boolean; // sandbox session: explores, cannot invite
 }
@@ -72,6 +73,8 @@ export interface AuthResponse {
   access_token: string;
   token_type: string;
   expires_in_minutes: number;
+  /** Rotating refresh JWT; absent for legacy responses. */
+  refresh_token?: string | null;
   user: AuthUser;
 }
 
@@ -107,6 +110,8 @@ export interface AuthContextType {
   acceptInvite: (token: string, name: string, password: string) => Promise<boolean>;
   logout: () => Promise<void>;
   clearError: () => void;
+  /** Resolve a valid access token, silently refreshing if near expiry. */
+  getValidAccessToken: () => Promise<string | null>;
 }
 
 // ==========================================
@@ -289,13 +294,189 @@ export interface CardTransaction {
 export type DocumentType = 'contract' | 'invoice' | 'purchase_order' | 'amendment' | 'vendor_policy' | 'other';
 export type UploadStatus = 'queued' | 'uploading' | 'processing' | 'completed' | 'error';
 
+// ==========================================
+// 5b. Document Explorer Types (GET /api/v1/documents — real GCS pipeline data)
+// ==========================================
+// Mirrors zellovest_ingestion.schemas.documents (snake_case wire).
+
+/** Derived explorer pill state (upload lease status + extraction confidence). */
+export type DocumentStatus = 'processing' | 'extracted' | 'review_needed' | 'failed';
+
+/** One explorer inventory row: uploads lease + extraction artifact summary + vendor tag. */
+export interface DocumentRecord {
+  id: string;
+  tenant_id: string;
+  filename: string;
+  /** Pipeline doc type: contract | amendment | purchase_order | invoice | policy | other */
+  document_type: string;
+  document_type_confidence: number | null;
+  classification_method: string | null;
+  status: DocumentStatus;
+  /** Raw lease status: pending | staged | processing | completed | failed */
+  upload_status: string;
+  vendor_id: string | null;
+  vendor_name: string | null;
+  gcs_key: string;
+  mime_type: string;
+  size_bytes: number;
+  page_count: number | null;
+  error: string | null;
+  has_artifact: boolean;
+  artifact_gcs_key: string | null;
+  route: string | null;
+  file_type: string | null;
+  extraction_method: string | null;
+  extraction_confidence: number | null;
+  text_chars: number | null;
+  uploaded_at: string;
+  updated_at: string;
+}
+
+export interface DocumentListResponse {
+  documents: DocumentRecord[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface DocumentListParams {
+  document_type?: string;
+  /** Comma-separated doc types for merged tabs, e.g. "policy,other". */
+  document_types?: string;
+  status?: DocumentStatus;
+  vendor_id?: string;
+  search?: string;
+  page?: number;
+  page_size?: number;
+}
+
+/** Full extraction payload persisted at artifacts/{tenant}/{upload}/extraction.json. */
+export interface ExtractionEntity {
+  field: string;
+  value: string | number | null;
+  confidence: number;
+  page: number;
+  bounding_box?: number[];
+  extraction_method?: string;
+}
+
+export interface ExtractionPagePayload {
+  page_number: number;
+  text: string;
+  text_blocks?: Array<{ text: string; bbox: number[]; confidence: number }>;
+  tables?: Array<{ data: unknown; bbox: number[] }>;
+  images?: Array<{ bbox: number[]; xref?: number }>;
+}
+
+export interface DocumentArtifact {
+  schema_version: number;
+  tenant_id: string;
+  upload_id: string | null;
+  source_gcs_key: string;
+  filename: string;
+  triage: {
+    file_type: string;
+    route: string;
+    confidence: number;
+    detection_method: string;
+    has_images: boolean;
+  };
+  extraction: {
+    route: string;
+    file_type: string;
+    extraction_method: string;
+    extraction_confidence: number;
+    full_text: string;
+    pages: ExtractionPagePayload[];
+    entities: ExtractionEntity[];
+    tables: Array<{ data: unknown; bbox?: number[] }>;
+  };
+  classification: {
+    document_type: string;
+    confidence: number;
+    method: string;
+    note?: string;
+  };
+  provenance?: Record<string, unknown>;
+  entity_provenance?: Array<Record<string, unknown>>;
+  created_at: string;
+}
+
+/** Explorer detail: list row, artifact, review state, and typed structured data. */
+export interface DocumentDetail extends DocumentRecord {
+  classification: Record<string, unknown> | null;
+  artifact: DocumentArtifact | null;
+  review: ContractReviewRecord | null;
+  structured_data: Record<string, unknown> | null;
+}
+
+/** Structured extraction waiting for human verification, or its commit receipt. */
+export interface ContractReviewRecord {
+  status: 'pending' | 'committed' | string;
+  document_type?: string;
+  confidence_threshold?: number;
+  field_confidence?: Record<string, number>;
+  data?: Record<string, unknown>;
+  verified_data?: Record<string, unknown>;
+  reason?: string;
+  created_at?: string;
+  reviewed_at?: string;
+  reviewer_id?: string;
+  reviewer_email?: string;
+  contract_id?: string;
+  term_version_ids?: string[];
+}
+
+/** Corrected commercial fields posted by a reviewer before ledger commit. */
+export interface ContractReviewCommitRequest {
+  contract_number: string;
+  vendor_name: string;
+  title: string | null;
+  start_date: string;
+  end_date: string | null;
+  renewal_date: string | null;
+  notice_period_days: number | null;
+  auto_renew: boolean;
+  termination_clause: string | null;
+  terms: Array<{
+    product_code: string;
+    description: string;
+    unit_price: number;
+    currency: string;
+    uom: string;
+    qty_min: number | null;
+    qty_max: number | null;
+    discount_pct: number | null;
+    effective_from: string;
+    effective_to: string | null;
+    escalation_pct: number | null;
+    payment_terms: string;
+    freight_terms: string;
+    tax_rule: string;
+  }>;
+}
+
+export interface ContractReviewCommitResponse {
+  document_id: string;
+  contract_id: string;
+  term_version_ids: string[];
+  review_status: 'committed';
+  reviewed_at: string;
+}
+
+/** Short-lived signed GET URL (inline preview + download). */
+export interface DocumentFileResponse {
+  document_id: string;
+  url: string;
+  expires_at: string;
+}
+
 export interface UploadFile {
   id: string;
   file: File;
   name: string;
   size: number;
   type: string;
-  documentType: DocumentType;
   vendorId?: string;
   status: UploadStatus;
   progress: number;
@@ -309,7 +490,7 @@ export interface UploadFile {
 
 export interface UploadQueueState {
   files: UploadFile[];
-  addFile: (file: File, documentType: DocumentType, vendorId?: string) => string;
+  addFile: (file: File, vendorId?: string) => string;
   removeFile: (id: string) => void;
   retryFile: (id: string) => void;
   clearCompleted: () => void;

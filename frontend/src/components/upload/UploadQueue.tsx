@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useCallback } from 'react';
-import { UploadFile, UploadStatus, DocumentType } from '@/types';
+import { UploadFile, UploadStatus } from '@/types';
 
 const STATUS_LABELS: Record<UploadStatus, string> = {
   queued: 'Queued',
@@ -17,15 +17,6 @@ const STATUS_COLORS: Record<UploadStatus, { bg: string; text: string; border: st
   processing: { bg: 'var(--color-warning-subtle)', text: 'var(--color-warning)', border: 'var(--color-warning-border)' },
   completed: { bg: 'var(--color-success-subtle)', text: 'var(--color-success)', border: 'var(--color-success-border)' },
   error: { bg: 'var(--color-danger-subtle)', text: 'var(--color-danger)', border: 'var(--color-danger-border)' },
-};
-
-const DOC_TYPE_LABELS: Record<DocumentType, string> = {
-  contract: 'Contract',
-  invoice: 'Invoice',
-  purchase_order: 'Purchase Order',
-  amendment: 'Amendment',
-  vendor_policy: 'Vendor Policy',
-  other: 'Other',
 };
 
 interface UploadQueueProps {
@@ -148,9 +139,6 @@ export function UploadQueue({ files, onRemove, onCancel, onRetry, onClearComplet
                     <span style={{ fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '300px' }}>
                       {file.name}
                     </span>
-                    <span style={{ fontSize: '10.5px', fontWeight: 700, padding: '2px 7px', borderRadius: 'var(--radius-full)', backgroundColor: 'var(--bg-surface-tint)', color: 'var(--color-brand)', border: '1px solid var(--border-tint)', whiteSpace: 'nowrap' }}>
-                      {DOC_TYPE_LABELS[file.documentType]}
-                    </span>
                     <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
                       {formatFileSize(file.size)}
                     </span>
@@ -263,10 +251,6 @@ export function UploadQueue({ files, onRemove, onCancel, onRetry, onClearComplet
                           {STATUS_LABELS[file.status]}
                         </span>
                       </div>
-                    </div>
-                    <div>
-                      <span style={{ color: 'var(--text-muted)' }}>Type:</span>
-                      <div style={{ marginTop: '2px', color: 'var(--text-secondary)' }}>{DOC_TYPE_LABELS[file.documentType]}</div>
                     </div>
                     <div>
                       <span style={{ color: 'var(--text-muted)' }}>Size:</span>

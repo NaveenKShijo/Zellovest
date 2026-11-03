@@ -392,6 +392,8 @@ class ExtractionArtifact(Base):
     )
     text_snippet: Mapped[str] = mapped_column(Text, nullable=False, default="")
     classification: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    review_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    review_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

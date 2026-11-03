@@ -94,7 +94,7 @@
    - Versioned schema `contracts.terms_versioned`: product, price, effective_from/effective_to, currency, UoM, qty limits, discounts, taxes, payment/freight terms.
    - Amendment lineage: Original → Amendment 1/2 → Renewal → Price Revision; base immutable, child records override only validity windows; preserves history for historical invoice explainability.
 4. **Vector Store & Hybrid RAG Indexing**
-   - pgvector on Cloud SQL (or Vertex AI Vector Search) per-tenant namespace. Two collections (distinct purposes per PRD #17): `doc_chunks` (this week) + `software_catalog` (reserved for Week 3 capability matching).
+   - VectorDB: Qdrant
    - Legal chunker: section-aware preserving headers (Termination, Escalation, Governing Law); embeddings; metadata `{vendor_id, document_id, document_type, page, section/clause_type, raw text}`.
    - Unified hybrid search: dense vector similarity + Postgres full-text (tsvector/BM25); vendor/doc/date filters; no cross-tenant retrieval.
 

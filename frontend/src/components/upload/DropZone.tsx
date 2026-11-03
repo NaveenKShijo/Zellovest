@@ -1,12 +1,9 @@
 'use client';
 
 import React, { useCallback, useState } from 'react';
-import { DocumentType } from '@/types';
 
 interface DropZoneProps {
-  onFilesSelect: (files: File[], documentType: DocumentType) => void;
-  documentType: DocumentType;
-  setDocumentType: (type: DocumentType) => void;
+  onFilesSelect: (files: File[]) => void;
   disabled?: boolean;
   maxFiles?: number;
   maxSizeMB?: number;
@@ -14,8 +11,6 @@ interface DropZoneProps {
 
 export function DropZone({
   onFilesSelect,
-  documentType,
-  setDocumentType,
   disabled = false,
   maxFiles = 10,
   maxSizeMB = 50,
@@ -58,10 +53,10 @@ export function DropZone({
       }
       const validFiles = validateFiles(fileArray);
       if (validFiles.length > 0) {
-        onFilesSelect(validFiles, documentType);
+        onFilesSelect(validFiles);
       }
     },
-    [onFilesSelect, documentType, maxFiles]
+    [onFilesSelect, maxFiles]
   );
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -173,34 +168,6 @@ export function DropZone({
         </div>
       )}
 
-      <div style={{ marginTop: '16px' }}>
-        <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '8px' }}>
-          Document Type
-        </label>
-        <select
-          value={documentType}
-          onChange={(e) => setDocumentType(e.target.value as DocumentType)}
-          disabled={disabled}
-          style={{
-            width: '100%',
-            padding: '10px 12px',
-            borderRadius: 'var(--radius-sm)',
-            border: '1px solid var(--border-subtle)',
-            backgroundColor: disabled ? 'var(--bg-app)' : 'var(--bg-surface)',
-            fontSize: '13px',
-            color: 'var(--text-primary)',
-            outline: 'none',
-            cursor: disabled ? 'not-allowed' : 'pointer',
-          }}
-        >
-          <option value="contract">Contract</option>
-          <option value="invoice">Invoice</option>
-          <option value="purchase_order">Purchase Order</option>
-          <option value="amendment">Amendment</option>
-          <option value="vendor_policy">Vendor Policy</option>
-          <option value="other">Other</option>
-        </select>
-      </div>
     </div>
   );
 }

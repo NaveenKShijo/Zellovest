@@ -1,11 +1,11 @@
 'use client';
 
 import React, { createContext, useContext, useState, useCallback, ReactNode } from 'react';
-import { UploadFile, DocumentType, UploadStatus } from '@/types';
+import { UploadFile, UploadStatus } from '@/types';
 
 interface UploadContextType {
   files: UploadFile[];
-  addFile: (file: File, documentType: DocumentType, vendorId?: string) => string;
+  addFile: (file: File, vendorId?: string) => string;
   removeFile: (id: string) => void;
   retryFile: (id: string) => void;
   clearCompleted: () => void;
@@ -18,7 +18,7 @@ const UploadContext = createContext<UploadContextType | undefined>(undefined);
 export function UploadProvider({ children }: { children: ReactNode }) {
   const [files, setFiles] = useState<UploadFile[]>([]);
 
-  const addFile = useCallback((file: File, documentType: DocumentType, vendorId?: string): string => {
+  const addFile = useCallback((file: File, vendorId?: string): string => {
     const id = `upload_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     const newFile: UploadFile = {
       id,
@@ -26,7 +26,6 @@ export function UploadProvider({ children }: { children: ReactNode }) {
       name: file.name,
       size: file.size,
       type: file.type,
-      documentType,
       vendorId,
       status: 'queued',
       progress: 0,

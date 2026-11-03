@@ -8,28 +8,19 @@ import { useAuth } from '@/contexts/AuthContext';
  * Login page: custom email/password sign-in (invite-only onboarding —
  * there is no public signup; members join via an invite link).
  *
- * Flows:
- * - Member: POST /api/v1/auth/login → JWT + profile → AuthContext
- *   persists the session → route to `/`. Errors render inline (401 shows
- *   the backend's enumeration-safe "Invalid email or password.").
- * - Visitor: "Explore the live demo" calls POST /api/v1/auth/demo with
- *   no credentials — the backend finds or auto-creates the sandbox
- *   account and returns its session. Zero friction by design.
+ * Member: POST /api/v1/auth/login → JWT + profile → AuthContext
+ * persists the session → route to `/`. Errors render inline (401 shows
+ * the backend's enumeration-safe "Invalid email or password.").
  */
 export default function LoginPage() {
   const router = useRouter();
-  const { login, loginDemo, isLoggingIn, error } = useAuth();
+  const { login, isLoggingIn, error } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const ok = await login(email.trim(), password);
-    if (ok) router.replace('/');
-  };
-
-  const onDemo = async () => {
-    const ok = await loginDemo();
     if (ok) router.replace('/');
   };
 
@@ -188,34 +179,6 @@ export default function LoginPage() {
             {isLoggingIn ? 'Signing in…' : 'Sign in'}
           </button>
         </form>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '20px' }}>
-          <span style={{ flex: 1, height: '1px', backgroundColor: 'var(--border-subtle)' }} />
-          <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-            or
-          </span>
-          <span style={{ flex: 1, height: '1px', backgroundColor: 'var(--border-subtle)' }} />
-        </div>
-
-        <button
-          onClick={onDemo}
-          disabled={isLoggingIn}
-          style={{
-            marginTop: '14px',
-            width: '100%',
-            padding: '13px 16px',
-            borderRadius: 'var(--radius-md)',
-            backgroundColor: 'transparent',
-            border: '1px solid var(--border-subtle)',
-            color: 'var(--text-primary)',
-            fontSize: '14px',
-            fontWeight: 700,
-            opacity: isLoggingIn ? 0.7 : 1,
-            cursor: isLoggingIn ? 'wait' : 'pointer',
-          }}
-        >
-          {isLoggingIn ? 'Signing in…' : 'Explore the live demo'}
-        </button>
 
         <p style={{ marginTop: '18px', fontSize: '12.5px', color: 'var(--text-secondary)' }}>
           New to the team? Ask a member for an invite link.

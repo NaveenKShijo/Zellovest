@@ -13,5 +13,8 @@ wheels/
 backend/.env
 
 .freebuff
+.agents
+.gemini
+.pytest_cache
 
 backend/scripts/

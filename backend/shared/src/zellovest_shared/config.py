@@ -103,13 +103,23 @@ class Settings(BaseSettings):
     document_ai_processor_id: str = Field(default="e38952ab29fc489b",
         alias="DOCUMENT_AI_PROCESSOR_ID")
 
-    # Jev AI (TypeSafe AI) document classification, accessed via OpenRouter.
+    # Jev AI (TypeSafe AI) document classification via OpenRouter Decisions API.
     jev_api_key: str = Field(default="", alias="OPENROUTER_API_KEY")
     jev_api_url: str = Field(
-        default="https://openrouter.ai/api/v1", alias="JEV_API_URL"
+        default="https://openrouter.ai/api/alpha/decisions", alias="JEV_API_URL"
     )
-    jev_model: str = Field(default="openai/gpt-4o-mini", alias="JEV_MODEL")
+    jev_model: str = Field(default="typesafe/jev-1.14", alias="JEV_MODEL")
     jev_timeout_seconds: float = Field(default=30.0, alias="JEV_TIMEOUT_SECONDS")
+
+    # Groq — fast LLM inference for structured extraction (invoice/PO/contract).
+    groq_api_key: str = Field(default="", alias="GROQ_API_KEY")
+    groq_api_url: str = Field(
+        default="https://api.groq.com/openai/v1/chat/completions", alias="GROQ_API_URL"
+    )
+    groq_model: str = Field(
+        default="openai/gpt-oss-120b", alias="GROQ_MODEL"
+    )
+    groq_timeout_seconds: float = Field(default=60.0, alias="GROQ_TIMEOUT_SECONDS")
 
     # Ingestion tuning
     poll_batch_size: int = Field(default=100, alias="POLL_BATCH_SIZE")

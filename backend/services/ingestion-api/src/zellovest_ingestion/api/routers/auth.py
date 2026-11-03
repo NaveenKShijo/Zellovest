@@ -32,7 +32,7 @@ from zellovest_shared.security.auth import (
     normalize_email,
     validate_email,
 )
-from zellovest_shared.security.jwt import create_user_access_token
+from zellovest_shared.security.jwt import create_refresh_token, create_user_access_token
 from zellovest_shared.security.passwords import hash_password, verify_password
 from zellovest_ingestion.api.deps import get_current_user, get_db_session
 from zellovest_ingestion.config import get_ingestion_api_settings
@@ -46,6 +46,7 @@ from zellovest_ingestion.schemas.auth import (
     LoginRequest,
     PasswordResetCompleteRequest,
     PasswordResetRequest,
+    RefreshRequest,
     UserResponse,
 )
 
@@ -142,7 +143,10 @@ async def login(
     logger.info("user_logged_in", email=email)
     token = create_user_access_token(str(user.id), user.email, user.tenant_id, user.role)
     return AuthResponse(
-        access_token=token, expires_in_minutes=_expiry_minutes(), user=_to_user_response(user)
+        access_token=token,
+        expires_in_minutes=_expiry_minutes(),
+        refresh_token=create_refresh_token(str(user.id), user.email, user.tenant_id),
+        user=_to_user_response(user),
     )
 
 
@@ -230,7 +234,66 @@ async def demo_login(
     logger.info("demo_session_issued", email=user.email)
     token = create_user_access_token(str(user.id), user.email, user.tenant_id, user.role)
     return AuthResponse(
-        access_token=token, expires_in_minutes=_expiry_minutes(), user=_to_user_response(user)
+        access_token=token,
+        expires_in_minutes=_expiry_minutes(),
+        refresh_token=create_refresh_token(str(user.id), user.email, user.tenant_id),
+        user=_to_user_response(user),
+    )
+
+
+@router.post("/refresh", response_model=AuthResponse)
+async def refresh_token(
+    body: RefreshRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> AuthResponse:
+    """Rotate an expired access token using a valid refresh token.
+
+    Validates the refresh token's signature + expiry and that its
+    ``token_type`` claim is ``refresh``. On success mints a new access
+    token and a new refresh token (rotation), so a compromised refresh
+    token can only be used once.
+
+    Args:
+        body: ``refresh_token`` — the long-lived refresh JWT.
+        session: Async DB session (used to confirm the user still exists
+            and is active).
+
+    Returns:
+        New ``access_token`` + ``refresh_token`` + user profile.
+
+    Raises:
+        HTTPException: 401 when the refresh token is missing, expired,
+            malformed, or the wrong type; 404 when the user no longer
+            exists or is inactive.
+    """
+    from zellovest_shared.security.jwt import decode_token
+
+    payload = decode_token(body.refresh_token)
+    if payload is None or payload.token_type != "refresh":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired refresh token. Please sign in again.",
+        )
+
+    # Confirm the user still exists and is active (revocation without a
+    # denylist: deactivated users can't refresh even with a valid token).
+    user = await get_user_by_id(session, payload.user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Account not found or inactive. Please sign in again.",
+        )
+
+    new_access = create_user_access_token(
+        str(user.id), user.email, user.tenant_id, user.role
+    )
+    new_refresh = create_refresh_token(str(user.id), user.email, user.tenant_id)
+    logger.info("token_refreshed", user_id=str(user.id))
+    return AuthResponse(
+        access_token=new_access,
+        expires_in_minutes=_expiry_minutes(),
+        refresh_token=new_refresh,
+        user=_to_user_response(user),
     )
 
 
@@ -341,5 +404,8 @@ async def accept_invite(
     logger.info("invite_accepted", email=user.email)
     token = create_user_access_token(str(user.id), user.email, user.tenant_id, user.role)
     return AuthResponse(
-        access_token=token, expires_in_minutes=_expiry_minutes(), user=_to_user_response(user)
+        access_token=token,
+        expires_in_minutes=_expiry_minutes(),
+        refresh_token=create_refresh_token(str(user.id), user.email, user.tenant_id),
+        user=_to_user_response(user),
     )
