@@ -12,6 +12,7 @@ import { VendorTag } from '@/components/documents/VendorTag';
 import { StructuredDataPanel } from '@/components/documents/StructuredDataPanel';
 import { DocumentPropertiesPanel } from '@/components/documents/DocumentPropertiesPanel';
 import { ContractReviewPanel } from '@/components/documents/ContractReviewPanel';
+import { InvoiceReviewPanel } from '@/components/documents/InvoiceReviewPanel';
 import { formatDateTime, humanizeLabel } from '@/components/documents/format';
 
 // PDF.js reads browser globals during module evaluation, so keep this viewer
@@ -102,6 +103,13 @@ export default function DocumentDetailPage() {
     const errorMessage = shown.status === 'error' ? shown.message : null;
 
     const isMalformed = !documentId;
+
+    // The explorer links low-confidence rows to `#review`; the panel only
+    // exists after the async detail fetch, so scroll once it has rendered.
+    useEffect(() => {
+        if (!detail || window.location.hash !== '#review') return;
+        document.getElementById('review')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, [detail]);
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -262,6 +270,14 @@ export default function DocumentDetailPage() {
                 />
                 {detail && (
                     <ContractReviewPanel
+                        key={`${detail.id}:${detail.review?.status ?? 'none'}:${detail.review?.reviewed_at ?? ''}`}
+                        document={detail}
+                        onCommitted={() => setRetryKey((key) => key + 1)}
+                    />
+                )}
+                {detail && (
+                    <InvoiceReviewPanel
+                        key={`invoice:${detail.id}:${detail.review?.status ?? 'none'}:${detail.review?.reviewed_at ?? ''}`}
                         document={detail}
                         onCommitted={() => setRetryKey((key) => key + 1)}
                     />

@@ -30,6 +30,7 @@ export interface IntegrationStatus {
   status: string;
   scopes: string[];
   needs_reconnect?: boolean;
+  refresh_available?: boolean;
   last_error?: string | null;
   token_expires_at?: string | null;
   updated_at?: string | null;
@@ -37,7 +38,7 @@ export interface IntegrationStatus {
 }
 
 export interface ProviderState extends IntegrationStatus {
-  /** True when the user must reconnect (EXPIRED/REVOKED or past expiry). */
+  /** True when the user must reconnect (expired/revoked without refresh). */
   needsReconnect: boolean;
   /** True when the token expires within the warning window. */
   isExpiringSoon: boolean;
@@ -70,13 +71,15 @@ function toProviderState(
     raw.needs_reconnect === true ||
     statusUpper === 'EXPIRED' ||
     statusUpper === 'REVOKED' ||
-    pastExpiry;
+    (pastExpiry && raw.refresh_available !== true);
   const isExpiringSoon =
     !needsReconnect &&
+    raw.refresh_available !== true &&
     Number.isFinite(expiresAt) &&
+    expiresAt > now &&
     expiresAt - now <= EXPIRING_SOON_MS;
-  if (raw.connected && pastExpiry) {
-    // Backend should already derive EXPIRED; guard against stale responses.
+  if (raw.connected && pastExpiry && raw.refresh_available !== true) {
+    // Guard against stale status responses that lack a usable refresh grant.
     return { ...raw, connected: false, needsReconnect: true, isExpiringSoon: false };
   }
   void tenantId;

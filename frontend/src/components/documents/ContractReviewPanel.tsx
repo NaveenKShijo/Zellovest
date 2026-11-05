@@ -1,11 +1,14 @@
 'use client';
 
-import React, { FormEvent, useEffect, useState } from 'react';
-import { ContractReviewCommitRequest, ContractReviewRecord, DocumentDetail } from '@/types';
+import React, { FormEvent, useEffect, useRef, useState } from 'react';
+import { ContractCandidate, ContractReviewCommitRequest, ContractReviewRecord, DocumentDetail } from '@/types';
 import { useApi } from '@/lib/api';
 import { ExceptionDrawer } from './ExceptionDrawer';
+import { ReviewConfidenceChips } from './ReviewConfidenceChips';
+import { useReviewHashRequest } from './useReviewHashRequest';
 
 type TermForm = {
+    contract_line_id: string;
     product_code: string;
     description: string;
     unit_price: string;
@@ -32,6 +35,10 @@ type ReviewForm = {
     notice_period_days: string;
     auto_renew: boolean;
     termination_clause: string;
+    reviewer_notes: string;
+    parent_contract_id: string;
+    change_type: 'original' | 'amendment' | 'renewal' | 'price_revision';
+    removed_contract_line_ids: string[];
     terms: TermForm[];
 };
 
@@ -73,6 +80,7 @@ function dateInput(value: unknown): string {
 
 function newTerm(defaultDate = ''): TermForm {
     return {
+        contract_line_id: '',
         product_code: '',
         description: '',
         unit_price: '',
@@ -90,12 +98,20 @@ function newTerm(defaultDate = ''): TermForm {
     };
 }
 
-function initializeForm(review: ContractReviewRecord | null, fallbackVendor: string | null): ReviewForm {
-    const data = record(review?.data);
+function initializeForm(
+    review: ContractReviewRecord | null,
+    fallbackVendor: string | null,
+    structuredData: Record<string, unknown> | null,
+    documentType: string,
+): ReviewForm {
+    const structured = record(structuredData);
+    const reviewData = record(review?.data);
+    const data = Object.keys(reviewData).length > 0 ? reviewData : structured;
     const startDate = dateInput(data.start_date);
     const extractedTerms = Array.isArray(data.terms) ? data.terms.map(record) : [];
     const terms = extractedTerms.length
         ? extractedTerms.map((term): TermForm => ({
+            contract_line_id: text(term.contract_line_id),
             product_code: text(term.product_code),
             description: text(term.description),
             unit_price: text(term.unit_price),
@@ -123,6 +139,10 @@ function initializeForm(review: ContractReviewRecord | null, fallbackVendor: str
         notice_period_days: text(data.notice_period_days),
         auto_renew: data.auto_renew === true || data.auto_renew === 'true',
         termination_clause: text(data.termination_clause),
+        reviewer_notes: '',
+        parent_contract_id: text(data.parent_contract_id),
+        change_type: (text(data.change_type) || (documentType === 'amendment' ? 'amendment' : 'original')) as ReviewForm['change_type'],
+        removed_contract_line_ids: [],
         terms,
     };
 }
@@ -172,6 +192,10 @@ function toRequest(form: ReviewForm): ContractReviewCommitRequest {
         notice_period_days: optionalNumber(form.notice_period_days),
         auto_renew: form.auto_renew,
         termination_clause: form.termination_clause.trim() || null,
+        reviewer_notes: form.reviewer_notes.trim() || null,
+        parent_contract_id: form.parent_contract_id || null,
+        change_type: form.change_type,
+        removed_contract_line_ids: form.removed_contract_line_ids,
         terms: form.terms.map((term) => ({
             product_code: term.product_code.trim(),
             description: term.description.trim(),
@@ -187,6 +211,7 @@ function toRequest(form: ReviewForm): ContractReviewCommitRequest {
             payment_terms: term.payment_terms.trim(),
             freight_terms: term.freight_terms.trim(),
             tax_rule: term.tax_rule.trim(),
+            contract_line_id: term.contract_line_id || null,
         })),
     };
 }
@@ -223,30 +248,6 @@ function confidencePercent(value: number): string {
     return `${Math.round(value * 100)}%`;
 }
 
-function LowConfidenceChips({ review }: { review: ContractReviewRecord }) {
-    const threshold = review.confidence_threshold ?? 0.8;
-    const fieldConfidence = review.field_confidence ?? {};
-    const uncertainFields = Object.entries(fieldConfidence)
-        .filter(([, confidence]) => confidence < threshold)
-        .sort(([, confidenceA], [, confidenceB]) => confidenceA - confidenceB);
-
-    if (uncertainFields.length === 0) return null;
-
-    return (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '7px', marginTop: '11px' }}>
-            {uncertainFields.map(([field, confidence]) => (
-                <span key={field} style={{
-                    padding: '4px 8px', borderRadius: 'var(--radius-sm)',
-                    background: 'var(--color-warning-subtle)', color: 'var(--color-warning)',
-                    fontSize: '11px', fontWeight: 600,
-                }}>
-                    {field.replaceAll('_', ' ')} · {confidencePercent(confidence)}
-                </span>
-            ))}
-        </div>
-    );
-}
-
 /**
  * Human-in-the-loop exception review for low-confidence contract extractions.
  *
@@ -264,22 +265,60 @@ export function ContractReviewPanel({
 }) {
     const api = useApi();
     const review = document.review;
-    const [form, setForm] = useState<ReviewForm>(() => initializeForm(review, document.vendor_name));
+    const [form, setForm] = useState<ReviewForm>(() =>
+        initializeForm(review, document.vendor_name, document.structured_data, document.document_type)
+    );
+    const apiRef = useRef(api);
+    apiRef.current = api;
+    const [candidates, setCandidates] = useState<ContractCandidate[]>([]);
+    const [candidateError, setCandidateError] = useState<string | null>(null);
+    const [candidateLoading, setCandidateLoading] = useState(false);
     const [drawerOpen, setDrawerOpen] = useState(false);
+    const [drawerDismissed, setDrawerDismissed] = useState(false);
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const [committed, setCommitted] = useState(false);
+    const [committed, setCommitted] = useState(review?.status === 'committed');
+    // The explorer's "Review exception" link lands on ``#review``: open the
+    // correction drawer immediately instead of making the reviewer hunt for it.
+    const reviewHashRequested = useReviewHashRequest();
+    const showDrawer = drawerOpen || (reviewHashRequested && !drawerDismissed);
+
+    const openDrawer = () => {
+        setDrawerDismissed(false);
+        setDrawerOpen(true);
+    };
+
+    const closeDrawer = () => {
+        setDrawerOpen(false);
+        setDrawerDismissed(true);
+    };
+
+    const isCommercial = document.document_type === 'contract' || document.document_type === 'amendment';
+    const parentSelectionRequired = review?.parent_contract_required === true;
+    const selectedCandidate = candidates.find((candidate) => candidate.contract_id === form.parent_contract_id);
 
     useEffect(() => {
-        setForm(initializeForm(review, document.vendor_name));
-        setCommitted(review?.status === 'committed');
-    }, [review, document.vendor_name]);
+        if (!isCommercial) return;
+        let active = true;
+        setCandidateLoading(true);
+        apiRef.current.documents.contractCandidates(document.id)
+            .then((response) => { if (active) setCandidates(response.candidates); })
+            .catch((caught) => { if (active) setCandidateError(caught instanceof Error ? caught.message : 'Unable to load parent contracts.'); })
+            .finally(() => { if (active) setCandidateLoading(false); });
+        return () => { active = false; };
+    }, [document.id, isCommercial]);
 
     useEffect(() => {
-        if (review?.status !== 'pending' && !committed) {
-            setDrawerOpen(false);
+        if (form.parent_contract_id || form.change_type === 'original') return;
+        const matches = candidates.filter((candidate) =>
+            candidate.contract_number.trim().toLowerCase() === form.contract_number.trim().toLowerCase()
+            && candidate.vendor_name.trim().toLowerCase() === form.vendor_name.trim().toLowerCase()
+        );
+        if (matches.length === 1) {
+            setForm((current) => ({ ...current, parent_contract_id: matches[0].contract_id }));
         }
-    }, [review?.status, committed]);
+    }, [candidates, form.parent_contract_id, form.change_type, form.contract_number, form.vendor_name]);
+    if (!isCommercial) return null;
 
     if (review?.status === 'committed' || committed) {
         return (
@@ -302,7 +341,14 @@ export function ContractReviewPanel({
         );
     }
 
-    if (review?.status !== 'pending') {
+    // A pending pipeline review is authoritative. Documents extracted before
+    // the review workflow existed have no review record but still need a
+    // human when their confidence is below the 0.80 gate.
+    const reviewIsOpen =
+        review?.status === 'pending' ||
+        (review?.status == null && document.status === 'review_needed' && document.has_artifact);
+
+    if (!reviewIsOpen) {
         if (document.status !== 'review_needed') return null;
         return (
             <section id="review" aria-label="Human review needed" style={panelStyle}>
@@ -314,14 +360,14 @@ export function ContractReviewPanel({
                         {document.extraction_confidence !== null && document.extraction_confidence < 0.8
                             ? 'Extraction confidence is below 80%. Review the document preview and structured data.'
                             : 'This document is marked for review. Inspect the document preview and structured data before relying on its contents.'}{' '}
-                        This document type does not have editable commercial terms; review the extracted fields in the preview before relying on them.
+                        No editable commercial-term review is available for this extraction; inspect the extracted fields in the preview or re-run the pipeline.
                     </p>
                 </div>
             </section>
         );
     }
 
-    const updateForm = (field: keyof Omit<ReviewForm, 'terms'>, value: string | boolean) => {
+    const updateForm = (field: keyof Pick<ReviewForm, 'contract_number' | 'vendor_name' | 'title' | 'start_date' | 'end_date' | 'renewal_date' | 'notice_period_days' | 'auto_renew' | 'termination_clause' | 'reviewer_notes'>, value: string | boolean) => {
         setForm((current) => ({ ...current, [field]: value }));
     };
 
@@ -346,7 +392,7 @@ export function ContractReviewPanel({
         try {
             await api.documents.commitReview(document.id, toRequest(form));
             setCommitted(true);
-            setDrawerOpen(false);
+            closeDrawer();
             onCommitted();
         } catch (caught) {
             setError(caught instanceof Error ? caught.message : 'Unable to commit verified terms.');
@@ -370,18 +416,21 @@ export function ContractReviewPanel({
                         </span>
                     </div>
                     <p style={{ margin: '8px 0 0', color: 'var(--text-secondary)', fontSize: '12.5px', lineHeight: 1.5 }}>
-                        {review.reason || 'One or more commercial fields were extracted below the 80% confidence threshold.'}
+                        {review?.reason
+                            ?? (document.extraction_confidence !== null
+                                ? `Extraction confidence is ${confidencePercent(document.extraction_confidence)} for this document.`
+                                : 'Extraction confidence is unavailable for this document.')}
                     </p>
                     <p style={{ margin: '6px 0 0', color: 'var(--text-muted)', fontSize: '12px', lineHeight: 1.5 }}>
                         These terms remain provisional and are not used for invoice reconciliation until you verify and commit them.
                     </p>
-                    <LowConfidenceChips review={review} />
+                    {review && <ReviewConfidenceChips review={review} />}
                     <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginTop: '14px' }}>
                         <button
                             type="button"
                             onClick={() => {
                                 setError(null);
-                                setDrawerOpen(true);
+                                openDrawer();
                             }}
                             style={{
                                 border: 0,
@@ -404,9 +453,9 @@ export function ContractReviewPanel({
             </section>
 
             <ExceptionDrawer
-                open={drawerOpen}
+                open={showDrawer}
                 onClose={() => {
-                    if (!saving) setDrawerOpen(false);
+                    if (!saving) closeDrawer();
                 }}
                 title="Verify commercial terms"
                 subtitle="Compare every value against the source document, correct anything the extraction got wrong, then commit the verified terms to the operational ledger."
@@ -424,7 +473,7 @@ export function ContractReviewPanel({
                         <button
                             type="button"
                             disabled={saving}
-                            onClick={() => setDrawerOpen(false)}
+                            onClick={closeDrawer}
                             style={{
                                 border: '1px solid var(--border-subtle)',
                                 borderRadius: 'var(--radius-md)',
@@ -463,6 +512,52 @@ export function ContractReviewPanel({
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: '12px' }}>
                         <Field label="Contract number" value={form.contract_number} required onChange={(value) => updateForm('contract_number', value)} />
                         <Field label="Vendor" value={form.vendor_name} required onChange={(value) => updateForm('vendor_name', value)} />
+                        <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', minWidth: 0 }}>
+                            <span style={{ color: 'var(--text-secondary)', fontSize: '12px', fontWeight: 600 }}>Document event</span>
+                            <select
+                                value={form.change_type}
+                                onChange={(event) => setForm((current) => ({
+                                    ...current,
+                                    change_type: event.target.value as ReviewForm['change_type'],
+                                    parent_contract_id: event.target.value === 'original' ? '' : current.parent_contract_id,
+                                }))}
+                                style={inputStyle}
+                            >
+                                <option value="original">Original contract</option>
+                                <option value="amendment">Amendment</option>
+                                <option value="renewal">Renewal</option>
+                                <option value="price_revision">Price revision</option>
+                            </select>
+                        </label>
+                        {(form.change_type !== 'original' || parentSelectionRequired) && (
+                            <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', minWidth: 0 }}>
+                                <span style={{ color: 'var(--text-secondary)', fontSize: '12px', fontWeight: 600 }}>Parent contract</span>
+                                <select
+                                    value={form.parent_contract_id}
+                                    required={parentSelectionRequired}
+                                    onChange={(event) => {
+                                        const candidate = candidates.find((item) => item.contract_id === event.target.value);
+                                        setForm((current) => ({
+                                            ...current,
+                                            parent_contract_id: event.target.value,
+                                            contract_number: candidate?.contract_number || current.contract_number,
+                                            vendor_name: candidate?.vendor_name || current.vendor_name,
+                                            change_type: current.change_type === 'original' ? 'amendment' : current.change_type,
+                                            removed_contract_line_ids: [],
+                                        }));
+                                    }}
+                                    style={inputStyle}
+                                >
+                                    <option value="">{candidateLoading ? 'Loading contracts…' : 'Select parent contract'}</option>
+                                    {candidates.map((candidate) => (
+                                        <option key={candidate.contract_id} value={candidate.contract_id}>
+                                            {candidate.contract_number} · {candidate.vendor_name}{candidate.latest_version_no ? ` · v${candidate.latest_version_no}` : ''}
+                                        </option>
+                                    ))}
+                                </select>
+                                {candidateError && <span role="alert" style={{ color: 'var(--color-danger)', fontSize: 11 }}>{candidateError}</span>}
+                            </label>
+                        )}
                         <Field label="Title" value={form.title} onChange={(value) => updateForm('title', value)} />
                         <Field label="Start date" type="date" value={form.start_date} required onChange={(value) => updateForm('start_date', value)} />
                         <Field label="Expiration date" type="date" value={form.end_date} onChange={(value) => updateForm('end_date', value)} />
@@ -478,6 +573,30 @@ export function ContractReviewPanel({
                         </label>
                     </div>
 
+                    {selectedCandidate && selectedCandidate.terms.length > 0 && (
+                        <fieldset style={{ margin: '16px 0 0', padding: 12, border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)' }}>
+                            <legend style={{ padding: '0 6px', color: 'var(--text-secondary)', fontSize: 12, fontWeight: 700 }}>Existing product lines in {selectedCandidate.contract_number}</legend>
+                            <p style={{ margin: '0 0 8px', color: 'var(--text-muted)', fontSize: 11.5 }}>Map changed lines below. Check a line to end it as of this change’s effective date.</p>
+                            <div style={{ display: 'grid', gap: 7 }}>
+                                {selectedCandidate.terms.map((term) => (
+                                    <label key={term.contract_line_id} style={{ display: 'flex', gap: 8, alignItems: 'center', color: 'var(--text-secondary)', fontSize: 12 }}>
+                                        <input
+                                            type="checkbox"
+                                            checked={form.removed_contract_line_ids.includes(term.contract_line_id)}
+                                            onChange={(event) => setForm((current) => ({
+                                                ...current,
+                                                removed_contract_line_ids: event.target.checked
+                                                    ? [...current.removed_contract_line_ids, term.contract_line_id]
+                                                    : current.removed_contract_line_ids.filter((id) => id !== term.contract_line_id),
+                                            }))}
+                                        />
+                                        End {term.description || term.product_code || 'product line'} · {term.currency} {Number(term.unit_price).toFixed(2)}{term.uom ? ` / ${term.uom}` : ''}
+                                    </label>
+                                ))}
+                            </div>
+                        </fieldset>
+                    )}
+
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginTop: '22px' }}>
                         <h3 style={{ margin: 0, color: 'var(--text-primary)', fontSize: '13px' }}>Pricing and commercial terms</h3>
                         <button type="button" onClick={() => setForm((current) => ({ ...current, terms: [...current.terms, newTerm(current.start_date)] }))} style={{ ...inputStyle, width: 'auto', cursor: 'pointer', fontWeight: 600 }}>
@@ -490,6 +609,20 @@ export function ContractReviewPanel({
                             <fieldset key={index} style={{ minWidth: 0, margin: 0, padding: '14px', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)' }}>
                                 <legend style={{ padding: '0 6px', color: 'var(--text-secondary)', fontSize: '12px', fontWeight: 700 }}>Pricing line {index + 1}</legend>
                                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(175px, 1fr))', gap: '11px' }}>
+                                    {selectedCandidate && (
+                                        <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', minWidth: 0 }}>
+                                            <span style={{ color: 'var(--text-secondary)', fontSize: '12px', fontWeight: 600 }}>Maps to existing line</span>
+                                            <select value={term.contract_line_id} onChange={(event) => updateTerm(index, 'contract_line_id', event.target.value)} style={inputStyle}>
+                                                <option value="">New product line / match automatically</option>
+                                                {selectedCandidate.terms.map((candidateTerm) => (
+                                                    <option key={candidateTerm.contract_line_id} value={candidateTerm.contract_line_id}>
+                                                        {candidateTerm.description || candidateTerm.product_code || candidateTerm.contract_line_id}
+                                                        {candidateTerm.qty_min !== null || candidateTerm.qty_max !== null ? ` · ${candidateTerm.qty_min ?? '−'} to ${candidateTerm.qty_max ?? '∞'}` : ''}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                        </label>
+                                    )}
                                     <Field label="Product code" value={term.product_code} onChange={(value) => updateTerm(index, 'product_code', value)} />
                                     <Field label="Unit price" type="number" step="0.01" value={term.unit_price} required onChange={(value) => updateTerm(index, 'unit_price', value)} />
                                     <Field label="Currency" value={term.currency} required onChange={(value) => updateTerm(index, 'currency', value)} />
@@ -516,6 +649,19 @@ export function ContractReviewPanel({
                             </fieldset>
                         ))}
                     </div>
+
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '18px' }}>
+                        <span style={{ color: 'var(--text-secondary)', fontSize: '12px', fontWeight: 600 }}>
+                            Reviewer notes (optional)
+                        </span>
+                        <textarea
+                            value={form.reviewer_notes}
+                            onChange={(event) => updateForm('reviewer_notes', event.target.value)}
+                            rows={3}
+                            placeholder="Record what you corrected or anything the next reviewer should know."
+                            style={{ ...inputStyle, resize: 'vertical' }}
+                        />
+                    </label>
 
                     {error && (
                         <div role="alert" style={{ marginTop: '14px', padding: '10px 12px', borderRadius: 'var(--radius-md)', background: 'var(--color-danger-subtle)', color: 'var(--color-danger)', fontSize: '12.5px' }}>

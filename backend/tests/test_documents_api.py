@@ -43,6 +43,10 @@ class _RowsResult:
         """Return the queued rows."""
         return self._rows
 
+    def scalars(self) -> "_RowsResult":
+        """Return self so ``execute(...).scalars().all()`` works."""
+        return self
+
 
 class _ScalarResult:
     """Queue result exposing ``.scalar_one()`` (count select)."""
@@ -89,6 +93,7 @@ class _FakeSession:
         self._results = list(execute_results or [])
         self._scalars = list(scalar_results or [])
         self.added: list[Any] = []
+        self.deleted: list[Any] = []
         self.commits = 0
         self.flushes = 0
         self.rollbacks = 0
@@ -96,6 +101,10 @@ class _FakeSession:
     def add(self, row: Any) -> None:
         """Track added rows."""
         self.added.append(row)
+
+    async def delete(self, row: Any) -> None:
+        """Track deleted rows."""
+        self.deleted.append(row)
 
     async def commit(self) -> None:
         """Count commits."""
@@ -647,3 +656,314 @@ def test_detail_returns_pending_review_state() -> None:
     assert body["status"] == "review_needed"
     assert body["review"]["status"] == "pending"
     assert body["review"]["field_confidence"]["unit_price"] == 0.55
+
+
+# ---------------------------------------------------------------------------
+# POST /documents/{id}/review/commit-invoice (invoice HITL → ledger)
+# ---------------------------------------------------------------------------
+
+
+def _invoice_review_document() -> SimpleNamespace:
+    """Build a duck-typed structured invoice document row."""
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        tenant_id="default-org",
+        upload_id=uuid.uuid4(),
+        document_type=SimpleNamespace(value="invoice"),
+        vendor_id=None,
+        status="review_needed",
+    )
+
+
+def _invoice_review_payload() -> dict[str, Any]:
+    """Build a valid reviewer-corrected invoice payload."""
+    return {
+        "invoice_number": "1038",
+        "vendor_name": "Acme Design",
+        "invoice_date": "2026-11-03",
+        "due_date": "2026-12-03",
+        "currency": "usd",
+        "subtotal": "75.00",
+        "tax_amount": "6.00",
+        "total_amount": "81.00",
+        "reviewer_notes": "Verified against the source PDF.",
+        "line_items": [
+            {
+                "description": "Design AI Model",
+                "product_code": None,
+                "quantity": "1",
+                "unit_price": "75.00",
+            }
+        ],
+    }
+
+
+def test_invoice_review_commit_updates_existing_invoice() -> None:
+    """A low-confidence invoice review updates its header and line items."""
+    lease = _lease(document_type="invoice")
+    artifact = _artifact(
+        upload_id=lease.id,
+        review_status=None,
+        extraction_confidence=Decimal("0.5000"),
+    )
+    document = _invoice_review_document()
+    vendor = SimpleNamespace(id=uuid.uuid4(), name="Acme Design")
+    invoice = SimpleNamespace(
+        id=uuid.uuid4(),
+        invoice_number="OLD-1038",
+        invoice_date=datetime(2026, 1, 1, tzinfo=UTC),
+        due_date=None,
+        currency="USD",
+        subtotal=0.0,
+        tax_amount=0.0,
+        total_amount=0.0,
+        vendor_id=None,
+    )
+    line = SimpleNamespace(
+        id=uuid.uuid4(),
+        line_no=1,
+        description="old line",
+        product_code=None,
+        quantity=1.0,
+        unit_price=1.0,
+        total=1.0,
+    )
+    extra_line = SimpleNamespace(
+        id=uuid.uuid4(),
+        line_no=2,
+        description="removed line",
+        product_code=None,
+        quantity=1.0,
+        unit_price=1.0,
+        total=1.0,
+    )
+    session = _FakeSession(
+        upload_row=lease,
+        execute_results=[
+            _OptionalResult(artifact),          # artifact with FOR UPDATE
+            _OptionalResult(document),          # structured document
+            _OptionalResult(vendor),            # vendor lookup
+            _OptionalResult(invoice),           # existing invoice
+            _OptionalResult(None),              # no conflicting invoice
+            _RowsResult([line, extra_line]),    # existing invoice lines
+        ],
+    )
+    client = _make_client(session=session)
+
+    response = client.post(
+        f"/api/v1/documents/{lease.id}/review/commit-invoice",
+        json=_invoice_review_payload(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["invoice_id"] == str(invoice.id)
+    assert body["review_status"] == "committed"
+    assert session.commits == 1
+    assert artifact.review_status == "committed"
+    assert artifact.review_data["status"] == "committed"
+    assert artifact.review_data["reviewer_email"] == "member@example.com"
+    assert artifact.review_data["reviewer_notes"] == "Verified against the source PDF."
+    assert document.status == "extracted"
+    assert invoice.invoice_number == "1038"
+    assert invoice.subtotal == 75.0
+    assert invoice.tax_amount == 6.0
+    assert line.description == "Design AI Model"
+    assert line.unit_price == 75.0
+    assert line.total == 75.0
+    assert extra_line in session.deleted
+    # 8 header fields + 5 line fields on unchanged/new rows.
+    assert len(session.added) == 8 + 5
+
+
+def test_invoice_review_commit_creates_missing_invoice() -> None:
+    """A failed provisional upsert is repaired by the reviewer commit."""
+    lease = _lease(document_type="invoice")
+    artifact = _artifact(
+        upload_id=lease.id,
+        review_status=None,
+        extraction_confidence=Decimal("0.5000"),
+    )
+    document = _invoice_review_document()
+    vendor = SimpleNamespace(id=uuid.uuid4(), name="Acme Design")
+    session = _FakeSession(
+        upload_row=lease,
+        execute_results=[
+            _OptionalResult(artifact),
+            _OptionalResult(document),
+            _OptionalResult(vendor),
+            _OptionalResult(None),      # no existing invoice
+            _OptionalResult(None),      # no conflicting invoice
+            _RowsResult([]),            # no existing lines
+        ],
+    )
+    client = _make_client(session=session)
+
+    response = client.post(
+        f"/api/v1/documents/{lease.id}/review/commit-invoice",
+        json=_invoice_review_payload(),
+    )
+
+    assert response.status_code == 200
+    assert session.commits == 1
+    assert artifact.review_status == "committed"
+    # New invoice + new line + 8 header provenance + 5 line provenance.
+    assert len(session.added) == 1 + 1 + 8 + 5
+
+
+def test_invoice_review_commit_adopts_reuploaded_invoice() -> None:
+    """A duplicate upload clears review against the existing ledger invoice."""
+    lease = _lease(document_type="invoice")
+    artifact = _artifact(
+        upload_id=lease.id,
+        review_status=None,
+        extraction_confidence=Decimal("0.5000"),
+    )
+    document = _invoice_review_document()
+    vendor = SimpleNamespace(id=uuid.uuid4(), name="Acme Design")
+    conflicting_invoice = SimpleNamespace(
+        id=uuid.uuid4(),
+        document_id=uuid.uuid4(),
+        invoice_number="1038",
+        invoice_date=datetime(2026, 1, 1, tzinfo=UTC),
+        due_date=None,
+        currency="USD",
+        subtotal=1.0,
+        tax_amount=0.0,
+        total_amount=1.0,
+        vendor_id=None,
+    )
+    line = SimpleNamespace(
+        id=uuid.uuid4(),
+        line_no=1,
+        description="old line",
+        product_code=None,
+        quantity=1.0,
+        unit_price=1.0,
+        total=1.0,
+    )
+    session = _FakeSession(
+        upload_row=lease,
+        execute_results=[
+            _OptionalResult(artifact),
+            _OptionalResult(document),
+            _OptionalResult(vendor),
+            _OptionalResult(None),                  # no invoice on this lease
+            _OptionalResult(conflicting_invoice),   # number used by duplicate
+            _OptionalResult(uuid.uuid4()),          # source is the same file
+            _RowsResult([line]),                    # duplicate invoice lines
+        ],
+    )
+    client = _make_client(session=session)
+
+    response = client.post(
+        f"/api/v1/documents/{lease.id}/review/commit-invoice",
+        json=_invoice_review_payload(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["invoice_id"] == str(conflicting_invoice.id)
+    assert session.commits == 1
+    assert conflicting_invoice.invoice_number == "1038"
+    assert conflicting_invoice.subtotal == 75.0
+    assert line.description == "Design AI Model"
+    assert artifact.review_status == "committed"
+    assert artifact.review_data["invoice_id"] == str(conflicting_invoice.id)
+    # No duplicate invoice row: only 8 header + 5 line provenance rows.
+    assert len(session.added) == 8 + 5
+
+
+def test_invoice_review_commit_rejects_conflicting_invoice_number() -> None:
+    """A different invoice may not reuse a number already in the ledger."""
+    lease = _lease(document_type="invoice")
+    artifact = _artifact(
+        upload_id=lease.id,
+        review_status=None,
+        extraction_confidence=Decimal("0.5000"),
+    )
+    document = _invoice_review_document()
+    vendor = SimpleNamespace(id=uuid.uuid4(), name="Acme Design")
+    conflicting_invoice = SimpleNamespace(id=uuid.uuid4(), document_id=uuid.uuid4())
+    session = _FakeSession(
+        upload_row=lease,
+        execute_results=[
+            _OptionalResult(artifact),
+            _OptionalResult(document),
+            _OptionalResult(vendor),
+            _OptionalResult(None),                  # no invoice on this lease
+            _OptionalResult(conflicting_invoice),   # number already used
+            _OptionalResult(None),                  # different source file
+        ],
+    )
+    client = _make_client(session=session)
+
+    response = client.post(
+        f"/api/v1/documents/{lease.id}/review/commit-invoice",
+        json=_invoice_review_payload(),
+    )
+
+    assert response.status_code == 409
+    assert session.commits == 0
+
+
+def test_invoice_review_commit_rejects_committed_review() -> None:
+    """A committed invoice review cannot be reopened or overwritten."""
+    lease = _lease(document_type="invoice")
+    artifact = _artifact(upload_id=lease.id, review_status="committed")
+    session = _FakeSession(
+        upload_row=lease,
+        execute_results=[_OptionalResult(artifact)],
+    )
+    client = _make_client(session=session)
+
+    response = client.post(
+        f"/api/v1/documents/{lease.id}/review/commit-invoice",
+        json=_invoice_review_payload(),
+    )
+
+    assert response.status_code == 409
+    assert session.commits == 0
+
+
+def test_invoice_review_commit_rejects_high_confidence_without_review() -> None:
+    """Trusted extractions cannot be rewritten without an open review."""
+    lease = _lease(document_type="invoice")
+    artifact = _artifact(
+        upload_id=lease.id,
+        review_status=None,
+        extraction_confidence=Decimal("0.9900"),
+    )
+    session = _FakeSession(
+        upload_row=lease,
+        execute_results=[_OptionalResult(artifact)],
+    )
+    client = _make_client(session=session)
+
+    response = client.post(
+        f"/api/v1/documents/{lease.id}/review/commit-invoice",
+        json=_invoice_review_payload(),
+    )
+
+    assert response.status_code == 409
+    assert session.commits == 0
+
+
+def test_invoice_review_commit_rejects_non_invoice_documents() -> None:
+    """The invoice endpoint only accepts invoice documents."""
+    lease = _lease(document_type="contract")
+    artifact = _artifact(upload_id=lease.id, review_status="pending")
+    document = _review_document("contract")
+    document.upload_id = lease.id
+    session = _FakeSession(
+        upload_row=lease,
+        execute_results=[_OptionalResult(artifact), _OptionalResult(document)],
+    )
+    client = _make_client(session=session)
+
+    response = client.post(
+        f"/api/v1/documents/{lease.id}/review/commit-invoice",
+        json=_invoice_review_payload(),
+    )
+
+    assert response.status_code == 422
+    assert session.commits == 0

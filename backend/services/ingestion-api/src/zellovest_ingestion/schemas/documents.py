@@ -170,6 +170,7 @@ class ContractTermReviewInput(BaseModel):
     discount_pct: Decimal | None = Field(default=None, ge=0, le=100)
     effective_from: date
     effective_to: date | None = None
+    contract_line_id: UUID | None = None
     escalation_pct: Decimal | None = Field(default=None, ge=0, le=100)
     payment_terms: str | None = None
     freight_terms: str | None = None
@@ -201,6 +202,10 @@ class ContractReviewCommitRequest(BaseModel):
     notice_period_days: int | None = Field(default=None, ge=0, le=3650)
     auto_renew: bool = False
     termination_clause: str | None = None
+    reviewer_notes: str | None = None
+    parent_contract_id: UUID | None = None
+    change_type: str | None = Field(default=None, pattern="^(original|amendment|renewal|price_revision)$")
+    removed_contract_line_ids: list[UUID] = Field(default_factory=list)
     terms: list[ContractTermReviewInput] = Field(min_length=1)
 
     @field_validator("contract_number", "vendor_name")
@@ -227,7 +232,146 @@ class ContractReviewCommitResponse(BaseModel):
 
     document_id: UUID
     contract_id: UUID
+    contract_version_id: UUID
+    version_no: int
     term_version_ids: list[UUID]
+    review_status: str
+    reviewed_at: datetime
+
+
+class ContractCandidateTerm(BaseModel):
+    """Current contract line offered while resolving an amendment parent."""
+
+    contract_line_id: UUID
+    product_code: str | None
+    description: str | None
+    unit_price: Decimal
+    currency: str
+    uom: str | None
+    qty_min: Decimal | None
+    qty_max: Decimal | None
+    effective_from: date
+    effective_to: date | None
+
+
+class ContractCandidate(BaseModel):
+    """An existing contract that a reviewer may select as the amendment parent."""
+
+    contract_id: UUID
+    contract_number: str
+    title: str | None
+    vendor_name: str
+    latest_version_no: int | None
+    terms: list[ContractCandidateTerm]
+
+
+class ContractCandidatesResponse(BaseModel):
+    """Tenant-scoped contract matches for a staged amendment."""
+
+    document_id: UUID
+    candidates: list[ContractCandidate]
+
+
+class ContractHistoryTerm(BaseModel):
+    """One product or pricing tier inside a contract version event."""
+
+    id: UUID
+    contract_line_id: UUID
+    line_no: int
+    product_code: str | None
+    description: str | None
+    unit_price: Decimal
+    currency: str
+    uom: str | None
+    qty_min: Decimal | None
+    qty_max: Decimal | None
+    discount_pct: Decimal | None
+    tax_rule: str | None
+    payment_terms: str | None
+    freight_terms: str | None
+    effective_from: date
+    effective_to: date | None
+
+
+class ContractHistoryVersion(BaseModel):
+    """One version event with source and parent document lineage."""
+
+    id: UUID
+    version_no: int
+    change_type: str
+    source_document_id: UUID | None
+    source_filename: str | None
+    source_upload_id: UUID | None
+    parent_version_id: UUID | None
+    parent_version_no: int | None
+    effective_from: date
+    effective_to: date | None
+    terms: list[ContractHistoryTerm]
+
+
+class ContractHistoryResponse(BaseModel):
+    """Contract header and chronological source-backed version history."""
+
+    contract_id: UUID
+    vendor_id: UUID
+    vendor_name: str
+    contract_number: str
+    title: str | None
+    versions: list[ContractHistoryVersion]
+
+
+class InvoiceLineReviewInput(BaseModel):
+    """One human-corrected invoice line item."""
+
+    description: str = ""
+    product_code: str | None = Field(default=None, max_length=128)
+    quantity: Decimal = Field(gt=0)
+    unit_price: Decimal = Field(ge=0)
+    total: Decimal | None = Field(default=None, ge=0)
+
+
+class InvoiceReviewCommitRequest(BaseModel):
+    """Human-corrected invoice header and lines ready for the ledger."""
+
+    invoice_number: str = Field(min_length=1, max_length=128)
+    vendor_name: str = Field(min_length=1, max_length=256)
+    invoice_date: date
+    due_date: date | None = None
+    currency: str = Field(default="USD", min_length=3, max_length=3)
+    subtotal: Decimal = Field(ge=0)
+    tax_amount: Decimal = Field(default=Decimal("0"), ge=0)
+    total_amount: Decimal = Field(ge=0)
+    reviewer_notes: str | None = None
+    line_items: list[InvoiceLineReviewInput] = Field(min_length=1)
+
+    @field_validator("invoice_number", "vendor_name")
+    @classmethod
+    def strip_required_text(cls, value: str) -> str:
+        """Disallow whitespace-only required invoice identifiers."""
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("This field cannot be blank")
+        return normalized
+
+    @field_validator("currency")
+    @classmethod
+    def normalize_currency(cls, value: str) -> str:
+        """Normalize ISO currency codes to uppercase."""
+        return value.upper()
+
+    @model_validator(mode="after")
+    def validate_invoice_dates(self) -> "InvoiceReviewCommitRequest":
+        """Reject a due date earlier than the invoice date."""
+        if self.due_date is not None and self.due_date < self.invoice_date:
+            raise ValueError("due_date must be on or after invoice_date")
+        return self
+
+
+class InvoiceReviewCommitResponse(BaseModel):
+    """Result of promoting verified invoice fields to the ledger."""
+
+    document_id: UUID
+    invoice_id: UUID
     review_status: str
     reviewed_at: datetime
 

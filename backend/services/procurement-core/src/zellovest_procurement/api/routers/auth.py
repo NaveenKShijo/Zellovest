@@ -2,10 +2,13 @@
 
 Single-tenant, invite-only onboarding (public signup removed):
 
-- ``POST /auth/login`` — verify credentials, return HS256 JWT.
+- ``POST /auth/login`` — verify credentials, return an HS256 access JWT
+  plus a long-lived refresh JWT.
+- ``POST /auth/refresh`` — exchange a valid refresh JWT for a new pair
+  (access + refresh) without re-entering credentials.
 - ``POST /auth/demo`` (public, no credentials) — one-click sandbox entry:
-  finds or auto-creates the demo account and returns its JWT. The demo
-  account explores but cannot invite (``is_demo`` guard below).
+  finds or auto-creates the demo account and returns its JWT pair. The
+  demo account explores but cannot invite (``is_demo`` guard below).
 - ``GET /auth/me`` — profile of the Bearer-token holder.
 - ``POST /auth/invites`` (authenticated, non-demo) — invite a teammate;
   returns a one-time invite link for copy-share (no email infra in V1).
@@ -35,11 +38,16 @@ from zellovest_shared.security.auth import (
     generate_invite_token,
     get_invite_by_token,
     get_user_by_email,
+    get_user_by_id,
     hash_invite_token,
     normalize_email,
     validate_email,
 )
-from zellovest_shared.security.jwt import create_user_access_token
+from zellovest_shared.security.jwt import (
+    create_refresh_token,
+    create_user_access_token,
+    decode_token,
+)
 from zellovest_shared.security.passwords import verify_password
 from zellovest_procurement.api.deps import get_current_user, get_db_session
 from zellovest_procurement.schemas.auth import (
@@ -49,6 +57,7 @@ from zellovest_procurement.schemas.auth import (
     InviteResponse,
     InviteValidateResponse,
     LoginRequest,
+    RefreshRequest,
     UserResponse,
 )
 
@@ -149,6 +158,7 @@ async def login(
     return AuthResponse(
         access_token=token,
         expires_in_minutes=_expiry_minutes(),
+        refresh_token=create_refresh_token(str(user.id), user.email, user.tenant_id),
         user=_to_user_response(user),
     )
 
@@ -170,6 +180,59 @@ async def demo_login(
     return AuthResponse(
         access_token=token,
         expires_in_minutes=_expiry_minutes(),
+        refresh_token=create_refresh_token(str(user.id), user.email, user.tenant_id),
+        user=_to_user_response(user),
+    )
+
+
+@router.post("/refresh", response_model=AuthResponse)
+async def refresh_token(
+    body: RefreshRequest,
+    session: AsyncSession = Depends(get_db_session),
+) -> AuthResponse:
+    """Rotate an expired access token using a valid refresh token.
+
+    Validates the refresh token's signature + expiry and that its
+    ``token_type`` claim is ``refresh``. On success mints a new access
+    token and a new refresh token, then re-checks the user row so a
+    deactivated account cannot keep extending its session.
+
+    Args:
+        body: ``refresh_token`` — the long-lived refresh JWT.
+        session: Async DB session (confirms the user still exists/active).
+
+    Returns:
+        New ``access_token`` + ``refresh_token`` + user profile.
+
+    Raises:
+        HTTPException: 401 when the refresh token is missing, expired,
+            malformed, or the wrong type; 404 when the user no longer
+            exists or is inactive.
+    """
+    payload = decode_token(body.refresh_token)
+    user_id = payload.user_id if payload is not None else None
+    if payload is None or payload.token_type != "refresh" or not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired refresh token. Please sign in again.",
+        )
+
+    # Confirm the user still exists and is active (revocation without a
+    # denylist: deactivated users can't refresh even with a valid token).
+    user = await get_user_by_id(session, user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Account not found or inactive. Please sign in again.",
+        )
+
+    new_access = create_user_access_token(str(user.id), user.email, user.tenant_id, user.role)
+    new_refresh = create_refresh_token(str(user.id), user.email, user.tenant_id)
+    logger.info("token_refreshed", user_id=str(user.id))
+    return AuthResponse(
+        access_token=new_access,
+        expires_in_minutes=_expiry_minutes(),
+        refresh_token=new_refresh,
         user=_to_user_response(user),
     )
 
@@ -284,5 +347,6 @@ async def accept_invite(
     return AuthResponse(
         access_token=token,
         expires_in_minutes=_expiry_minutes(),
+        refresh_token=create_refresh_token(str(user.id), user.email, user.tenant_id),
         user=_to_user_response(user),
     )

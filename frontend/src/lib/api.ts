@@ -6,6 +6,9 @@ import {
   VendorListParams,
   VendorListResponse,
   Contract,
+  ContractCandidatesResponse,
+  ContractHistory,
+  VendorContractLine,
   Invoice,
   CardTransaction,
   Document,
@@ -16,6 +19,8 @@ import {
   DocumentFileResponse,
   ContractReviewCommitRequest,
   ContractReviewCommitResponse,
+  InvoiceReviewCommitRequest,
+  InvoiceReviewCommitResponse,
 } from '@/types';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || '/api';
@@ -80,12 +85,12 @@ export function useApi() {
       return fetch(`${API_BASE}${endpoint}`, { ...options, headers });
     };
 
-    let token = await getValidAccessToken();
+    const token = await getValidAccessToken();
     let response = await attempt(token);
 
     if (response.status === 401) {
       // Token expired mid-flight: refresh once and retry.
-      const refreshed = await getValidAccessToken();
+      const refreshed = await getValidAccessToken(true);
       if (refreshed && refreshed !== token) {
         response = await attempt(refreshed);
       }
@@ -166,7 +171,8 @@ export function useApi() {
       delete: (id: string) => request<void>(`/vendors/${id}`, { method: 'DELETE' }),
     },
     contracts: {
-      listByVendor: (vendorId: string) => request<Contract[]>(`/vendors/${vendorId}/contracts`),
+      listByVendor: (vendorId: string) => request<VendorContractLine[]>(`/vendors/${vendorId}/contracts`),
+      history: (contractId: string) => request<ContractHistory>(`/contracts/${contractId}/history`),
       get: (id: string) => request<Contract>(`/contracts/${id}`),
       create: (vendorId: string, data: Partial<Contract>) =>
         request<Contract>(`/vendors/${vendorId}/contracts`, {
@@ -216,6 +222,13 @@ export function useApi() {
           method: 'POST',
           body: JSON.stringify(data),
         }),
+      contractCandidates: (id: string) =>
+        request<ContractCandidatesResponse>(`/v1/documents/${id}/contract-candidates`),
+      commitInvoiceReview: (id: string, data: InvoiceReviewCommitRequest) =>
+        request<InvoiceReviewCommitResponse>(`/v1/documents/${id}/review/commit-invoice`, {
+          method: 'POST',
+          body: JSON.stringify(data),
+        }),
       fileUrl: (id: string) => request<DocumentFileResponse>(`/v1/documents/${id}/file`),
       fileContent: async (id: string): Promise<Blob> => {
         const endpoint = `/v1/documents/${id}/content`;
@@ -227,7 +240,7 @@ export function useApi() {
         let token = await getValidAccessToken();
         let response = await attempt(token);
         if (response.status === 401) {
-          const refreshedToken = await getValidAccessToken();
+          const refreshedToken = await getValidAccessToken(true);
           if (refreshedToken && refreshedToken !== token) {
             token = refreshedToken;
             response = await attempt(token);

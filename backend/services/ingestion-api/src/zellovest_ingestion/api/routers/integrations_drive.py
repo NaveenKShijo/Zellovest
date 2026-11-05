@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from zellovest_shared.db.models import TenantIntegration
+from zellovest_shared.db.models import TenantIntegration, effective_connection_status
 from zellovest_shared.db.repository import aupsert_integration
 from zellovest_shared.logging_conf import get_logger
 from zellovest_shared.schemas.integrations import ConnectRequest, ConnectResponse
@@ -33,6 +33,7 @@ from zellovest_ingestion.services.drive_oauth import (
     build_drive_authorize_url,
     exchange_drive_code_for_tokens,
 )
+from zellovest_ingestion.services.integration_tokens import has_refresh_token
 from zellovest_ingestion.services.drive_watch import (
     DRIVE_PROVIDER,
     ensure_drive_watch,
@@ -192,7 +193,12 @@ async def callback(
         scopes=tokens.scopes,
     )
     await session.commit()
-    logger.info("drive_oauth_callback_stored", tenant_id=tenant_id, scopes=tokens.scopes)
+    logger.info(
+        "drive_oauth_callback_stored",
+        tenant_id=tenant_id,
+        scopes=tokens.scopes,
+        refresh_token_received=bool(tokens.refresh_token),
+    )
 
     # Best-effort push-channel setup so Drive change events arrive at
     # POST /api/v1/webhooks/google-drive. Never fails the OAuth flow.
@@ -215,10 +221,16 @@ async def callback(
 @router.get("/status", status_code=200)
 async def status(
     tenant_id: str = Query(default="default-org"),
+    settings: IngestionAPISettings = Depends(get_app_settings),
     session: AsyncSession = Depends(get_db_session),
     redis_client: redis.Redis = Depends(get_redis_client),
 ) -> dict:
-    """Check whether the Google Drive integration is active for this tenant."""
+    """Check whether Google Drive can stay connected for this tenant.
+
+    A decryptable refresh token keeps the integration active after the
+    access token expires. The worker renews it on the next sync; missing
+    or unreadable refresh credentials require reconnecting.
+    """
     stmt = select(TenantIntegration).where(
         TenantIntegration.tenant_id == tenant_id,
         TenantIntegration.provider == DRIVE_PROVIDER,
@@ -235,22 +247,32 @@ async def status(
             "tenant_id": tenant_id,
             "status": "DISCONNECTED",
             "scopes": [],
+            "refresh_available": False,
             "updated_at": None,
             "watch": None,
         }
 
-    status_str = (
-        integration.connection_status.value
-        if hasattr(integration.connection_status, "value")
-        else str(integration.connection_status)
+    refresh_available = has_refresh_token(
+        integration, settings.credentials_encryption_key
     )
+    effective = effective_connection_status(
+        integration.connection_status,
+        integration.token_expires_at,
+        refresh_token_available=refresh_available,
+    )
+    status_str = effective.value
     return {
         "connected": status_str.upper() == "ACTIVE",
         "provider": "google-drive",
         "tenant_id": tenant_id,
         "status": status_str,
         "scopes": integration.scopes or [],
-        "token_expires_at": integration.token_expires_at.isoformat() if integration.token_expires_at else None,
+        "refresh_available": refresh_available,
+        "token_expires_at": (
+            integration.token_expires_at.isoformat()
+            if integration.token_expires_at
+            else None
+        ),
         "updated_at": integration.updated_at.isoformat() if integration.updated_at else None,
         "watch": watch,
     }

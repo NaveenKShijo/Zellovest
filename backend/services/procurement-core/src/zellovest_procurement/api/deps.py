@@ -35,7 +35,9 @@ async def get_current_user(
         )
     payload = decode_token(credentials.credentials)
     user_id = (payload.user_id or payload.sub) if payload else None
-    if payload is None or not user_id:
+    # Refresh tokens are long-lived credentials for /auth/refresh only;
+    # they must never be accepted as an API Bearer token.
+    if payload is None or not user_id or payload.token_type == "refresh":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token."
         )

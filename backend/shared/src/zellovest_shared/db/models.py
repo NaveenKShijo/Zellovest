@@ -72,17 +72,21 @@ def is_integration_token_expired(
 
 
 def effective_connection_status(
-    stored: ConnectionStatus | str, token_expires_at: datetime | None
+    stored: ConnectionStatus | str,
+    token_expires_at: datetime | None,
+    refresh_token_available: bool = False,
 ) -> ConnectionStatus:
     """Derive the user-facing status, folding wall-clock expiry over storage.
 
     The DB row is only flipped to EXPIRED/REVOKED when a worker observes an
-    auth failure; until then an ACTIVE row with a past ``token_expires_at``
-    must still read as EXPIRED so the UI prompts a reconnect.
+    auth failure. An expired access token remains ACTIVE when a usable
+    refresh token is available; the provider token can be renewed silently.
 
     Args:
         stored: Persisted connection status value.
         token_expires_at: Stored access-token expiry, if known.
+        refresh_token_available: Whether the encrypted refresh credential
+            can be decrypted and is non-empty.
 
     Returns:
         Effective status for API responses and UI gating.
@@ -92,6 +96,8 @@ def effective_connection_status(
         return ConnectionStatus.REVOKED
     if raw == ConnectionStatus.EXPIRED.value:
         return ConnectionStatus.EXPIRED
+    if raw == ConnectionStatus.ACTIVE.value and refresh_token_available:
+        return ConnectionStatus.ACTIVE
     if is_integration_token_expired(token_expires_at):
         return ConnectionStatus.EXPIRED
     return ConnectionStatus.ACTIVE
@@ -440,8 +446,11 @@ from zellovest_shared.db.intelligence import (  # noqa: E402,F401
 from zellovest_shared.db.transact import (  # noqa: E402,F401
     CardTransaction,
     Contract,
+    ContractChangeType,
+    ContractLine,
     ContractStatus,
     ContractTermsVersion,
+    ContractVersion,
     DocStatus,
     DocType,
     Document,

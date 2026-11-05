@@ -14,7 +14,16 @@ import redis
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from zellovest_procurement.api.routers import tenants, vendors, invoices, purchase_orders, analytics, workflows, auth
+from zellovest_procurement.api.routers import (
+    analytics,
+    auth,
+    contracts,
+    invoices,
+    purchase_orders,
+    tenants,
+    vendors,
+    workflows,
+)
 from zellovest_procurement.config import get_procurement_core_settings
 from zellovest_shared.logging_conf import configure_logging, get_logger
 
@@ -69,6 +78,8 @@ def create_app(settings=None) -> FastAPI:
     app.include_router(auth.router, prefix=prefix, tags=["auth"])
     app.include_router(tenants.router, prefix=prefix, tags=["tenants"])
     app.include_router(vendors.router, prefix=prefix, tags=["vendors"])
+    app.include_router(contracts.vendor_router, prefix=prefix, tags=["contracts"])
+    app.include_router(contracts.router, prefix=prefix, tags=["contracts"])
     app.include_router(invoices.router, prefix=prefix, tags=["invoices"])
     app.include_router(purchase_orders.router, prefix=prefix, tags=["purchase_orders"])
     app.include_router(analytics.router, prefix=prefix, tags=["analytics"])

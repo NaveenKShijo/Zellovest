@@ -19,7 +19,7 @@ tenant (V1), snake_case wire, fakes for tests.
 import json
 import re
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -36,6 +36,9 @@ from zellovest_ingestion.api.deps import (
 )
 from zellovest_ingestion.config import IngestionAPISettings
 from zellovest_ingestion.schemas.documents import (
+    ContractCandidate,
+    ContractCandidateTerm,
+    ContractCandidatesResponse,
     DocumentDetailResponse,
     DocumentFileResponse,
     DocumentItem,
@@ -44,6 +47,8 @@ from zellovest_ingestion.schemas.documents import (
     ContractReviewCommitRequest,
     ContractReviewCommitResponse,
     EXTRACTED_CONFIDENCE_THRESHOLD,
+    InvoiceReviewCommitRequest,
+    InvoiceReviewCommitResponse,
     derived_status,
     normalized_doc_types,
 )
@@ -51,7 +56,10 @@ from zellovest_ingestion.schemas.uploads import DEFAULT_TENANT_ID
 from zellovest_shared.db.core import Vendor
 from zellovest_shared.db.models import (
     Contract as ContractRow,
+    ContractChangeType,
+    ContractLine as ContractLineRow,
     ContractTermsVersion as ContractTermsVersionRow,
+    ContractVersion as ContractVersionRow,
     Document as DocumentRow,
     ExtractionArtifact,
     ExtractionProvenance,
@@ -62,6 +70,11 @@ from zellovest_shared.db.models import (
 )
 from zellovest_shared.db.models import Upload as UploadRow
 from zellovest_shared.db.models import UploadStatus as DbUploadStatus
+from zellovest_shared.contract_versioning import (
+    AmbiguousContractLineError,
+    match_contract_line,
+    normalize_contract_number,
+)
 from zellovest_shared.logging_conf import get_logger
 
 logger = get_logger(__name__)
@@ -77,6 +90,374 @@ _PROCESSING_STATUSES = (
 def _escaped_like(term: str) -> str:
     """Escape LIKE wildcards so user search matches literals only."""
     return f"%{term.replace('%', r'\%').replace('_', r'\_')}%"
+
+
+def _review_is_open(artifact: ExtractionArtifact | None) -> bool:
+    """Whether a human may still verify and commit this extraction.
+
+    A committed review is immutable. A pending review is always open. A
+    missing review state is open only when the extraction itself is low
+    confidence (or has no confidence at all), which covers documents that
+    entered the explorer before the review workflow existed.
+
+    Args:
+        artifact: Matching extraction artifact row, if any.
+
+    Returns:
+        ``True`` when a reviewer can commit corrected values.
+    """
+    if artifact is None or artifact.review_status == "committed":
+        return False
+    if artifact.review_status == "pending":
+        return True
+    confidence = artifact.extraction_confidence
+    if confidence is None:
+        return True
+    try:
+        return float(confidence) < EXTRACTED_CONFIDENCE_THRESHOLD
+    except (TypeError, ValueError):
+        return False
+
+
+def _reviewer_identity(user: Any) -> tuple[str, str]:
+    """Extract the reviewer id and email from a dict or ORM user."""
+    if isinstance(user, dict):
+        return str(user.get("id") or user.get("sub", "")), str(user.get("email", ""))
+    return str(getattr(user, "id", "")), str(getattr(user, "email", ""))
+
+
+def _as_utc_datetime(value: date | None) -> datetime | None:
+    """Convert a wire ``date`` into a timezone-aware midnight datetime."""
+    return datetime.combine(value, time.min, tzinfo=UTC) if value is not None else None
+
+
+def _term_values(term: Any) -> dict[str, Any]:
+    """Copy the commercial values needed to create a snapshot term row."""
+    return {
+        "product_code": term.product_code,
+        "description": term.description,
+        "unit_price": term.unit_price,
+        "currency": term.currency,
+        "uom": term.uom,
+        "qty_min": term.qty_min,
+        "qty_max": term.qty_max,
+        "discount_pct": term.discount_pct,
+        "tax_rule": term.tax_rule,
+        "payment_terms": term.payment_terms,
+        "freight_terms": term.freight_terms,
+        "escalation_pct": term.escalation_pct,
+    }
+
+
+async def _append_contract_version(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    contract: ContractRow,
+    document: DocumentRow,
+    document_type: str,
+    change_type: str,
+    title: str | None,
+    start_date: date,
+    end_date: date | None,
+    renewal_date: date | None,
+    notice_period_days: int | None,
+    auto_renew: bool,
+    termination_clause: str | None,
+    terms: list[Any],
+    removed_line_ids: list[uuid.UUID],
+) -> tuple[ContractVersionRow, list[uuid.UUID]]:
+    """Append a full effective snapshot while retaining prior term values."""
+    latest = await session.scalar(
+        select(ContractVersionRow)
+        .where(
+            ContractVersionRow.tenant_id == tenant_id,
+            ContractVersionRow.contract_id == contract.id,
+        )
+        .order_by(ContractVersionRow.version_no.desc())
+        .limit(1)
+        .with_for_update()
+    )
+    version_start = min(term.effective_from for term in terms)
+    if latest is not None and version_start <= latest.effective_from:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A new contract version must take effect after the latest version; review or rebase this backdated change.",
+        )
+
+    version_no = (latest.version_no if latest else 0) + 1
+    version = ContractVersionRow(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        contract_id=contract.id,
+        version_no=version_no,
+        source_document_id=document.id,
+        parent_version_id=latest.id if latest else None,
+        change_type=ContractChangeType(change_type),
+        effective_from=version_start,
+        title=title,
+        contract_start_date=start_date,
+        contract_end_date=end_date,
+        renewal_date=renewal_date,
+        notice_period_days=notice_period_days,
+        auto_renew=auto_renew,
+        termination_clause=termination_clause,
+    )
+    session.add(version)
+    await session.flush()
+
+    parent_terms: list[ContractTermsVersionRow] = []
+    if latest is not None:
+        if latest.effective_from < version_start:
+            latest.effective_to = version_start - timedelta(days=1)
+        parent_terms = list(
+            (
+                await session.scalars(
+                    select(ContractTermsVersionRow)
+                    .where(
+                        ContractTermsVersionRow.tenant_id == tenant_id,
+                        ContractTermsVersionRow.contract_version_id == latest.id,
+                    )
+                    .order_by(ContractTermsVersionRow.line_no)
+                    .with_for_update()
+                )
+            ).all()
+        )
+
+    by_line_id = {str(term.contract_line_id): term for term in parent_terms}
+    removed = {str(line_id) for line_id in removed_line_ids}
+    if not removed.issubset(by_line_id):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="A removed product line does not belong to the selected parent version.",
+        )
+
+    matched: dict[str, Any] = {}
+    assignments: list[tuple[Any, ContractTermsVersionRow | None, uuid.UUID]] = []
+    for term in terms:
+        try:
+            match = match_contract_line(term.model_dump(), parent_terms)
+        except AmbiguousContractLineError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
+        if match is not None:
+            line_id = match.contract_line_id
+            if str(line_id) in removed:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="A product line cannot be both changed and removed.",
+                )
+            if str(line_id) in matched:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Two extracted terms map to the same contract product line.",
+                )
+            matched[str(line_id)] = term
+        else:
+            line = ContractLineRow(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                contract_id=contract.id,
+                legacy_line_no=None,
+                initial_document_id=document.id,
+            )
+            session.add(line)
+            await session.flush()
+            line_id = line.id
+        assignments.append((term, match, line_id))
+
+    next_line_no = max((old.line_no for old in parent_terms), default=0) + 1
+    for old in parent_terms:
+        old_line_id = str(old.contract_line_id)
+        if old.effective_to is not None and old.effective_to < version_start:
+            continue
+        if old.effective_from > version_start:
+            future_change = matched.get(old_line_id)
+            if future_change is not None:
+                changed_from = future_change.effective_from
+                if changed_from < old.effective_from:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="A changed product line cannot take effect before its scheduled start.",
+                    )
+                close_date = changed_from - timedelta(days=1)
+                old.effective_to = min(old.effective_to or close_date, close_date)
+            # A separately scheduled future line remains valid as authored.
+            continue
+        old_effective_to = old.effective_to
+        if old_line_id in removed:
+            close_date = version_start - timedelta(days=1)
+            old.effective_to = min(old.effective_to or close_date, close_date)
+            continue
+
+        changed_term = matched.get(old_line_id)
+        if changed_term is None:
+            close_date = version_start - timedelta(days=1)
+            old.effective_to = min(old.effective_to or close_date, close_date)
+            session.add(
+                ContractTermsVersionRow(
+                    id=uuid.uuid4(),
+                    tenant_id=tenant_id,
+                    contract_id=contract.id,
+                    contract_version_id=version.id,
+                    contract_line_id=old.contract_line_id,
+                    version_no=version_no,
+                    line_no=old.line_no,
+                    **_term_values(old),
+                    effective_from=version_start,
+                    effective_to=old_effective_to,
+                    amendment_document_id=document.id,
+                )
+            )
+            continue
+
+        line_effective_from = changed_term.effective_from
+        if line_effective_from <= old.effective_from:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A changed product line cannot take effect before its existing line; review or rebase this amendment.",
+            )
+        close_date = line_effective_from - timedelta(days=1)
+        old.effective_to = min(old.effective_to or close_date, close_date)
+        if line_effective_from > version_start:
+            carry_to = line_effective_from - timedelta(days=1)
+            carry_end = min(old_effective_to or carry_to, carry_to)
+            if old.effective_from <= carry_end:
+                session.add(
+                    ContractTermsVersionRow(
+                        id=uuid.uuid4(),
+                        tenant_id=tenant_id,
+                        contract_id=contract.id,
+                        contract_version_id=version.id,
+                        contract_line_id=old.contract_line_id,
+                        version_no=version_no,
+                        line_no=next_line_no,
+                        **_term_values(old),
+                        effective_from=version_start,
+                        effective_to=carry_end,
+                        amendment_document_id=document.id,
+                    )
+                )
+                next_line_no += 1
+
+    new_term_ids: list[uuid.UUID] = []
+    for term, old, line_id in assignments:
+        term_id = uuid.uuid4()
+        new_term_ids.append(term_id)
+        if old is not None:
+            line_no = old.line_no
+        else:
+            line_no = next_line_no
+            next_line_no += 1
+        session.add(
+            ContractTermsVersionRow(
+                id=term_id,
+                tenant_id=tenant_id,
+                contract_id=contract.id,
+                contract_version_id=version.id,
+                contract_line_id=line_id,
+                version_no=version_no,
+                line_no=line_no,
+                product_code=term.product_code,
+                description=term.description,
+                unit_price=term.unit_price,
+                currency=term.currency,
+                uom=term.uom,
+                qty_min=term.qty_min,
+                qty_max=term.qty_max,
+                discount_pct=term.discount_pct,
+                tax_rule=term.tax_rule,
+                payment_terms=term.payment_terms,
+                freight_terms=term.freight_terms,
+                escalation_pct=term.escalation_pct,
+                effective_from=term.effective_from,
+                effective_to=term.effective_to,
+                amendment_document_id=document.id,
+            )
+        )
+    return version, new_term_ids
+
+
+async def _resolve_or_create_vendor(
+    session: AsyncSession, *, tenant_id: str, vendor_name: str
+) -> tuple[Vendor, str]:
+    """Resolve a vendor by case-insensitive name or insert a new one.
+
+    Args:
+        session: Active async database session.
+        tenant_id: Owning tenant.
+        vendor_name: Reviewer-corrected vendor name.
+
+    Returns:
+        The existing or newly created vendor and its normalized name.
+    """
+    normalized_name = vendor_name.strip()
+    vendor = (
+        await session.execute(
+            select(Vendor)
+            .where(
+                Vendor.tenant_id == tenant_id,
+                func.lower(Vendor.name) == normalized_name.lower(),
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if vendor is None:
+        vendor = Vendor(
+            id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            name=normalized_name,
+            status="active",
+            is_active=True,
+        )
+        session.add(vendor)
+        await session.flush()
+    return vendor, normalized_name
+
+
+async def _is_reupload_of_invoice(
+    session: AsyncSession,
+    *,
+    upload: UploadRow,
+    conflicting_invoice: InvoiceRow,
+) -> bool:
+    """Whether an invoice-number conflict comes from re-uploading this file.
+
+    Reviewers often upload the same PDF twice before the first one has been
+    verified. The second lease has no invoice row of its own, so committing its
+    review would hit the tenant-wide invoice-number uniqueness constraint.
+    When the conflict's source upload has the same file name and byte size as
+    the lease under review, the two documents are treated as the same invoice:
+    the reviewer updates the existing ledger record instead of creating a
+    duplicate.
+
+    Args:
+        session: Active async database session.
+        upload: Upload lease currently under review.
+        conflicting_invoice: Ledger invoice already using the reviewed number.
+
+    Returns:
+        ``True`` when the conflict's source document is a re-upload of the
+        same file, ``False`` otherwise.
+    """
+    if conflicting_invoice.document_id is None:
+        return False
+    duplicate_source = (
+        await session.execute(
+            select(UploadRow.id)
+            .join(DocumentRow, DocumentRow.upload_id == UploadRow.id)
+            .where(
+                DocumentRow.id == conflicting_invoice.document_id,
+                UploadRow.tenant_id == upload.tenant_id,
+                func.lower(UploadRow.filename) == upload.filename.strip().lower(),
+                UploadRow.size_expected == upload.size_expected,
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return duplicate_source is not None
 
 
 async def _resolve_vendor_filter(
@@ -726,6 +1107,115 @@ async def get_document_content(
     )
 
 
+@router.get(
+    "/{document_id}/contract-candidates",
+    response_model=ContractCandidatesResponse,
+)
+async def get_contract_candidates(
+    document_id: uuid.UUID,
+    query: str | None = Query(default=None, max_length=256),
+    user: Any = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> ContractCandidatesResponse:
+    """List tenant-scoped contracts a reviewer can select as an amendment parent."""
+    del user
+    upload = await _load_lease(document_id, session)
+    document = (
+        await session.execute(
+            select(DocumentRow).where(
+                DocumentRow.upload_id == upload.id,
+                DocumentRow.tenant_id == upload.tenant_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if document is None or document.document_type.value not in {"contract", "amendment"}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Parent-contract selection is available for contract documents.",
+        )
+
+    contracts = (
+        await session.scalars(
+            select(ContractRow)
+            .where(ContractRow.tenant_id == upload.tenant_id)
+            .order_by(ContractRow.contract_number)
+            .limit(100)
+        )
+    ).all()
+    document_vendor = (
+        await session.get(Vendor, document.vendor_id) if document.vendor_id else None
+    )
+    normalized_query = normalize_contract_number(query) if query else ""
+    candidates: list[ContractCandidate] = []
+    for contract in contracts:
+        vendor = await session.get(Vendor, contract.vendor_id)
+        vendor_name = vendor.name if vendor else "Unknown vendor"
+        searchable = " ".join(
+            (contract.contract_number, contract.title or "", vendor_name)
+        ).casefold()
+        if normalized_query and normalized_query not in normalize_contract_number(searchable):
+            continue
+        version = await session.scalar(
+            select(ContractVersionRow)
+            .where(
+                ContractVersionRow.tenant_id == upload.tenant_id,
+                ContractVersionRow.contract_id == contract.id,
+            )
+            .order_by(ContractVersionRow.version_no.desc())
+            .limit(1)
+        )
+        terms = []
+        if version is not None:
+            terms = (
+                await session.scalars(
+                    select(ContractTermsVersionRow)
+                    .where(
+                        ContractTermsVersionRow.tenant_id == upload.tenant_id,
+                        ContractTermsVersionRow.contract_version_id == version.id,
+                        or_(
+                            ContractTermsVersionRow.effective_to.is_(None),
+                            ContractTermsVersionRow.effective_to >= date.today(),
+                        ),
+                    )
+                    .order_by(ContractTermsVersionRow.line_no)
+                )
+            ).all()
+        candidates.append(
+            ContractCandidate(
+                contract_id=contract.id,
+                contract_number=contract.contract_number,
+                title=version.title if version and version.title else contract.title,
+                vendor_name=vendor_name,
+                latest_version_no=version.version_no if version else None,
+                terms=[
+                    ContractCandidateTerm(
+                        contract_line_id=term.contract_line_id,
+                        product_code=term.product_code,
+                        description=term.description,
+                        unit_price=term.unit_price,
+                        currency=term.currency,
+                        uom=term.uom,
+                        qty_min=term.qty_min,
+                        qty_max=term.qty_max,
+                        effective_from=term.effective_from,
+                        effective_to=term.effective_to,
+                    )
+                    for term in terms
+                ],
+            )
+        )
+    candidates.sort(
+        key=lambda candidate: (
+            candidate.vendor_name.casefold()
+            != (document_vendor.name.casefold() if document_vendor else ""),
+            normalize_contract_number(candidate.contract_number)
+            != normalize_contract_number(query),
+            candidate.contract_number.casefold(),
+        )
+    )
+    return ContractCandidatesResponse(document_id=document.id, candidates=candidates)
+
+
 @router.post(
     "/{document_id}/review/commit",
     response_model=ContractReviewCommitResponse,
@@ -764,10 +1254,10 @@ async def commit_contract_review(
             .with_for_update()
         )
     ).scalar_one_or_none()
-    if artifact is None or artifact.review_status != "pending":
+    if artifact is None or not _review_is_open(artifact):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="This document has no pending human review.",
+            detail="This document has no open human review.",
         )
 
     document = (
@@ -791,50 +1281,80 @@ async def commit_contract_review(
         )
 
     normalized_vendor_name = body.vendor_name.strip()
-    vendor = (
-        await session.execute(
-            select(Vendor)
-            .where(
-                Vendor.tenant_id == upload.tenant_id,
-                func.lower(Vendor.name) == normalized_vendor_name.lower(),
-            )
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if vendor is None:
-        vendor = Vendor(
-            id=uuid.uuid4(),
-            tenant_id=upload.tenant_id,
-            name=normalized_vendor_name,
-            status="active",
-            is_active=True,
-        )
-        session.add(vendor)
-        await session.flush()
+    vendor, normalized_vendor_name = await _resolve_or_create_vendor(
+        session,
+        tenant_id=upload.tenant_id,
+        vendor_name=normalized_vendor_name,
+    )
     document.vendor_id = vendor.id
     upload.vendor_id = str(vendor.id)
 
-    existing_contract = (
-        await session.execute(
+    tenant_contracts = (
+        await session.scalars(
             select(ContractRow)
             .where(
                 ContractRow.tenant_id == upload.tenant_id,
-                ContractRow.contract_number == body.contract_number.strip(),
+                ContractRow.vendor_id == vendor.id,
             )
             .with_for_update()
         )
-    ).scalar_one_or_none()
-    if (
-        existing_contract is not None
-        and document_type != "amendment"
-        and existing_contract.document_id != document.id
-    ):
+    ).all()
+    normalized_contract_number = normalize_contract_number(body.contract_number)
+    exact_matches = [
+        candidate
+        for candidate in tenant_contracts
+        if normalize_contract_number(candidate.contract_number) == normalized_contract_number
+    ]
+    change_type = body.change_type or (
+        "amendment" if document_type == "amendment" else "original"
+    )
+    if document_type == "amendment" and change_type == "original":
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A contract with this number is already in the ledger.",
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="An amendment must be recorded as an amendment, renewal, or price revision.",
+        )
+    if body.parent_contract_id is not None and change_type == "original":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="A selected parent contract requires amendment, renewal, or price revision as the change type.",
         )
 
-    if existing_contract is None:
+    contract: ContractRow | None = None
+    if body.parent_contract_id is not None:
+        contract = next(
+            (candidate for candidate in tenant_contracts if candidate.id == body.parent_contract_id),
+            None,
+        )
+        if contract is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="The selected parent contract is not available in this tenant for this vendor.",
+            )
+        if normalize_contract_number(contract.contract_number) != normalized_contract_number:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="The selected parent contract number does not match the reviewed document.",
+            )
+    elif change_type != "original":
+        if len(exact_matches) != 1:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Select the parent contract before committing this amendment.",
+            )
+        contract = exact_matches[0]
+    elif exact_matches:
+        same_document = next(
+            (candidate for candidate in exact_matches if candidate.document_id == document.id),
+            None,
+        )
+        if same_document is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A contract with this vendor and number is already in the ledger.",
+            )
+        contract = same_document
+
+    if contract is None:
         contract = ContractRow(
             id=uuid.uuid4(),
             tenant_id=upload.tenant_id,
@@ -852,58 +1372,29 @@ async def commit_contract_review(
         )
         session.add(contract)
         await session.flush()
-    else:
-        contract = existing_contract
-        # An amendment updates the current header snapshot. Its submitted
-        # values remain attached to this document's immutable review receipt.
-        contract.vendor_id = vendor.id
-        contract.start_date = body.start_date
-        contract.title = body.title
-        contract.end_date = body.end_date
-        contract.renewal_date = body.renewal_date
-        contract.notice_period_days = body.notice_period_days
-        contract.auto_renew = body.auto_renew
-        contract.termination_clause = body.termination_clause
 
-    max_version = await session.scalar(
-        select(func.max(ContractTermsVersionRow.version_no)).where(
-            ContractTermsVersionRow.tenant_id == upload.tenant_id,
-            ContractTermsVersionRow.contract_id == contract.id,
+    try:
+        version, term_ids = await _append_contract_version(
+            session,
+            tenant_id=upload.tenant_id,
+            contract=contract,
+            document=document,
+            document_type=document_type,
+            change_type=change_type,
+            title=body.title,
+            start_date=body.start_date,
+            end_date=body.end_date,
+            renewal_date=body.renewal_date,
+            notice_period_days=body.notice_period_days,
+            auto_renew=body.auto_renew,
+            termination_clause=body.termination_clause,
+            terms=body.terms,
+            removed_line_ids=body.removed_contract_line_ids,
         )
-    )
-    version_no = int(max_version or 0) + 1
-    term_ids: list[uuid.UUID] = []
-    for line_no, term in enumerate(body.terms, start=1):
-        term_id = uuid.uuid4()
-        term_ids.append(term_id)
-        session.add(
-            ContractTermsVersionRow(
-                id=term_id,
-                tenant_id=upload.tenant_id,
-                contract_id=contract.id,
-                version_no=version_no,
-                line_no=line_no,
-                product_code=term.product_code,
-                description=term.description,
-                unit_price=float(term.unit_price),
-                currency=term.currency,
-                uom=term.uom,
-                qty_min=float(term.qty_min) if term.qty_min is not None else None,
-                qty_max=float(term.qty_max) if term.qty_max is not None else None,
-                discount_pct=(
-                    float(term.discount_pct) if term.discount_pct is not None else None
-                ),
-                escalation_pct=(
-                    float(term.escalation_pct) if term.escalation_pct is not None else None
-                ),
-                payment_terms=term.payment_terms,
-                freight_terms=term.freight_terms,
-                tax_rule=term.tax_rule,
-                effective_from=term.effective_from,
-                effective_to=term.effective_to,
-                amendment_document_id=document.id,
-            )
-        )
+    except HTTPException:
+        await session.rollback()
+        raise
+    version_no = version.version_no
 
     header_values = {
         "contract_number": body.contract_number.strip(),
@@ -966,22 +1457,18 @@ async def commit_contract_review(
             )
 
     reviewed_at = datetime.now(UTC)
+    reviewer_id, reviewer_email = _reviewer_identity(user)
     review_receipt = dict(artifact.review_data or {})
     review_receipt.update(
         {
             "status": "committed",
             "reviewed_at": reviewed_at.isoformat(),
-            "reviewer_id": str(
-                (user.get("id") or user.get("sub", ""))
-                if isinstance(user, dict)
-                else getattr(user, "id", "")
-            ),
-            "reviewer_email": str(
-                user.get("email", "")
-                if isinstance(user, dict)
-                else getattr(user, "email", "")
-            ),
+            "reviewer_id": reviewer_id,
+            "reviewer_email": reviewer_email,
+            "reviewer_notes": body.reviewer_notes or "",
             "contract_id": str(contract.id),
+            "contract_version_id": str(version.id),
+            "version_no": version_no,
             "term_version_ids": [str(term_id) for term_id in term_ids],
             "verified_data": body.model_dump(mode="json"),
         }
@@ -1010,17 +1497,334 @@ async def commit_contract_review(
         tenant_id=upload.tenant_id,
         document_id=str(document.id),
         contract_id=str(contract.id),
-        reviewer_id=str(
-            (user.get("id") or user.get("sub", ""))
-            if isinstance(user, dict)
-            else getattr(user, "id", "")
-        ),
+        reviewer_id=reviewer_id,
         term_count=len(term_ids),
     )
     return ContractReviewCommitResponse(
         document_id=document_id,
         contract_id=contract.id,
+        contract_version_id=version.id,
+        version_no=version_no,
         term_version_ids=term_ids,
+        review_status="committed",
+        reviewed_at=reviewed_at,
+    )
+
+
+@router.post(
+    "/{document_id}/review/commit-invoice",
+    response_model=InvoiceReviewCommitResponse,
+)
+async def commit_invoice_review(
+    document_id: uuid.UUID,
+    body: InvoiceReviewCommitRequest,
+    user: Any = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> InvoiceReviewCommitResponse:
+    """Commit human-verified invoice fields into the operational ledger.
+
+    Low-confidence invoice extractions can be opened in the exception drawer
+    even when the pipeline already wrote a provisional invoice. This endpoint
+    updates or creates the invoice header and line items, records
+    ``human_verified`` provenance for every corrected field, and writes a
+    review receipt in one transaction.
+
+    Args:
+        document_id: Upload lease id shown by the Document Explorer.
+        body: Reviewer-corrected invoice header and line items.
+        user: Authenticated reviewer whose identity is written to the receipt.
+        session: Async database session.
+
+    Returns:
+        The committed invoice id and review timestamp.
+
+    Raises:
+        HTTPException: When the document is not an invoice, the review is
+            already committed, or the invoice number conflicts with another
+            document.
+    """
+    upload = await _load_lease(document_id, session)
+    artifact = (
+        await session.execute(
+            select(ExtractionArtifact)
+            .where(ExtractionArtifact.upload_id == document_id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if artifact is None or not _review_is_open(artifact):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This document has no open human review.",
+        )
+
+    document = (
+        await session.execute(
+            select(DocumentRow).where(
+                DocumentRow.upload_id == upload.id,
+                DocumentRow.tenant_id == upload.tenant_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if document is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The structured document record is not available yet.",
+        )
+    if document.document_type.value != "invoice":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Human invoice review is available for invoices only.",
+        )
+
+    vendor, normalized_vendor_name = await _resolve_or_create_vendor(
+        session,
+        tenant_id=upload.tenant_id,
+        vendor_name=body.vendor_name,
+    )
+    document.vendor_id = vendor.id
+    upload.vendor_id = str(vendor.id)
+
+    invoice_number = body.invoice_number.strip()
+    invoice = (
+        await session.execute(
+            select(InvoiceRow)
+            .where(
+                InvoiceRow.document_id == document.id,
+                InvoiceRow.tenant_id == upload.tenant_id,
+            )
+            .order_by(InvoiceRow.created_at.desc())
+            .limit(1)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    conflicting_invoice = (
+        await session.execute(
+            select(InvoiceRow)
+            .where(
+                InvoiceRow.tenant_id == upload.tenant_id,
+                InvoiceRow.invoice_number == invoice_number,
+                InvoiceRow.document_id != document.id,
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if conflicting_invoice is not None:
+        # A re-uploaded copy of the same PDF has no invoice row of its own.
+        # Adopt the existing ledger record so the reviewer clears the duplicate
+        # instead of being blocked by the invoice-number constraint.
+        if invoice is not None or not await _is_reupload_of_invoice(
+            session,
+            upload=upload,
+            conflicting_invoice=conflicting_invoice,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="An invoice with this number is already in the ledger.",
+            )
+        invoice = conflicting_invoice
+
+    invoice_date = _as_utc_datetime(body.invoice_date)
+    if invoice_date is None:  # pragma: no cover - required wire field
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="invoice_date is required",
+        )
+    due_date = _as_utc_datetime(body.due_date)
+    invoice_values = {
+        "vendor_id": vendor.id,
+        "invoice_number": invoice_number,
+        "invoice_date": invoice_date,
+        "due_date": due_date,
+        "currency": body.currency,
+        "subtotal": float(body.subtotal),
+        "tax_amount": float(body.tax_amount),
+        "total_amount": float(body.total_amount),
+    }
+    if invoice is None:
+        invoice = InvoiceRow(
+            id=uuid.uuid4(),
+            tenant_id=upload.tenant_id,
+            document_id=document.id,
+            status="pending",
+            **invoice_values,
+        )
+        session.add(invoice)
+        await session.flush()
+    else:
+        for field_name, field_value in invoice_values.items():
+            setattr(invoice, field_name, field_value)
+    invoice_metadata = dict(invoice.extra or {})
+    invoice_metadata.pop("commercial_reconciled_at", None)
+    invoice_metadata.pop("commercial_review_reason", None)
+    invoice_metadata.pop("commercial_exception_count", None)
+    invoice.extra = invoice_metadata
+
+    existing_lines = (
+        (
+            await session.execute(
+                select(InvoiceLineItemRow)
+                .where(
+                    InvoiceLineItemRow.invoice_id == invoice.id,
+                    InvoiceLineItemRow.tenant_id == upload.tenant_id,
+                )
+                .order_by(InvoiceLineItemRow.line_no)
+                .with_for_update()
+            )
+        )
+        .scalars()
+        .all()
+    )
+    lines_by_number = {line.line_no: line for line in existing_lines}
+    line_rows: list[tuple[int, uuid.UUID]] = []
+    for line_no, line in enumerate(body.line_items, start=1):
+        existing_line = lines_by_number.get(line_no)
+        line_total = (
+            line.total
+            if line.total is not None
+            else (line.quantity * line.unit_price)
+        )
+        if existing_line is None:
+            existing_line = InvoiceLineItemRow(
+                id=uuid.uuid4(),
+                tenant_id=upload.tenant_id,
+                invoice_id=invoice.id,
+                line_no=line_no,
+                description=line.description or "",
+                product_code=line.product_code,
+                quantity=float(line.quantity),
+                unit_price=float(line.unit_price),
+                total=float(line_total),
+            )
+            session.add(existing_line)
+        else:
+            existing_line.description = line.description or ""
+            existing_line.product_code = line.product_code
+            existing_line.quantity = float(line.quantity)
+            existing_line.unit_price = float(line.unit_price)
+            existing_line.total = float(line_total)
+        line_rows.append((line_no, existing_line.id))
+    for line_no, line in lines_by_number.items():
+        if line_no > len(body.line_items):
+            await session.delete(line)
+
+    header_values = {
+        "invoice_number": invoice_number,
+        "vendor_name": normalized_vendor_name,
+        "invoice_date": invoice_date.isoformat(),
+        "due_date": due_date.isoformat() if due_date else "",
+        "currency": body.currency,
+        "subtotal": str(body.subtotal),
+        "tax_amount": str(body.tax_amount),
+        "total_amount": str(body.total_amount),
+    }
+    for field_name, field_value in header_values.items():
+        session.add(
+            ExtractionProvenance(
+                id=uuid.uuid4(),
+                tenant_id=upload.tenant_id,
+                document_id=document.id,
+                entity_type="invoice",
+                entity_id=invoice.id,
+                field_name=field_name,
+                field_value_text=field_value,
+                confidence=1.0,
+                extraction_method="human_verified",
+            )
+        )
+    for line_no, line in enumerate(body.line_items, start=1):
+        line_total = (
+            line.total
+            if line.total is not None
+            else (line.quantity * line.unit_price)
+        )
+        term_values = {
+            "description": line.description or "",
+            "product_code": line.product_code or "",
+            "quantity": str(line.quantity),
+            "unit_price": str(line.unit_price),
+            "total": str(line_total),
+        }
+        entity_id = line_rows[line_no - 1][1]
+        for field_name, field_value in term_values.items():
+            session.add(
+                ExtractionProvenance(
+                    id=uuid.uuid4(),
+                    tenant_id=upload.tenant_id,
+                    document_id=document.id,
+                    entity_type="invoice_line_item",
+                    entity_id=entity_id,
+                    field_name=f"line_{line_no}_{field_name}",
+                    field_value_text=field_value,
+                    confidence=1.0,
+                    extraction_method="human_verified",
+                )
+            )
+
+    reviewed_at = datetime.now(UTC)
+    reviewer_id, reviewer_email = _reviewer_identity(user)
+    review_receipt = dict(artifact.review_data or {})
+    review_receipt.update(
+        {
+            "status": "committed",
+            "document_type": "invoice",
+            "reviewed_at": reviewed_at.isoformat(),
+            "reviewer_id": reviewer_id,
+            "reviewer_email": reviewer_email,
+            "reviewer_notes": body.reviewer_notes or "",
+            "invoice_id": str(invoice.id),
+            "verified_data": body.model_dump(mode="json"),
+        }
+    )
+    artifact.review_status = "committed"
+    artifact.review_data = review_receipt
+    document.status = "extracted"
+
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        logger.warning(
+            "invoice_review_commit_conflict",
+            tenant_id=upload.tenant_id,
+            document_id=str(document.id),
+            invoice_number=invoice_number,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This invoice number or line numbering conflicts with the ledger.",
+        ) from exc
+
+    logger.info(
+        "invoice_review_committed",
+        tenant_id=upload.tenant_id,
+        document_id=str(document.id),
+        invoice_id=str(invoice.id),
+        reviewer_id=reviewer_id,
+        line_count=len(body.line_items),
+    )
+    try:
+        from zellovest_workers.tasks.ap_audit import reconcile_invoice
+
+        task_result = reconcile_invoice.delay(
+            tenant_id=upload.tenant_id,
+            invoice_id=str(invoice.id),
+        )
+        logger.info(
+            "invoice_reconciliation_enqueued",
+            tenant_id=upload.tenant_id,
+            invoice_id=str(invoice.id),
+            task_id=str(task_result.id),
+        )
+    except Exception as exc:
+        logger.warning(
+            "invoice_reconciliation_enqueue_failed",
+            tenant_id=upload.tenant_id,
+            invoice_id=str(invoice.id),
+            error_class=type(exc).__name__,
+        )
+    return InvoiceReviewCommitResponse(
+        document_id=document_id,
+        invoice_id=invoice.id,
         review_status="committed",
         reviewed_at=reviewed_at,
     )

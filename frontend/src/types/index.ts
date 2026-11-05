@@ -110,8 +110,8 @@ export interface AuthContextType {
   acceptInvite: (token: string, name: string, password: string) => Promise<boolean>;
   logout: () => Promise<void>;
   clearError: () => void;
-  /** Resolve a valid access token, silently refreshing if near expiry. */
-  getValidAccessToken: () => Promise<string | null>;
+  /** Resolve an access token, optionally forcing a refresh after a 401. */
+  getValidAccessToken: (forceRefresh?: boolean) => Promise<string | null>;
 }
 
 // ==========================================
@@ -224,6 +224,7 @@ export interface VendorListResponse {
 // Contract versioning per PRD #11
 export interface Contract {
   id: string;
+  contractId?: string;
   vendorId: string;
   product: string;
   unitPrice: number;
@@ -243,6 +244,111 @@ export interface Contract {
   pdfUrl?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface VendorContractLine {
+  id: string;
+  contract_id: string;
+  vendor_id: string;
+  contract_number: string;
+  title: string | null;
+  product: string;
+  unit_price: number;
+  currency: string;
+  uom: string | null;
+  qty_min: number | null;
+  qty_max: number | null;
+  quantity: number | null;
+  effective_from: string;
+  effective_to: string | null;
+  version: number;
+  amendment_of_id: string | null;
+  status: string;
+  payment_terms: string | null;
+  price_escalation: number | null;
+  renewal_date: string | null;
+  auto_renewal: boolean | null;
+  notice_period_days: number | null;
+  source_document_id: string | null;
+  source_upload_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ContractCandidateTerm {
+  contract_line_id: string;
+  product_code: string | null;
+  description: string | null;
+  unit_price: number;
+  currency: string;
+  uom: string | null;
+  qty_min: number | null;
+  qty_max: number | null;
+  effective_from: string;
+  effective_to: string | null;
+}
+
+export interface ContractCandidate {
+  contract_id: string;
+  contract_number: string;
+  title: string | null;
+  vendor_name: string;
+  latest_version_no: number | null;
+  terms: ContractCandidateTerm[];
+}
+
+export interface ContractCandidatesResponse {
+  document_id: string;
+  candidates: ContractCandidate[];
+}
+
+export interface ContractHistoryTerm {
+  id: string;
+  contract_line_id: string;
+  line_no: number;
+  product_code: string | null;
+  description: string | null;
+  unit_price: number;
+  currency: string;
+  uom: string | null;
+  qty_min: number | null;
+  qty_max: number | null;
+  discount_pct: number | null;
+  tax_rule: string | null;
+  payment_terms: string | null;
+  freight_terms: string | null;
+  effective_from: string;
+  effective_to: string | null;
+}
+
+export interface ContractHistoryVersion {
+  id: string;
+  version_no: number;
+  change_type: string;
+  source_document_id: string | null;
+  source_filename: string | null;
+  source_upload_id: string | null;
+  parent_version_id: string | null;
+  parent_version_no: number | null;
+  effective_from: string;
+  effective_to: string | null;
+  title: string | null;
+  contract_start_date: string | null;
+  contract_end_date: string | null;
+  renewal_date: string | null;
+  notice_period_days: number | null;
+  auto_renew: boolean | null;
+  termination_clause: string | null;
+  terms: ContractHistoryTerm[];
+}
+
+export interface ContractHistory {
+  contract_id: string;
+  vendor_id: string;
+  vendor_name: string;
+  contract_number: string;
+  title: string | null;
+  versions: ContractHistoryVersion[];
 }
 
 export interface Invoice {
@@ -415,7 +521,9 @@ export interface ContractReviewRecord {
   status: 'pending' | 'committed' | string;
   document_type?: string;
   confidence_threshold?: number;
+  overall_confidence?: number | null;
   field_confidence?: Record<string, number>;
+  low_confidence_fields?: Record<string, number>;
   data?: Record<string, unknown>;
   verified_data?: Record<string, unknown>;
   reason?: string;
@@ -423,8 +531,14 @@ export interface ContractReviewRecord {
   reviewed_at?: string;
   reviewer_id?: string;
   reviewer_email?: string;
+  reviewer_notes?: string;
   contract_id?: string;
+  invoice_id?: string;
   term_version_ids?: string[];
+  contract_version_id?: string;
+  version_no?: number;
+  parent_contract_required?: boolean;
+  commercial_match_required?: boolean;
 }
 
 /** Corrected commercial fields posted by a reviewer before ledger commit. */
@@ -438,6 +552,10 @@ export interface ContractReviewCommitRequest {
   notice_period_days: number | null;
   auto_renew: boolean;
   termination_clause: string | null;
+  reviewer_notes?: string | null;
+  parent_contract_id?: string | null;
+  change_type?: 'original' | 'amendment' | 'renewal' | 'price_revision';
+  removed_contract_line_ids?: string[];
   terms: Array<{
     product_code: string;
     description: string;
@@ -453,13 +571,43 @@ export interface ContractReviewCommitRequest {
     payment_terms: string;
     freight_terms: string;
     tax_rule: string;
+    contract_line_id?: string | null;
   }>;
 }
 
 export interface ContractReviewCommitResponse {
   document_id: string;
   contract_id: string;
+  contract_version_id: string;
+  version_no: number;
   term_version_ids: string[];
+  review_status: 'committed';
+  reviewed_at: string;
+}
+
+/** Corrected invoice header and lines posted before ledger commit. */
+export interface InvoiceReviewCommitRequest {
+  invoice_number: string;
+  vendor_name: string;
+  invoice_date: string;
+  due_date: string | null;
+  currency: string;
+  subtotal: number;
+  tax_amount: number;
+  total_amount: number;
+  reviewer_notes?: string | null;
+  line_items: Array<{
+    description: string;
+    product_code: string | null;
+    quantity: number;
+    unit_price: number;
+    total: number | null;
+  }>;
+}
+
+export interface InvoiceReviewCommitResponse {
+  document_id: string;
+  invoice_id: string;
   review_status: 'committed';
   reviewed_at: string;
 }

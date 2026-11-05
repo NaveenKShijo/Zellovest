@@ -25,9 +25,13 @@ library (e.g. the old python-jose path) keep verifying here.
 - ``sub`` carries the user id; ``tenant_id``/``email`` travel as extra
   claims so single-tenant scoping keeps working. Legacy service tokens
   with ``sub=<tenant_id>`` and no ``user_id`` still decode (back-compat).
-- Refresh/rotation and revocation lists are intentionally out of scope
-  for V1 (short-lived access tokens + deactivation checked per request
-  in ``get_current_user``); add a ``jti`` denylist in Redis when needed.
+- Access tokens are short-lived (``JWT_EXPIRE_MINUTES``, default 60).
+  Refresh tokens are long-lived (``JWT_REFRESH_EXPIRE_DAYS``, default 7)
+  and carry ``token_type="refresh"`` so they can never be mistaken for an
+  access token. ``POST /auth/refresh`` exchanges one for a fresh pair.
+- Revocation lists remain out of scope for V1 (deactivation is checked
+  per request in ``get_current_user``); add a ``jti`` denylist in Redis
+  when immediate refresh-token revocation is required.
 """
 
 import base64
@@ -92,6 +96,16 @@ def _jwt_settings() -> tuple[str, str, int]:
     except ValueError:
         lifetime = 60
     return secret, algorithm, max(1, lifetime)
+
+
+def _refresh_lifetime_days() -> int:
+    """Read the refresh-token lifetime in days (default 7)."""
+    _ensure_dotenv()
+    try:
+        days = int(os.environ.get("JWT_REFRESH_EXPIRE_DAYS", "7"))
+    except ValueError:
+        days = 7
+    return max(1, days)
 
 
 def _b64url_encode(raw: bytes) -> str:
@@ -203,10 +217,11 @@ def create_refresh_token(
     """Create a long-lived JWT refresh token for rotating access tokens.
 
     A refresh token is a separate HS256 JWT with a much longer default
-    lifetime (7 days) and a ``token_type: "refresh"`` claim so it can never
-    be confused with an access token. It is stored client-side (localStorage)
-    and presented to ``POST /auth/refresh`` to mint a new access token
-    without re-entering credentials.
+    lifetime (``JWT_REFRESH_EXPIRE_DAYS``, default 7 days) and a
+    ``token_type: "refresh"`` claim so it can never be confused with an
+    access token. It is stored client-side (localStorage) and presented to
+    ``POST /auth/refresh`` to mint a new access token without re-entering
+    credentials.
 
     Args:
         user_id: Primary key of the user row (goes in ``sub``).
@@ -217,10 +232,9 @@ def create_refresh_token(
     Returns:
         Signed HS256 JWT string.
     """
-    secret, _algorithm, _lifetime = _jwt_settings()
+    _jwt_settings()  # validates that JWT_SECRET_KEY / algorithm are usable
     now = datetime.now(UTC)
-    # Default refresh lifetime: 7 days. Overrideable via expires_delta.
-    expire = now + (expires_delta or timedelta(days=7))
+    expire = now + (expires_delta or timedelta(days=_refresh_lifetime_days()))
     return _encode_payload(
         user_id,
         "refresh",

@@ -35,6 +35,11 @@ from zellovest_ingestion.api.deps import get_current_user, get_db_session
 from zellovest_ingestion.config import IngestionAPISettings as Settings
 from zellovest_ingestion.main import create_app
 from zellovest_shared.security.auth import generate_invite_token, hash_invite_token
+from zellovest_shared.security.jwt import (
+    create_refresh_token,
+    create_user_access_token,
+    decode_token,
+)
 from zellovest_shared.security.passwords import hash_password
 
 
@@ -201,7 +206,83 @@ def test_login_success_returns_token(client, monkeypatch):  # type: ignore[no-un
     assert response.status_code == 200
     body = response.json()
     assert body["access_token"] == "test-jwt"
+    assert body["refresh_token"]
+    assert decode_token(body["refresh_token"]).token_type == "refresh"  # type: ignore[union-attr]
     assert body["user"]["email"] == user.email
+
+
+# --- Access-token refresh ----------------------------------------------------
+
+
+def test_refresh_rotates_token_pair(client, monkeypatch):  # type: ignore[no-untyped-def]
+    """A valid refresh token mints a fresh access + refresh pair."""
+    user = _member()
+    refresh = create_refresh_token(str(user.id), user.email, user.tenant_id)
+
+    async def _find_user(*args, **kwargs):  # type: ignore[no-untyped-def]
+        return user
+
+    monkeypatch.setattr(auth_module, "get_user_by_id", _find_user)
+    cleanup = _override_db(client, FakeSession())
+    try:
+        response = client.post(
+            "/api/v1/auth/refresh", json={"refresh_token": refresh}
+        )
+    finally:
+        cleanup()
+    assert response.status_code == 200
+    body = response.json()
+    assert body["access_token"]
+    assert body["refresh_token"]
+    assert body["refresh_token"] != refresh
+    access_payload = decode_token(body["access_token"])
+    refresh_payload = decode_token(body["refresh_token"])
+    assert access_payload is not None and access_payload.token_type == "access"
+    assert refresh_payload is not None and refresh_payload.token_type == "refresh"
+
+
+def test_refresh_rejects_access_token(client):  # type: ignore[no-untyped-def]
+    """An access token cannot be presented to /auth/refresh."""
+    user = _member()
+    access = create_user_access_token(str(user.id), user.email, user.tenant_id)
+    cleanup = _override_db(client, FakeSession())
+    try:
+        response = client.post(
+            "/api/v1/auth/refresh", json={"refresh_token": access}
+        )
+    finally:
+        cleanup()
+    assert response.status_code == 401
+
+
+def test_refresh_rejects_expired_token(client):  # type: ignore[no-untyped-def]
+    """Expired refresh tokens force a fresh sign-in."""
+    user = _member()
+    stale = create_refresh_token(
+        str(user.id), user.email, user.tenant_id, expires_delta=timedelta(seconds=-120)
+    )
+    cleanup = _override_db(client, FakeSession())
+    try:
+        response = client.post(
+            "/api/v1/auth/refresh", json={"refresh_token": stale}
+        )
+    finally:
+        cleanup()
+    assert response.status_code == 401
+
+
+def test_refresh_token_rejected_as_bearer(client):  # type: ignore[no-untyped-def]
+    """A refresh token is not an API credential: /auth/me must reject it."""
+    user = _member()
+    refresh = create_refresh_token(str(user.id), user.email, user.tenant_id)
+    cleanup = _override_db(client, FakeSession())
+    try:
+        response = client.get(
+            "/api/v1/auth/me", headers={"Authorization": f"Bearer {refresh}"}
+        )
+    finally:
+        cleanup()
+    assert response.status_code == 401
 
 
 # --- Public signup is gone ---------------------------------------------------

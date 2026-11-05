@@ -16,7 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from zellovest_shared.db.models import TenantIntegration, effective_connection_status
 from zellovest_shared.logging_conf import get_logger
 
-from zellovest_ingestion.api.deps import get_db_session
+from zellovest_ingestion.api.deps import get_app_settings, get_db_session
+from zellovest_ingestion.config import IngestionAPISettings
 from zellovest_ingestion.schemas.sync import (
     DriveSyncRequest,
     OktaSyncRequest,
@@ -28,15 +29,20 @@ from zellovest_ingestion.services.sync_dispatcher import (
     dispatch_okta_sync,
     dispatch_sync_task,
 )
+from zellovest_ingestion.services.integration_tokens import has_refresh_token
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/sync", tags=["sync"])
 
 
 async def _require_usable_integration(
-    session: AsyncSession, *, tenant_id: str, provider: str
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    provider: str,
+    encryption_key: str,
 ) -> None:
-    """Reject a sync with 409 when the OAuth connection needs a reconnect.
+    """Reject a sync when the OAuth connection cannot be refreshed.
 
     Lets "Sync Now" fail fast with an actionable message instead of
     queueing a job that silently fails in the worker.
@@ -45,10 +51,11 @@ async def _require_usable_integration(
         session: Async DB session.
         tenant_id: Tenant requesting the sync.
         provider: Provider key (``ramp`` / ``okta``).
+        encryption_key: Key used to check for a saved refresh credential.
 
     Raises:
-        HTTPException: 409 when the stored connection is EXPIRED/REVOKED
-            or its access token has passed ``token_expires_at``.
+        HTTPException: 409 when the connection is EXPIRED/REVOKED or the
+            access token has expired and there is no usable refresh token.
     """
     try:
         result = await session.execute(
@@ -77,7 +84,12 @@ async def _require_usable_integration(
     # expire — only gate OAuth Bearer rows.
     if provider == "okta" and "offline_access" not in (row.scopes or []):
         return
-    effective = effective_connection_status(row.connection_status, row.token_expires_at)
+    refresh_available = has_refresh_token(row, encryption_key)
+    effective = effective_connection_status(
+        row.connection_status,
+        row.token_expires_at,
+        refresh_token_available=refresh_available,
+    )
     if effective.value in ("EXPIRED", "REVOKED"):
         logger.warning(
             "sync_rejected_needs_reconnect",
@@ -97,10 +109,16 @@ async def _require_usable_integration(
 @router.post("/ramp", response_model=SyncResponse, status_code=status.HTTP_202_ACCEPTED)
 async def trigger_ramp_sync(
     body: SyncRequest,
+    settings: IngestionAPISettings = Depends(get_app_settings),
     session: AsyncSession = Depends(get_db_session),
 ) -> SyncResponse:
     """Enqueue a Ramp pull-sync task (``card_transactions``, ``bills``)."""
-    await _require_usable_integration(session, tenant_id=body.tenant_id, provider="ramp")
+    await _require_usable_integration(
+        session,
+        tenant_id=body.tenant_id,
+        provider="ramp",
+        encryption_key=settings.credentials_encryption_key,
+    )
     sync_id, task_id, created = await dispatch_sync_task(
         session,
         tenant_id=body.tenant_id,
@@ -155,6 +173,7 @@ async def trigger_drive_sync(
 @router.post("/okta", response_model=SyncResponse, status_code=status.HTTP_202_ACCEPTED)
 async def trigger_okta_sync(
     body: OktaSyncRequest,
+    settings: IngestionAPISettings = Depends(get_app_settings),
     session: AsyncSession = Depends(get_db_session),
 ) -> SyncResponse:
     """Enqueue an Okta batch pull (``users`` / ``apps`` / ``logs``).
@@ -165,7 +184,12 @@ async def trigger_okta_sync(
     (per-tenant ``okta`` integration row or ``OKTA_API_TOKEN`` fallback)
     with ``okta.users.read``, ``okta.apps.read``, ``okta.logs.read``.
     """
-    await _require_usable_integration(session, tenant_id=body.tenant_id, provider="okta")
+    await _require_usable_integration(
+        session,
+        tenant_id=body.tenant_id,
+        provider="okta",
+        encryption_key=settings.credentials_encryption_key,
+    )
     sync_id, task_id, created = await dispatch_okta_sync(
         session,
         tenant_id=body.tenant_id,

@@ -74,6 +74,15 @@ class ContractStatus(str, enum.Enum):
     RENEWED = "renewed"
 
 
+class ContractChangeType(str, enum.Enum):
+    """Kind of source document that created a contract version."""
+
+    ORIGINAL = "original"
+    AMENDMENT = "amendment"
+    RENEWAL = "renewal"
+    PRICE_REVISION = "price_revision"
+
+
 class POStatus(str, enum.Enum):
     """Purchase-order lifecycle."""
 
@@ -215,10 +224,85 @@ class Contract(Base):
     )
 
 
+class ContractVersion(Base):
+    """One source-backed event in a contract's amendment and renewal history."""
+
+    __tablename__ = "contract_versions"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "contract_id", "version_no", name="uq_contract_versions_no"),
+        UniqueConstraint(
+            "tenant_id", "contract_id", "source_document_id",
+            name="uq_contract_versions_source_document",
+        ),
+        Index("ix_contract_versions_parent", "tenant_id", "parent_version_id"),
+        Index("ix_contract_versions_tenant", "tenant_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    contract_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("contracts.id"), nullable=False
+    )
+    version_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_document_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("documents.id"), nullable=True
+    )
+    parent_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("contract_versions.id"), nullable=True
+    )
+    change_type: Mapped[ContractChangeType] = mapped_column(
+        Enum(
+            ContractChangeType,
+            name="contract_change_type",
+            values_callable=lambda values: [value.value for value in values],
+        ),
+        nullable=False,
+        default=ContractChangeType.ORIGINAL,
+    )
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    title: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    contract_start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    contract_end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    renewal_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    notice_period_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    auto_renew: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    termination_clause: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ContractLine(Base):
+    """Stable identity for a product or pricing tier across snapshots."""
+
+    __tablename__ = "contract_lines"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "contract_id", "legacy_line_no", name="uq_contract_lines_legacy_no"
+        ),
+        Index("ix_contract_lines_contract", "tenant_id", "contract_id"),
+        Index("ix_contract_lines_tenant", "tenant_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    contract_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("contracts.id"), nullable=False
+    )
+    legacy_line_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    initial_document_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("documents.id"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class ContractTermsVersion(Base):
     """Versioned commercial terms — INSERT-only; history explains past invoices.
 
-    Overlap across versions of one pricing line is rejected by the
+    Overlap across versions of one stable commercial line is rejected by the
     ``no_overlap_contract_terms`` EXCLUDE constraint (requires btree_gist).
     """
 
@@ -241,6 +325,12 @@ class ContractTermsVersion(Base):
     tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     contract_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("contracts.id"), nullable=False
+    )
+    contract_version_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("contract_versions.id"), nullable=False
+    )
+    contract_line_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("contract_lines.id"), nullable=False
     )
     version_no: Mapped[int] = mapped_column(Integer, nullable=False)
     line_no: Mapped[int] = mapped_column(Integer, nullable=False, default=1)

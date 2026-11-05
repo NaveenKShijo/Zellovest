@@ -25,6 +25,7 @@ from zellovest_shared.security.auth import (
     generate_invite_token,
     get_invite_by_token,
     get_user_by_email,
+    get_user_by_id,
     hash_invite_token,
     generate_password_reset_token,
     get_password_reset_by_token,
@@ -250,8 +251,9 @@ async def refresh_token(
 
     Validates the refresh token's signature + expiry and that its
     ``token_type`` claim is ``refresh``. On success mints a new access
-    token and a new refresh token (rotation), so a compromised refresh
-    token can only be used once.
+    token and a new refresh token (rotation). Tokens are stateless in V1,
+    so the previous refresh token remains valid until its own expiry; a
+    Redis ``jti`` denylist can make rotation strictly single-use later.
 
     Args:
         body: ``refresh_token`` — the long-lived refresh JWT.
@@ -269,7 +271,8 @@ async def refresh_token(
     from zellovest_shared.security.jwt import decode_token
 
     payload = decode_token(body.refresh_token)
-    if payload is None or payload.token_type != "refresh":
+    user_id = payload.user_id if payload is not None else None
+    if payload is None or payload.token_type != "refresh" or not user_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired refresh token. Please sign in again.",
@@ -277,7 +280,7 @@ async def refresh_token(
 
     # Confirm the user still exists and is active (revocation without a
     # denylist: deactivated users can't refresh even with a valid token).
-    user = await get_user_by_id(session, payload.user_id)
+    user = await get_user_by_id(session, user_id)
     if user is None or not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

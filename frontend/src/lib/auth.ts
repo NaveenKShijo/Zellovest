@@ -5,7 +5,9 @@
  *
  * Learning map — what happens on the wire:
  * - login: POST JSON { email, password } → 200
- *   { access_token, expires_in_minutes, user } or 401 JSON detail.
+ *   { access_token, refresh_token, expires_in_minutes, user } or 401 JSON detail.
+ * - refresh: POST JSON { refresh_token } → a new access + refresh pair;
+ *   401 when the refresh token is expired, revoked, or the wrong token type.
  * - me: GET with `Authorization: Bearer <jwt>` → the backend verifies the
  *   HS256 signature + exp, then loads the user row.
  * - invites (member): POST /auth/invites with Bearer → 201
@@ -21,6 +23,14 @@
 import type { AuthResponse, AuthUser, InviteResponse, InviteStatus } from '@/types';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || '/api';
+
+/** Error returned by an auth endpoint, including its HTTP status. */
+export class AuthRequestError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message);
+    this.name = 'AuthRequestError';
+  }
+}
 
 /**
  * Frictionless sandbox entry: POST /auth/demo with no body. The backend
@@ -115,6 +125,8 @@ export async function refreshTokenRequest(refreshToken: string): Promise<AuthRes
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ refresh_token: refreshToken }),
   });
-  if (!response.ok) throw new Error(await parseError(response));
+  if (!response.ok) {
+    throw new AuthRequestError(response.status, await parseError(response));
+  }
   return (await response.json()) as AuthResponse;
 }

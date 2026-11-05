@@ -22,6 +22,7 @@ from zellovest_ingestion.services.ramp_oauth import (
     build_authorize_url,
     exchange_code_for_tokens,
 )
+from zellovest_ingestion.services.integration_tokens import has_refresh_token
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/integrations/ramp", tags=["integrations"])
@@ -127,7 +128,12 @@ async def callback(
     )
 
     await session.commit()
-    logger.info("oauth_callback_stored", tenant_id=tenant_id, scopes=tokens.scopes)
+    logger.info(
+        "oauth_callback_stored",
+        tenant_id=tenant_id,
+        scopes=tokens.scopes,
+        refresh_token_received=bool(tokens.refresh_token),
+    )
 
     if is_browser_request:
         return RedirectResponse(
@@ -140,14 +146,14 @@ async def callback(
 @router.get("/status", status_code=200)
 async def status(
     tenant_id: str = Query(default="default-org"),
+    settings: IngestionAPISettings = Depends(get_app_settings),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     """Check whether Ramp integration is active for this tenant.
 
-    The effective status folds wall-clock ``token_expires_at`` over the
-    stored row so an ACTIVE row with a past expiry reads as EXPIRED —
-    letting the UI prompt a reconnect instead of showing Connected while
-    every sync fails.
+    An expired access token remains connected when a decryptable refresh
+    token is stored. The ingestion worker renews it on the next sync; only
+    a missing/rejected refresh grant needs a user reconnect.
     """
     stmt = select(TenantIntegration).where(
         TenantIntegration.tenant_id == tenant_id,
@@ -164,13 +170,19 @@ async def status(
             "status": "DISCONNECTED",
             "scopes": [],
             "needs_reconnect": False,
+            "refresh_available": False,
             "last_error": None,
             "token_expires_at": None,
             "updated_at": None,
         }
 
+    refresh_available = has_refresh_token(
+        integration, settings.credentials_encryption_key
+    )
     effective = effective_connection_status(
-        integration.connection_status, integration.token_expires_at
+        integration.connection_status,
+        integration.token_expires_at,
+        refresh_token_available=refresh_available,
     )
     status_str = effective.value
     needs_reconnect = effective.value in ("EXPIRED", "REVOKED")
@@ -181,6 +193,7 @@ async def status(
         "status": status_str,
         "scopes": integration.scopes or [],
         "needs_reconnect": needs_reconnect,
+        "refresh_available": refresh_available,
         "last_error": integration.last_error,
         "token_expires_at": (
             integration.token_expires_at.isoformat() if integration.token_expires_at else None

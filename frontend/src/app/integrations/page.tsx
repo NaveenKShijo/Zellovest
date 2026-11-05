@@ -16,6 +16,7 @@ interface IntegrationStatusState {
   status: string;
   scopes: string[];
   needs_reconnect?: boolean;
+  refresh_available?: boolean;
   last_error?: string | null;
   token_expires_at?: string | null;
   updated_at?: string | null;
@@ -28,7 +29,7 @@ function needsReconnect(status: IntegrationStatusState | null): boolean {
   if (status.needs_reconnect === true) return true;
   const upper = (status.status || '').toUpperCase();
   if (upper === 'EXPIRED' || upper === 'REVOKED') return true;
-  if (status.connected && status.token_expires_at) {
+  if (status.connected && status.token_expires_at && status.refresh_available !== true) {
     return Date.parse(status.token_expires_at) <= Date.now();
   }
   return false;
@@ -36,10 +37,11 @@ function needsReconnect(status: IntegrationStatusState | null): boolean {
 
 /** True when the token expires within 24h (early warning, still connected). */
 function isExpiringSoon(status: IntegrationStatusState | null): boolean {
-  if (!status?.connected || needsReconnect(status) || !status.token_expires_at) {
+  if (!status?.connected || status.refresh_available === true || needsReconnect(status) || !status.token_expires_at) {
     return false;
   }
-  return Date.parse(status.token_expires_at) - Date.now() <= 24 * 60 * 60 * 1000;
+  const remaining = Date.parse(status.token_expires_at) - Date.now();
+  return remaining > 0 && remaining <= 24 * 60 * 60 * 1000;
 }
 
 /** True when a sync failure means the OAuth token needs a reconnect. */
@@ -617,7 +619,7 @@ export default function IntegrationsPage() {
                 </div>
               )}
 
-              {!rampNeedsReconnect && rampStatus?.connected && rampStatus?.token_expires_at && (
+              {!rampNeedsReconnect && rampStatus?.connected && rampStatus?.refresh_available !== true && rampStatus?.token_expires_at && (
                 <div style={{ marginBottom: '12px', fontSize: '11.5px', color: rampExpiringSoon ? 'var(--color-warning)' : 'var(--text-muted)' }}>
                   {rampExpiringSoon ? 'Token expires soon' : 'Token expires'}: {new Date(rampStatus.token_expires_at).toLocaleString()}
                 </div>
@@ -626,6 +628,11 @@ export default function IntegrationsPage() {
               {rampStatus?.connected && (
                 <div style={{ marginBottom: '12px', fontSize: '11.5px', color: 'var(--text-muted)' }}>
                   <div>Scopes: <strong style={{ color: 'var(--text-primary)' }}>{rampStatus.scopes.join(', ') || 'transactions:read, bills:read'}</strong></div>
+                  {rampStatus.refresh_available === true ? (
+                    <div style={{ marginTop: '4px' }}>Access token renews automatically when Ramp syncs.</div>
+                  ) : rampStatus.token_expires_at ? (
+                    <div style={{ marginTop: '4px', color: 'var(--color-warning)' }}>Automatic renewal is unavailable. Reconnect to restore it.</div>
+                  ) : null}
                   {rampStatus.updated_at && (
                     <div style={{ marginTop: '2px' }}>
                       Last synced: {new Date(rampStatus.updated_at).toLocaleDateString()} {new Date(rampStatus.updated_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -820,7 +827,7 @@ export default function IntegrationsPage() {
                 </div>
               )}
 
-              {!oktaNeedsReconnect && oktaStatus?.connected && oktaStatus?.token_expires_at && (
+              {!oktaNeedsReconnect && oktaStatus?.connected && oktaStatus?.refresh_available !== true && oktaStatus?.token_expires_at && (
                 <div style={{ marginBottom: '12px', fontSize: '11.5px', color: oktaExpiringSoon ? 'var(--color-warning)' : 'var(--text-muted)' }}>
                   {oktaExpiringSoon ? 'Token expires soon' : 'Token expires'}: {new Date(oktaStatus.token_expires_at).toLocaleString()}
                 </div>
@@ -829,6 +836,11 @@ export default function IntegrationsPage() {
               {oktaStatus?.connected && (
                 <div style={{ marginBottom: '12px', fontSize: '11.5px', color: 'var(--text-muted)' }}>
                   <div>Scopes: <strong style={{ color: 'var(--text-primary)' }}>{oktaStatus.scopes.join(', ') || 'openid, okta.users.read, okta.apps.read, okta.logs.read'}</strong></div>
+                  {oktaStatus.refresh_available === true ? (
+                    <div style={{ marginTop: '4px' }}>Access token renews automatically when Okta syncs.</div>
+                  ) : oktaStatus.token_expires_at ? (
+                    <div style={{ marginTop: '4px', color: 'var(--color-warning)' }}>Automatic renewal is unavailable. Reconnect to restore it.</div>
+                  ) : null}
                   {oktaStatus.updated_at && (
                     <div style={{ marginTop: '2px' }}>
                       Last synced: {new Date(oktaStatus.updated_at).toLocaleDateString()} {new Date(oktaStatus.updated_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -1022,7 +1034,7 @@ export default function IntegrationsPage() {
                 </div>
               )}
 
-              {!driveNeedsReconnect && driveStatus?.connected && driveStatus?.token_expires_at && (
+              {!driveNeedsReconnect && driveStatus?.connected && driveStatus?.refresh_available !== true && driveStatus?.token_expires_at && (
                 <div style={{ marginBottom: '12px', fontSize: '11.5px', color: driveExpiringSoon ? 'var(--color-warning)' : 'var(--text-muted)' }}>
                   {driveExpiringSoon ? 'Token expires soon' : 'Token expires'}: {new Date(driveStatus.token_expires_at).toLocaleString()}
                 </div>
@@ -1031,6 +1043,11 @@ export default function IntegrationsPage() {
               {!driveNeedsReconnect && driveStatus?.connected && (
                 <div style={{ marginBottom: '12px', fontSize: '11.5px', color: 'var(--text-muted)' }}>
                   <div>Scopes: <strong style={{ color: 'var(--text-primary)' }}>{driveStatus.scopes.join(', ') || 'drive.readonly'}</strong></div>
+                  {driveStatus.refresh_available === true ? (
+                    <div style={{ marginTop: '4px' }}>Access token renews automatically when Google Drive syncs.</div>
+                  ) : driveStatus.token_expires_at ? (
+                    <div style={{ marginTop: '4px', color: 'var(--color-warning)' }}>Automatic renewal is unavailable. Reconnect to restore it.</div>
+                  ) : null}
                   <div style={{ marginTop: '4px' }}>
                     Push watch:{' '}
                     <strong style={{ color: 'var(--text-primary)' }}>

@@ -283,6 +283,9 @@ class ReconciliationException(Base):
         UUID(as_uuid=True), ForeignKey("contracts.id"), nullable=False
     )
     contract_version_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("contract_versions.id"), nullable=False
+    )
+    contract_term_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("contract_terms_versioned.id"), nullable=False
     )
     po_id: Mapped[uuid.UUID | None] = mapped_column(

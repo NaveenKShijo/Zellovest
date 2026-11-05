@@ -10,6 +10,9 @@ import { confidenceColor, formatConfidence, formatDateTime, formatFileSize, huma
 /** Explorer columns that can be sorted via URL params (`sort` + `dir`). */
 export type DocumentSortField = 'filename' | 'uploaded_at' | 'size_bytes' | 'extraction_confidence';
 
+/** Document types with an editable human-review drawer. */
+const REVIEWABLE_DOCUMENT_TYPES = new Set(['contract', 'amendment', 'invoice']);
+
 const DOC_TYPE_META: Record<string, { label: string; icon: React.ReactNode }> = {
     contract: {
         label: 'Contract',
@@ -259,7 +262,7 @@ export function DocumentTable({
                                     </td>
                                     <td style={{ padding: '13px 16px', textAlign: 'center' }}>
                                         <StatusPill status={doc.status as DocumentStatus} />
-                                        {doc.status === 'review_needed' && (
+                                        {doc.status === 'review_needed' && doc.has_artifact && REVIEWABLE_DOCUMENT_TYPES.has(doc.document_type.toLowerCase()) && (
                                             <Link
                                                 href={`/documents/${doc.id}#review`}
                                                 style={{

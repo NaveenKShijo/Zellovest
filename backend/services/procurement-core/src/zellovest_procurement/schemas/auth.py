@@ -22,12 +22,19 @@ class UserResponse(BaseModel):
 
 
 class AuthResponse(BaseModel):
-    """Login success envelope: JWT + profile."""
+    """Login success envelope: JWT pair + profile."""
 
     access_token: str
     token_type: str = "bearer"
     expires_in_minutes: int
+    refresh_token: str | None = None
     user: UserResponse
+
+
+class RefreshRequest(BaseModel):
+    """Refresh an expired access token using a refresh token."""
+
+    refresh_token: str = Field(min_length=16)
 
 
 class InviteCreateRequest(BaseModel):
