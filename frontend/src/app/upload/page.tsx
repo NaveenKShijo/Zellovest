@@ -195,7 +195,7 @@ function UploadPageContent() {
           Document Upload
         </h1>
         <p style={{ color: 'var(--text-secondary)', fontSize: '13.5px', marginTop: '3px' }}>
-          Upload procurement documents for AI-powered classification and extraction. The document type is identified automatically.
+          Upload procurement documents for classification, extraction, and Ask AI research. Processing completes after the document is indexed.
         </p>
       </div>
 
@@ -422,6 +422,7 @@ function UploadPageContent() {
               <li>Table & form extraction</li>
               <li>Confidence scoring</li>
               <li>Provenance tracking</li>
+              <li>Hybrid Qdrant indexing</li>
             </ul>
           </div>
         </div>
