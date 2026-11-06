@@ -6,6 +6,7 @@ Importing this package registers all worker tasks with the Celery app.
 from zellovest_workers.tasks import (
     ap_audit,
     document_classify,
+    document_index,
     document_ocr,
     document_promote,
     document_structured_extract,
@@ -19,6 +20,7 @@ from zellovest_workers.tasks import (
 __all__ = [
     "ap_audit",
     "document_classify",
+    "document_index",
     "document_ocr",
     "document_promote",
     "document_structured_extract",

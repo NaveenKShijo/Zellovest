@@ -21,6 +21,8 @@ import {
   ContractReviewCommitResponse,
   InvoiceReviewCommitRequest,
   InvoiceReviewCommitResponse,
+  AskAIResponse,
+  RAGSearchResponse,
 } from '@/types';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || '/api';
@@ -33,21 +35,28 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE || '/api';
  * Non-JSON bodies fall back to a generic message with the HTTP status.
  */
 async function parseError(response: Response): Promise<string> {
+  const requestId = response.headers.get('x-request-id');
+  const includeRequestId = (message: string) =>
+    response.status >= 500 && requestId
+      ? `${message} (request ID: ${requestId})`
+      : message;
   try {
     const error = (await response.json()) as { detail?: unknown; message?: unknown };
     if (Array.isArray(error.detail)) {
       const issues = error.detail
         .map((issue: { msg?: unknown }) => issue?.msg)
         .filter((msg): msg is string => typeof msg === 'string' && msg.length > 0);
-      if (issues.length > 0) return issues.join('; ');
+      if (issues.length > 0) return includeRequestId(issues.join('; '));
     } else if (typeof error.detail === 'string' && error.detail) {
-      return error.detail;
+      return includeRequestId(error.detail);
     }
-    if (typeof error.message === 'string' && error.message) return error.message;
+    if (typeof error.message === 'string' && error.message) {
+      return includeRequestId(error.message);
+    }
   } catch {
     // Non-JSON error body: fall through to the generic message.
   }
-  return `Request failed (HTTP ${response.status})`;
+  return includeRequestId(`Request failed (HTTP ${response.status})`);
 }
 
 async function handleResponse<T>(response: Response): Promise<T> {
@@ -140,6 +149,29 @@ export function useApi() {
   };
 
   return {
+    askAi: {
+      ask: (question: string, vendorId?: string) =>
+        request<AskAIResponse>('/agentic/ask-ai', {
+          method: 'POST',
+          body: JSON.stringify({
+            question,
+            context: vendorId ? { vendor_id: vendorId } : undefined,
+            stream: false,
+          }),
+        }),
+    },
+    rag: {
+      search: (params: {
+        query: string;
+        vendor_id?: string;
+        document_type?: string;
+        limit?: number;
+      }) =>
+        request<RAGSearchResponse>('/agentic/rag/search', {
+          method: 'POST',
+          body: JSON.stringify(params),
+        }),
+    },
     vendors: {
       list: (params?: VendorListParams) => {
         const searchParams = new URLSearchParams();
@@ -202,7 +234,7 @@ export function useApi() {
         if (vendorId) formData.append('vendorId', vendorId);
         return upload<Document>('/documents/upload', formData);
       },
-      delete: (id: string) => request<void>(`/documents/${id}`, { method: 'DELETE' }),
+      delete: (id: string) => request<void>(`/v1/documents/${id}`, { method: 'DELETE' }),
       // Document Explorer — read-only over the ingestion pipeline (GET /api/v1/documents).
       list: (params?: DocumentListParams) => {
         const searchParams = new URLSearchParams();

@@ -91,6 +91,16 @@ class Settings(BaseSettings):
     # Vector DB
     vector_db_url: str = Field(default="", alias="VECTOR_DB_URL")
     vector_db_api_key: str = Field(default="", alias="VECTOR_DB_API_KEY")
+    qdrant_url: str = Field(default="http://localhost:6333", alias="QDRANT_URL")
+    qdrant_collection: str = Field(
+        default="zellovest_documents", alias="QDRANT_COLLECTION"
+    )
+    qdrant_api_key: str = Field(default="", alias="QDRANT_API_KEY")
+    voyage_api_key: str = Field(default="", alias="VOYAGE_API_KEY")
+    voyage_model: str = Field(default="voyage-3-large", alias="VOYAGE_MODEL")
+    voyage_api_url: str = Field(
+        default="https://api.voyageai.com/v1/embeddings", alias="VOYAGE_API_URL"
+    )
 
     # LLM / AI
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")

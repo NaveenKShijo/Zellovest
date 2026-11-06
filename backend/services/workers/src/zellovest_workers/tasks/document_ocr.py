@@ -15,9 +15,9 @@ Pipeline (per PRD 5-7):
 ``stage_document`` (queue ``ingestion_tasks``) is the entrypoint fanned
 out to by ``POST /uploads/{id}/complete``: it flips the lease row
 ``staged -> processing`` and enqueues ``process_document`` (queue
-``document_tasks``). LLM extraction + vector embedding remain TODOs;
-this module implements deterministic download/triage/extract/classify plus
-lease bookkeeping with per-field provenance stubs.
+``document_tasks``). It implements deterministic extraction and provenance;
+Stage-2 classification promotes each upload and queues Qdrant indexing.
+Structured extraction remains specific to invoices and commercial agreements.
 """
 
 import json
@@ -55,6 +55,8 @@ _CLASSIFIER_KEYWORDS: dict[str, tuple[str, ...]] = {
     "invoice": ("invoice", "inv-", "amount due", "billed", "line total"),
     "purchase_order": ("purchase order", "po number", "ship to", "requisition"),
     "contract": ("agreement", "msa", "terms and conditions", "counterparty", "renewal"),
+    "amendment": ("amendment", "addendum", "contract variation"),
+    "policy": ("policy", "policies", "security standard", "acceptable use"),
 }
 
 
@@ -77,7 +79,7 @@ def classify_document(text: str, hint: str | None = None, filename: str = "") ->
         if hits > best_hits:
             best_type, best_hits = doc_type, hits
     if best_hits == 0:
-        if hint in ("invoice", "purchase_order", "contract"):
+        if hint in (*_CLASSIFIER_KEYWORDS, "other"):
             return hint, 0.5
         return "other", 0.4
     if hint == best_type:
@@ -221,12 +223,12 @@ def _persist_extraction_artifact(
     payload: dict[str, Any],
     text_snippet: str,
 ) -> str | None:
-    """Best-effort Stage-2 persistence: GCS artifact + artifact row.
+    """Persist the full GCS artifact and its queryable artifact row.
 
     Writes ``artifacts/{tenant}/{upload}/extraction.json`` (full payload)
     and upserts the ``extraction_artifacts`` row with queryable metadata
-    plus the classification working-set snippet. Failure never fails the
-    extraction task (logs only), matching PRD §27.5.4 storage tiers.
+    plus the classification working-set snippet. This artifact is required
+    for the RAG indexing task to complete.
 
     Args:
         tenant_id: Owning tenant.
@@ -250,12 +252,13 @@ def _persist_extraction_artifact(
             content_type="application/json",
         )
     except Exception as exc:
-        logger.warning(
+        logger.error(
             "extraction_artifact_write_failed",
             tenant_id=tenant_id,
             artifact_key=artifact_key,
             error_class=type(exc).__name__,
         )
+        return None
     try:
         engine = get_sync_engine()
         with Session(engine) as session:
@@ -294,7 +297,7 @@ def _persist_extraction_artifact(
         )
         return artifact_key
     except Exception as exc:
-        logger.warning(
+        logger.error(
             "extraction_artifact_persist_failed",
             tenant_id=tenant_id,
             upload_id=upload_id,
@@ -376,9 +379,11 @@ def process_document(
     3. Extract: PyMuPDF/PDFPlumber for digital PDFs; Document AI OCR for
        scanned PDFs, TIFF, and PNG.
     4. Classify: keyword-based document type (invoice / PO / contract / other).
-    5. Record per-field provenance and mark the lease row.
+    5. Persist provenance and queue vector indexing. The lease completes
+       after the Qdrant indexing task finishes.
 
-    LLM extraction + vector embedding remain TODOs (M3).
+    Stage-2 classification queues Qdrant indexing independently from
+    optional structured extraction.
 
     Args:
         tenant_id: Owning tenant.
@@ -489,7 +494,7 @@ def process_document(
     )
 
     # Phase 5: persist the extraction artifact (PRD §27.5.4): full payload
-    # to GCS, metadata + Stage-2 snippet to Postgres. Best-effort.
+    # to GCS and persist metadata plus the Stage-2 snippet to Postgres.
     artifact_gcs_key = _persist_extraction_artifact(
         tenant_id=tenant_id,
         upload_id=upload_id,
@@ -509,19 +514,49 @@ def process_document(
         text_snippet=text[:CLASSIFICATION_SNIPPET_CHARS],
     )
 
-    _mark_upload(upload_id, DbUploadStatus.COMPLETED, None)
+    if upload_id and artifact_gcs_key is None:
+        error = "extraction artifact could not be persisted"
+        _mark_upload(upload_id, DbUploadStatus.FAILED, error)
+        return {
+            "tenant_id": tenant_id,
+            "gcs_key": gcs_key,
+            "upload_id": upload_id,
+            "route": route,
+            "file_type": file_type,
+            "status": "failed",
+            "error": error,
+        }
 
     # Stage 2: refine classification via Jev on a dedicated task so OCR
     # success never depends on the classifier being available.
     classification_task_id = None
     if upload_id:
-        classify_result = classify_upload.delay(
-            tenant_id=tenant_id,
-            upload_id=upload_id,
-            filename=filename,
-            hint=document_type_hint,
-        )
-        classification_task_id = str(classify_result.id)
+        try:
+            classify_result = classify_upload.delay(
+                tenant_id=tenant_id,
+                upload_id=upload_id,
+                filename=filename,
+                hint=document_type_hint,
+            )
+            classification_task_id = str(classify_result.id)
+        except Exception as exc:
+            error = "document classification could not be queued"
+            _mark_upload(upload_id, DbUploadStatus.FAILED, error)
+            logger.error(
+                "document_classification_enqueue_failed",
+                tenant_id=tenant_id,
+                upload_id=upload_id,
+                error_class=type(exc).__name__,
+            )
+            return {
+                "tenant_id": tenant_id,
+                "gcs_key": gcs_key,
+                "upload_id": upload_id,
+                "route": route,
+                "file_type": file_type,
+                "status": "failed",
+                "error": error,
+            }
 
     return {
         "tenant_id": tenant_id,
@@ -545,8 +580,8 @@ def process_document(
         "has_images": triage_result.has_images,
         "artifact_gcs_key": artifact_gcs_key,
         "classification_task_id": classification_task_id,
-        "status": "completed",
-        "note": "LLM schema extraction + vector embedding TODO (M3)",
+        "status": "indexing",
+        "note": "Qdrant indexing is queued after Stage-2 classification.",
     }
 
 

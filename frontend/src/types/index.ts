@@ -221,6 +221,44 @@ export interface VendorListResponse {
   totalPages: number;
 }
 
+export interface AskAICitation {
+  source_type: string;
+  source_id: string;
+  description: string;
+  excerpt?: string | null;
+}
+
+export interface AskAIResponse {
+  answer: string;
+  conversation_id: string;
+  citations: AskAICitation[];
+  confidence: number;
+  processing_time_ms: number;
+}
+
+export interface RAGSearchChunk {
+  chunk_id: string;
+  document_id: string;
+  document_type: string;
+  vendor_id: string | null;
+  page: number | null;
+  section: string | null;
+  content: string;
+  score: number;
+  provenance?: {
+    filename?: string | null;
+    parent_id?: string | null;
+    bbox?: number[] | null;
+  } | null;
+}
+
+export interface RAGSearchResponse {
+  query: string;
+  chunks: RAGSearchChunk[];
+  total_results: number;
+  search_time_ms: number;
+}
+
 // Contract versioning per PRD #11
 export interface Contract {
   id: string;

@@ -135,6 +135,12 @@ class _FakeSession:
         assert self._scalars, "router issued more scalars than queued results"
         return self._scalars.pop(0)
 
+    async def scalars(self, stmt: Any) -> Any:
+        """Pop one queued result for ``session.scalars`` calls."""
+        del stmt
+        assert self._results, "router issued more scalars than queued results"
+        return self._results.pop(0)
+
 
 def _lease(**over: Any) -> SimpleNamespace:
     """Build a duck-typed uploads row for the router mappers."""
@@ -545,7 +551,7 @@ def test_review_commit_persists_verified_terms() -> None:
             _OptionalResult(artifact),          # artifact with FOR UPDATE
             _OptionalResult(document),          # structured document
             _OptionalResult(vendor),            # vendor lookup
-            _OptionalResult(None),              # no existing contract
+            _RowsResult([]),                    # no matching tenant contracts
         ],
         scalar_results=[None],                  # max version → first version
     )
@@ -563,8 +569,9 @@ def test_review_commit_persists_verified_terms() -> None:
     assert artifact.review_data["status"] == "committed"
     assert artifact.review_data["reviewer_email"] == "member@example.com"
     assert document.status == "extracted"
-    # Contract + one term + nine header provenance + ten term provenance rows.
-    assert len(session.added) == 1 + 1 + 9 + 10
+    # Contract + version + line + term + nine header provenance + ten term
+    # provenance rows.
+    assert len(session.added) == 1 + 1 + 1 + 1 + 9 + 10
 
 
 def test_review_commit_rejects_missing_pending_review() -> None:
@@ -608,14 +615,18 @@ def test_review_commit_rejects_conflicting_contract_number() -> None:
     document = _review_document()
     document.upload_id = lease.id
     vendor = SimpleNamespace(id=uuid.uuid4(), name="Adobe Inc.")
-    existing = SimpleNamespace(document_id=uuid.uuid4())
+    existing = SimpleNamespace(
+        id=uuid.uuid4(),
+        document_id=uuid.uuid4(),
+        contract_number="MSA-2026-014",
+    )
     session = _FakeSession(
         upload_row=lease,
         execute_results=[
             _OptionalResult(artifact),
             _OptionalResult(document),
             _OptionalResult(vendor),
-            _OptionalResult(existing),
+            _RowsResult([existing]),
         ],
     )
     client = _make_client(session=session)
@@ -718,6 +729,7 @@ def test_invoice_review_commit_updates_existing_invoice() -> None:
         tax_amount=0.0,
         total_amount=0.0,
         vendor_id=None,
+        extra=None,
     )
     line = SimpleNamespace(
         id=uuid.uuid4(),
@@ -832,6 +844,7 @@ def test_invoice_review_commit_adopts_reuploaded_invoice() -> None:
         tax_amount=0.0,
         total_amount=1.0,
         vendor_id=None,
+        extra=None,
     )
     line = SimpleNamespace(
         id=uuid.uuid4(),
@@ -967,3 +980,115 @@ def test_invoice_review_commit_rejects_non_invoice_documents() -> None:
 
     assert response.status_code == 422
     assert session.commits == 0
+
+
+# ---------------------------------------------------------------------------
+# DELETE /documents/{id} (explorer cascade delete)
+# ---------------------------------------------------------------------------
+
+
+def test_delete_unknown_document_returns_404() -> None:
+    """Unknown lease ids are tenant-scoped 404s."""
+    client = _make_client(session=_FakeSession(upload_row=None))
+    response = client.delete(f"/api/v1/documents/{uuid.uuid4()}")
+    assert response.status_code == 404
+
+
+def test_delete_rejects_in_flight_upload() -> None:
+    """Pending/staged/processing uploads are rejected to avoid worker races."""
+    lease = _lease(status=DbUploadStatus.PROCESSING)
+    session = _FakeSession(upload_row=lease)
+    client = _make_client(session=session)
+    response = client.delete(f"/api/v1/documents/{lease.id}")
+    assert response.status_code == 409
+    assert session.commits == 0
+    assert session.deleted == []
+
+
+def test_delete_removes_document_and_downstream_rows(monkeypatch: Any) -> None:
+    """Deleting a completed document cascades through ledger and provenance."""
+    lease = _lease()
+    artifact = _artifact(upload_id=lease.id)
+    document = SimpleNamespace(
+        id=uuid.uuid4(),
+        tenant_id="default-org",
+        upload_id=lease.id,
+        gcs_key=lease.gcs_key,
+    )
+    provenance = SimpleNamespace(id=uuid.uuid4())
+    evaluation = SimpleNamespace(id=uuid.uuid4())
+    invoice = SimpleNamespace(id=uuid.uuid4())
+    invoice_line = SimpleNamespace(id=uuid.uuid4())
+    purchase_order = SimpleNamespace(id=uuid.uuid4())
+    po_line = SimpleNamespace(id=uuid.uuid4())
+    contract = SimpleNamespace(
+        id=uuid.uuid4(), document_id=document.id, contract_id=uuid.uuid4()
+    )
+    version = SimpleNamespace(
+        id=uuid.uuid4(),
+        contract_id=contract.id,
+        source_document_id=document.id,
+        parent_version_id=None,
+    )
+    term = SimpleNamespace(
+        id=uuid.uuid4(),
+        contract_line_id=uuid.uuid4(),
+        amendment_document_id=document.id,
+    )
+    contract_line = SimpleNamespace(
+        id=term.contract_line_id,
+        contract_id=contract.id,
+        initial_document_id=document.id,
+    )
+    exception = SimpleNamespace(id=uuid.uuid4())
+    session = _FakeSession(
+        upload_row=lease,
+        execute_results=[
+            _OptionalResult(artifact),
+            _RowsResult([document]),
+            _RowsResult([provenance]),
+            _RowsResult([evaluation]),
+            _RowsResult([invoice]),
+            _RowsResult([invoice_line]),
+            _RowsResult([purchase_order]),
+            _RowsResult([po_line]),
+            _RowsResult([contract]),
+            _RowsResult([version]),
+            _RowsResult([term]),
+            _RowsResult([contract_line]),
+            _RowsResult([term]),          # all terms for the candidate line
+            _RowsResult([exception]),
+            _RowsResult([]),              # null invoices.po_id
+            _RowsResult([]),              # null invoices.contract_id
+            _RowsResult([]),              # null purchase_orders.contract_id
+        ],
+    )
+    deleted_points: list[str] = []
+    monkeypatch.setattr(
+        "zellovest_shared.rag.delete_document_points",
+        lambda *, tenant_id, document_id: deleted_points.append(document_id),
+    )
+    client = _make_client(session=session)
+
+    response = client.delete(f"/api/v1/documents/{lease.id}")
+
+    assert response.status_code == 204
+    assert session.commits == 1
+    for row in (
+        provenance,
+        evaluation,
+        invoice_line,
+        invoice,
+        po_line,
+        purchase_order,
+        term,
+        version,
+        contract_line,
+        contract,
+        document,
+        artifact,
+        lease,
+    ):
+        assert row in session.deleted
+    assert exception in session.deleted
+    assert deleted_points == [str(document.id)]

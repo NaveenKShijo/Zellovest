@@ -20,6 +20,7 @@ dependencies = [
     "pyyaml>=6.0",
     "cryptography>=42.0",
     "google-cloud-storage>=2.18",        
+    "fastembed>=0.7.3",
 ]
 
 [project.optional-dependencies]

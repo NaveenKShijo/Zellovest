@@ -1437,6 +1437,27 @@ def verify_and_upsert(
             entity_id=str(entity_id),
             vendor_id=str(vendor_id) if vendor_id else None,
         )
+        try:
+            from zellovest_workers.tasks.document_index import index_document_task
+
+            index_result = index_document_task.delay(
+                tenant_id=tenant_id, document_id=document_id
+            )
+            logger.info(
+                "rag_index_enqueued",
+                tenant_id=tenant_id,
+                document_id=document_id,
+                document_type=document_type,
+                reason="refresh_after_vendor_resolution",
+                task_id=str(index_result.id),
+            )
+        except Exception as enqueue_error:
+            logger.error(
+                "rag_index_enqueue_failed",
+                tenant_id=tenant_id,
+                document_id=document_id,
+                error_class=type(enqueue_error).__name__,
+            )
         return {
             "tenant_id": tenant_id,
             "document_id": document_id,

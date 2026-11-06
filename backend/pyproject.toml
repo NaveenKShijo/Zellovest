@@ -32,6 +32,8 @@ dependencies = [
     "python-multipart==0.0.21",    
     "pymupdf==2.0",
     "pdfplumber==0.11.10",
+    "fastembed>=0.7.3",
+    "langfuse>=4.7.0,<5",
 ]
 
 # The root is a dev/test umbrella, not an installable package (there is no

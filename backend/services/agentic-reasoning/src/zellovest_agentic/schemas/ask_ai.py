@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 class AskAIRequest(BaseModel):
     """Request to Ask AI."""
 
-    tenant_id: str = Field(..., min_length=1, max_length=128)
+    tenant_id: str | None = Field(default=None, min_length=1, max_length=128)
     question: str = Field(..., min_length=1, max_length=2000)
     context: dict[str, Any] | None = None
     conversation_id: UUID | None = None

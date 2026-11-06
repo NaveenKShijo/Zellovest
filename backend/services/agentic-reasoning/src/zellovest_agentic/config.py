@@ -46,6 +46,24 @@ class AgenticReasoningSettings(BaseSettings):
     llm_temperature: float = Field(default=0.1, alias="LLM_TEMPERATURE")
     llm_max_tokens: int = Field(default=4096, alias="LLM_MAX_TOKENS")
 
+    # Groq is the primary provider for RAG; the shared key is also used by
+    # structured document extraction workers.
+    groq_api_key: str = Field(default="", alias="GROQ_API_KEY")
+    groq_api_url: str = Field(
+        default="https://api.groq.com/openai/v1/chat/completions",
+        alias="GROQ_API_URL",
+    )
+    groq_model: str = Field(default="openai/gpt-oss-120b", alias="GROQ_MODEL")
+    groq_timeout_seconds: float = Field(default=90.0, alias="GROQ_TIMEOUT_SECONDS")
+    rag_evaluator_model: str = Field(default="", alias="RAG_EVALUATOR_MODEL")
+
+    # Langfuse Cloud tracing (loaded from backend/.env; never sent to clients).
+    langfuse_public_key: str = Field(default="", alias="LANGFUSE_PUBLIC_KEY")
+    langfuse_secret_key: str = Field(default="", alias="LANGFUSE_SECRET_KEY")
+    langfuse_base_url: str = Field(
+        default="https://cloud.langfuse.com", alias="LANGFUSE_BASE_URL"
+    )
+
     # Vector DB
     vector_db_url: str = Field(default="", alias="VECTOR_DB_URL")
     vector_db_api_key: str = Field(default="", alias="VECTOR_DB_API_KEY")

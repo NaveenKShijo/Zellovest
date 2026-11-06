@@ -26,6 +26,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Index,
     LargeBinary,
     Numeric,
     String,
@@ -406,6 +407,27 @@ class ExtractionArtifact(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
         server_default=func.now(), onupdate=func.now(),
+    )
+
+
+class RAGEvaluationRecord(Base):
+    """Stored LLM-judge metrics for comparing RAG runs without retaining content."""
+
+    __tablename__ = "rag_evaluation_results"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "run_id", "question_hash", name="uq_rag_eval_run_question"),
+        Index("ix_rag_eval_tenant_created", "tenant_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    evaluator_model: Mapped[str] = mapped_column(String(256), nullable=False)
+    question_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_document_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    scores: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
 

@@ -78,6 +78,7 @@ const COLUMN_DEFAULT_WIDTHS: Record<string, string> = {
     uploaded: '180px',
     size: '100px',
     confidence: '120px',
+    actions: '56px',
 };
 
 /** Visual + semantic model for one sortable Explorer column. */
@@ -94,22 +95,31 @@ const TABLE_COLUMNS: Array<{
     { key: 'uploaded', label: 'Uploaded', align: 'left', sortField: 'uploaded_at' },
     { key: 'size', label: 'Size', align: 'right', sortField: 'size_bytes' },
     { key: 'confidence', label: 'Confidence', align: 'center', sortField: 'extraction_confidence' },
+    { key: 'actions', label: 'Actions', align: 'right' },
 ];
 
 /**
- * Row-clickable Explorer inventory table (read-only).
- * Sorting defers to the parent (URL params); no mutations here.
+ * Explorer inventory table.
+ *
+ * Sorting defers to the parent (URL params). The per-row delete action is
+ * also owned by the parent so it can confirm the destructive cascade and
+ * refresh or re-page the list after success.
  */
 export function DocumentTable({
     documents,
     sortField,
     sortDir,
     onSortChange,
+    onDelete,
+    deletingId,
 }: {
     documents: DocumentRecord[];
     sortField: DocumentSortField | null;
     sortDir: 'asc' | 'desc';
     onSortChange: (field: DocumentSortField) => void;
+    onDelete?: (document: DocumentRecord) => void;
+    /** Id of the row whose delete request is in flight. */
+    deletingId?: string | null;
 }) {
     if (documents.length === 0) {
         return (
@@ -304,6 +314,74 @@ export function DocumentTable({
                                         ) : (
                                             <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>—</span>
                                         )}
+                                    </td>
+                                    <td style={{ padding: '13px 12px', textAlign: 'right' }}>
+                                        <button
+                                            type="button"
+                                            aria-label={`Delete ${doc.filename}`}
+                                            title="Delete document and all downstream records"
+                                            disabled={!onDelete || deletingId === doc.id}
+                                            onClick={(event) => {
+                                                event.stopPropagation();
+                                                onDelete?.(doc);
+                                            }}
+                                            onMouseEnter={(event) => {
+                                                if (!onDelete || deletingId === doc.id) return;
+                                                event.currentTarget.style.backgroundColor = 'var(--color-danger)';
+                                                event.currentTarget.style.color = '#FFFFFF';
+                                            }}
+                                            onMouseLeave={(event) => {
+                                                if (deletingId === doc.id) return;
+                                                event.currentTarget.style.backgroundColor = 'var(--color-danger-subtle)';
+                                                event.currentTarget.style.color = 'var(--color-danger)';
+                                            }}
+                                            style={{
+                                                display: 'inline-flex',
+                                                alignItems: 'center',
+                                                justifyContent: 'center',
+                                                width: '30px',
+                                                height: '30px',
+                                                padding: 0,
+                                                borderRadius: 'var(--radius-sm)',
+                                                border: '1px solid var(--color-danger-border)',
+                                                backgroundColor:
+                                                    deletingId === doc.id
+                                                        ? 'var(--color-danger)'
+                                                        : 'var(--color-danger-subtle)',
+                                                color:
+                                                    deletingId === doc.id
+                                                        ? '#FFFFFF'
+                                                        : 'var(--color-danger)',
+                                                cursor:
+                                                    !onDelete || deletingId === doc.id
+                                                        ? 'default'
+                                                        : 'pointer',
+                                                opacity: onDelete ? 1 : 0.4,
+                                            }}
+                                        >
+                                            {deletingId === doc.id ? (
+                                                <span aria-hidden="true" style={{ fontSize: '11px', fontWeight: 700 }}>
+                                                    …
+                                                </span>
+                                            ) : (
+                                                <svg
+                                                    width="14"
+                                                    height="14"
+                                                    viewBox="0 0 24 24"
+                                                    fill="none"
+                                                    stroke="currentColor"
+                                                    strokeWidth="2"
+                                                    strokeLinecap="round"
+                                                    strokeLinejoin="round"
+                                                    aria-hidden="true"
+                                                >
+                                                    <polyline points="3 6 5 6 21 6" />
+                                                    <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                                                    <path d="M10 11v6M14 11v6" />
+                                                    <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+                                                </svg>
+                                            )}
+                                        </button>
                                     </td>
                                 </tr>
                             );

@@ -86,3 +86,74 @@ And if things went wrong instead:
 ##### Why not avoid it
 Without it, the UI has two bad options after complete: freeze on “Processing…” forever (user has no idea if extraction worked), or blindly declare “Done” the moment bytes land in GCS (declaring victory before extraction even starts — which is what the old simulated UI did).
 
+# Local RAG services
+
+The microservice Compose stack includes a persistent Qdrant container. Copy
+`backend/.env.example` to `backend/.env`, configure `VOYAGE_API_KEY`,
+`GROQ_API_KEY`, and (optionally) the Langfuse Cloud keys, then start the stack
+from `backend/`:
+
+```powershell
+docker compose -f docker-compose.microservices.yml --env-file .env up --build -d
+```
+
+After PostgreSQL is ready, apply migrations from `backend/` with
+`uv run alembic upgrade head`.
+
+Qdrant is available on `http://localhost:6333` and its dashboard at
+`http://localhost:6333/dashboard`. The agentic service and document worker use
+the Compose service URL (`http://qdrant:6333`). FastEmbed downloads its BM42
+model on first indexing/search, so the first operation can take longer.
+The `worker-documents` service is required for uploads to reach Qdrant; Qdrant
+alone only runs the database. Uploads stay in `processing` until indexing
+finishes, then move to `completed`; exhausted indexing retries mark them
+`failed`. The worker logs `rag_index_enqueued` and
+`rag_index_task_completed` with the document id and passage count.
+
+## Ask AI document research UI
+
+Open `/assistant` in the frontend to ask questions about indexed contracts,
+amendments, policies, invoices, purchase orders, and other uploaded documents,
+or search for source passages. Use the vendor selector to scope both views.
+Answers include citations that link back to their source documents.
+The frontend proxies `/api/agentic/*` to the agentic service on
+`http://localhost:8002` by default. This requires the agentic FastAPI service
+to be running as well as Qdrant; Qdrant alone does not expose the Ask AI API.
+Set `AGENTIC_API_URL` in `frontend/.env.local` if Next.js cannot reach the
+service at localhost (for example, use `http://agentic-reasoning:8002` when
+both services run in the same Docker network). A proxy connection failure is
+returned as HTTP 502 with a setup hint.
+
+RAG uses Groq's `openai/gpt-oss-120b` by default when `GROQ_API_KEY` is set.
+Override the model with `GROQ_MODEL`; leave `RAG_EVALUATOR_MODEL` blank to
+evaluate with the same model.
+
+The agentic service reads `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and
+`LANGFUSE_BASE_URL` from `backend/.env`; the Compose service also receives that
+file through `env_file`. Traces contain operation metadata and token usage,
+not prompts or source document text. Restart or recreate the agentic service
+after changing these settings. Use the base URL for the region where your
+Langfuse project is hosted.
+
+`POST /api/v1/rag/search` and `/api/v1/ask-ai` require the normal user bearer
+token. `POST /api/v1/rag/evaluate` generates questions from indexed contract
+passages and uses the configured evaluator model to score relevance,
+faithfulness, citation support, and evidence coverage. It does not use a fixed
+gold-answer set. Evaluation prompts and document text go to the configured LLM
+provider but are excluded from Langfuse; traces record metadata and token
+usage only.
+
+In Langfuse's Tracing/Observations view, Ask AI requests appear as one
+`ask_ai.query` trace with nested `ask_ai.document_retrieval` and
+`ask_ai.grounded_generation` spans; the provider call appears as a nested
+`rag.llm_call` generation. Direct passage searches appear as
+`rag.hybrid_search` traces. Each trace carries a `request_id`; the same ID is
+returned in the `X-Request-Id` response header and included in FastAPI logs.
+Prompts and source passages are intentionally omitted from traces. Langfuse
+ingestion is asynchronous, so a new trace may take a short time to appear.
+
+For a local MCP client, install the agentic-reasoning service dependencies,
+set `ZELLOVEST_TENANT_ID` in the MCP server process environment, and launch
+`python -m zellovest_agentic.mcp.document_knowledge` with the agentic service
+`src/` and shared package on `PYTHONPATH`. The stdio server takes tenant scope
+from that server environment; MCP tool arguments cannot choose another tenant.

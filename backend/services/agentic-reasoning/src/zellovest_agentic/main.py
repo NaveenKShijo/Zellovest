@@ -7,6 +7,7 @@ Handles:
 - Tool Calling Sandbox Engine
 """
 
+import re
 import uuid
 from contextlib import asynccontextmanager
 
@@ -48,7 +49,13 @@ def create_app(settings=None) -> FastAPI:
 
     @app.middleware("http")
     async def correlation_id_middleware(request: Request, call_next):
-        request_id = request.headers.get("X-Request-Id", uuid.uuid4().hex)
+        requested_id = request.headers.get("X-Request-Id", "")
+        request_id = (
+            requested_id
+            if re.fullmatch(r"[A-Za-z0-9._-]{1,128}", requested_id)
+            else uuid.uuid4().hex
+        )
+        request.state.request_id = request_id
         response = await call_next(request)
         response.headers["X-Request-Id"] = request_id
         return response

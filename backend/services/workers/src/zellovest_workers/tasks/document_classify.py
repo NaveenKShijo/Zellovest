@@ -2,7 +2,7 @@
 
 Input : ``extracted_text`` (first ~4k chars, from the ``extraction_artifacts``
         row) plus the original filename.
-Output: ``doc_type`` (invoice / purchase_order / contract / other) with a
+Output: ``doc_type`` (one of the values in ``DOCUMENT_TYPES``) with a
         calibrated confidence in [0, 1], persisted onto the ``uploads`` row
         (``document_type`` / ``document_type_confidence`` /
         ``classification_method``) and into the artifact row's
@@ -11,15 +11,15 @@ Output: ``doc_type`` (invoice / purchase_order / contract / other) with a
 Transport: Jev (TypeSafe AI) is accessed through OpenRouter's Decisions API
 (``https://openrouter.ai/api/alpha/decisions``; model default ``typesafe/jev-1.14``).
 A single ``choice`` question is submitted per document: given state
-(filename + text snippet), Jev picks one of four options and returns a
-calibrated confidence. On any Jev failure the task falls back to the existing
+(filename + text snippet), Jev picks a supported type and returns a calibrated
+confidence. On any Jev failure the task falls back to the existing
 keyword classifier (``document_ocr.classify_document``) so the pipeline never
 stalls: the row keeps a usable doc type annotated with
 ``classification_method="keyword_fallback"``.
 
-Execution model: ``process_document`` persists the extraction artifact, marks
-the upload COMPLETED, then chains this task. Jev unavailability therefore
-cannot fail an extraction — retries only re-refine classification.
+Execution model: ``process_document`` persists the extraction artifact, then
+chains this task; the upload completes after vector indexing. Jev unavailability
+cannot fail extraction because classification falls back to keywords.
 """
 
 from __future__ import annotations
@@ -45,6 +45,8 @@ DOCUMENT_TYPES: tuple[str, ...] = (
     "invoice",
     "purchase_order",
     "contract",
+    "amendment",
+    "policy",
     "other",
 )
 CLASSIFICATION_SNIPPET_CHARS = 4000
@@ -55,6 +57,8 @@ _DOC_TYPE_CRITERIA: dict[str, str] = {
     "invoice": "Bills, invoices, statements of amounts due, payment requests.",
     "purchase_order": "POs, requisitions, order confirmations.",
     "contract": "Agreements, MSAs, SOWs, terms and conditions, renewals.",
+    "amendment": "Contract amendments, addenda, renewals, and changes to existing agreements.",
+    "policy": "Procurement, vendor, security, privacy, and internal company policies.",
     "other": "Anything that does not clearly fit the above.",
 }
 
@@ -427,6 +431,9 @@ def _apply_classification(
     name="zellovest.workers.tasks.document_classify.classify_upload",
     queue=QUEUE_DOCUMENTS,
     max_retries=3,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_jitter=True,
 )
 def classify_upload(
     tenant_id: str,
@@ -489,21 +496,20 @@ def classify_upload(
     provenance = _build_provenance(result, effective_filename)
     _apply_classification(upload_id, result, provenance, effective_filename)
 
-    # Chain promotion to the documents table for procurement-relevant types.
-    promote_task_id = None
-    if result.doc_type in {"invoice", "purchase_order", "contract", "amendment"}:
-        from zellovest_workers.tasks.document_promote import promote_document
+    # Every completed upload gets a document row and Qdrant entry, even when
+    # it has no structured extraction schema.
+    from zellovest_workers.tasks.document_promote import promote_document
 
-        promote_result = promote_document.delay(
-            tenant_id=tenant_id,
-            upload_id=upload_id,
-            document_type=result.doc_type,
-            filename=effective_filename,
-            gcs_key=artifact.source_gcs_key,
-            page_count=None,
-            classifier_confidence=result.confidence,
-        )
-        promote_task_id = str(promote_result.id)
+    promote_result = promote_document.delay(
+        tenant_id=tenant_id,
+        upload_id=upload_id,
+        document_type=result.doc_type,
+        filename=effective_filename,
+        gcs_key=artifact.source_gcs_key,
+        page_count=None,
+        classifier_confidence=result.confidence,
+    )
+    promote_task_id = str(promote_result.id)
 
     logger.info(
         "document_classified",

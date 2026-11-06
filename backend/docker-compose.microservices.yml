@@ -26,6 +26,11 @@ services:
       timeout: 5s
       retries: 10
 
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports: ["6333:6333", "6334:6334"]
+    volumes: [qdrantdata:/qdrant/storage]
+
   fake-gcs:
     image: fsouza/fake-gcs-server:latest
     command: -scheme http -port 4443 -backend memory
@@ -53,10 +58,12 @@ services:
     environment:
       SERVICE_NAME: agentic-reasoning
       SERVICE_PORT: 8002
+      QDRANT_URL: http://qdrant:6333
     ports: ["8002:8002"]
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}
+      qdrant: {condition: service_started}
 
   ingestion-api:
     build:
@@ -90,9 +97,11 @@ services:
     env_file: [.env]
     environment:
       SERVICE_NAME: worker-documents
+      QDRANT_URL: http://qdrant:6333
     command: ["celery", "-A", "zellovest_workers.celery_app.celery_app", "worker", "-Q", "document_tasks", "--loglevel=info", "--concurrency=2"]
     depends_on:
       redis: {condition: service_healthy}
+      qdrant: {condition: service_started}
 
   worker-analytics:
     build:
@@ -128,3 +137,4 @@ volumes:
   pgdata:
   gcsdata:
   beatdata:
+  qdrantdata:

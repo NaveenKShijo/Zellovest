@@ -6,11 +6,10 @@ import { DropZone } from '@/components/upload/DropZone';
 import { UploadQueue } from '@/components/upload/UploadQueue';
 import { useApi, UploadLease } from '@/lib/api';
 
-// Worker-side polling for GET /uploads/{id} after `complete` returns
-// `staged`: converge the row to completed/failed instead of leaving it
-// stuck at "processing" (which only means "accepted for extraction").
+// Poll until extraction, classification, and Qdrant indexing reach a
+// terminal upload status. Back off slowly while long-running work continues.
 const POLL_INTERVAL_MS = 3000;
-const POLL_MAX_ATTEMPTS = 20;
+const POLL_MAX_INTERVAL_MS = 15000;
 
 function UploadPageContent() {
   const { files, addFile, removeFile, retryFile, clearCompleted, updateFileStatus, setUploadId } = useUpload();
@@ -40,22 +39,25 @@ function UploadPageContent() {
     });
   };
 
-  // Poll GET /uploads/{id} until the worker reaches a terminal lease
-  // status. Transient fetch failures consume an attempt; abandonment
-  // (cancel/unmount/row gone) stops the chain via stopPolling.
-  const pollLeaseStatus = (rowId: string, uploadId: string, attemptsLeft: number) => {
-    if (attemptsLeft <= 0) return;
+  // Poll GET /uploads/{id} until indexing finishes or fails. Transient fetch
+  // failures and in-progress jobs back off to reduce repeated API requests.
+  const pollLeaseStatus = (
+    rowId: string,
+    uploadId: string,
+    delayMs = POLL_INTERVAL_MS,
+  ) => {
     stopPolling(rowId);
     const timer = setTimeout(async () => {
       pollRefs.current.delete(rowId);
+      const nextDelayMs = Math.min(delayMs * 2, POLL_MAX_INTERVAL_MS);
       let lease: UploadLease | null = null;
       try {
         lease = await apiRef.current.uploads.get(uploadId);
       } catch {
-        // Transient: retry while attempts remain.
+        // Transient: keep polling with backoff until a terminal status arrives.
       }
       if (!lease) {
-        pollLeaseStatus(rowId, uploadId, attemptsLeft - 1);
+        pollLeaseStatus(rowId, uploadId, nextDelayMs);
         return;
       }
       if (lease.status === 'completed') {
@@ -66,8 +68,8 @@ function UploadPageContent() {
         updateFileStatus(rowId, 'error', undefined, lease.error || 'Extraction failed');
         return;
       }
-      pollLeaseStatus(rowId, uploadId, attemptsLeft - 1);
-    }, POLL_INTERVAL_MS);
+      pollLeaseStatus(rowId, uploadId, nextDelayMs);
+    }, delayMs);
     pollRefs.current.set(rowId, timer);
   };
 
@@ -108,7 +110,7 @@ function UploadPageContent() {
         const done = await api.uploads.complete(lease.upload_id);
         // The lease is now `staged`, not extracted: poll the worker-side
         // status until terminal instead of reporting a premature done.
-        pollLeaseStatus(item.id, done.upload_id, POLL_MAX_ATTEMPTS);
+        pollLeaseStatus(item.id, done.upload_id);
       } catch (err) {
         xhrRefs.current.delete(item.id);
         // An XHR abort from Cancel surfaces as a caught error; the row is

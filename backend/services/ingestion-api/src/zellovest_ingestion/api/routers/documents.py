@@ -16,6 +16,7 @@ Mirrors the uploads router: JWT auth, tenant fixed to the deployment
 tenant (V1), snake_case wire, fakes for tests.
 """
 
+import asyncio
 import json
 import re
 import uuid
@@ -23,7 +24,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -54,6 +55,7 @@ from zellovest_ingestion.schemas.documents import (
 )
 from zellovest_ingestion.schemas.uploads import DEFAULT_TENANT_ID
 from zellovest_shared.db.core import Vendor
+from zellovest_shared.db.intelligence import ReconciliationException
 from zellovest_shared.db.models import (
     Contract as ContractRow,
     ContractChangeType,
@@ -67,6 +69,7 @@ from zellovest_shared.db.models import (
     InvoiceLineItem as InvoiceLineItemRow,
     POLineItem as POLineItemRow,
     PurchaseOrder as PurchaseOrderRow,
+    RAGEvaluationRecord,
 )
 from zellovest_shared.db.models import Upload as UploadRow
 from zellovest_shared.db.models import UploadStatus as DbUploadStatus
@@ -736,6 +739,325 @@ async def _load_document(
     return row, artifact
 
 
+async def _delete_document_cascade(
+    session: AsyncSession,
+    *,
+    lease: UploadRow,
+    artifact: ExtractionArtifact | None,
+) -> tuple[list[uuid.UUID], set[str]]:
+    """Remove a document and every ledger record derived from it.
+
+    The upload lease is the explorer's document identity, and the structured
+    ``documents`` row is what downstream ledgers reference. Deleting only the
+    lease would leave invisible invoices, purchase orders, contracts, and
+    extraction provenance behind, while deleting the structured row first
+    would trip its foreign keys. This helper therefore:
+
+    1. Loads the structured documents and every derived ledger row.
+    2. Detaches shared records that must survive (invoices/POS still linked to
+       a deleted purchase order or contract, child contract versions, and
+       contract lines that still have terms in surviving versions).
+    3. Deletes reconciliation exceptions, then the derived children, then the
+       parents, and finally the structured document rows.
+
+    Args:
+        session: Active async database session for the request transaction.
+        lease: Tenant-scoped upload lease being deleted.
+        artifact: Matching extraction artifact, when one exists.
+
+    Returns:
+        Structured document ids (for vector cleanup) and every GCS object key
+        that belonged to the document (for best-effort blob cleanup).
+    """
+    tenant_id = lease.tenant_id
+    gcs_keys = {lease.gcs_key} if lease.gcs_key else set()
+    if artifact is not None:
+        gcs_keys.update(
+            key
+            for key in (artifact.source_gcs_key, artifact.artifact_gcs_key)
+            if key
+        )
+
+    documents = (
+        await session.execute(
+            select(DocumentRow).where(
+                DocumentRow.upload_id == lease.id,
+                DocumentRow.tenant_id == tenant_id,
+            )
+        )
+    ).scalars().all()
+    structured_ids = [document.id for document in documents]
+    gcs_keys.update(document.gcs_key for document in documents if document.gcs_key)
+    if not documents:
+        return structured_ids, gcs_keys
+
+    document_ids = set(structured_ids)
+
+    provenance = (
+        await session.execute(
+            select(ExtractionProvenance).where(
+                ExtractionProvenance.tenant_id == tenant_id,
+                ExtractionProvenance.document_id.in_(document_ids),
+            )
+        )
+    ).scalars().all()
+
+    rag_evaluations = (
+        await session.execute(
+            select(RAGEvaluationRecord).where(
+                RAGEvaluationRecord.tenant_id == tenant_id,
+                RAGEvaluationRecord.source_document_id.in_(document_ids),
+            )
+        )
+    ).scalars().all()
+
+    invoices = (
+        await session.execute(
+            select(InvoiceRow).where(
+                InvoiceRow.tenant_id == tenant_id,
+                InvoiceRow.document_id.in_(document_ids),
+            )
+        )
+    ).scalars().all()
+    invoice_ids = {invoice.id for invoice in invoices}
+
+    invoice_lines: list[InvoiceLineItemRow] = []
+    if invoice_ids:
+        invoice_lines = (
+            await session.execute(
+                select(InvoiceLineItemRow).where(
+                    InvoiceLineItemRow.tenant_id == tenant_id,
+                    InvoiceLineItemRow.invoice_id.in_(invoice_ids),
+                )
+            )
+        ).scalars().all()
+    invoice_line_ids = {line.id for line in invoice_lines}
+
+    purchase_orders = (
+        await session.execute(
+            select(PurchaseOrderRow).where(
+                PurchaseOrderRow.tenant_id == tenant_id,
+                PurchaseOrderRow.source_document_id.in_(document_ids),
+            )
+        )
+    ).scalars().all()
+    po_ids = {purchase_order.id for purchase_order in purchase_orders}
+
+    po_lines: list[POLineItemRow] = []
+    if po_ids:
+        po_lines = (
+            await session.execute(
+                select(POLineItemRow).where(
+                    POLineItemRow.tenant_id == tenant_id,
+                    POLineItemRow.po_id.in_(po_ids),
+                )
+            )
+        ).scalars().all()
+
+    contracts = (
+        await session.execute(
+            select(ContractRow).where(
+                ContractRow.tenant_id == tenant_id,
+                or_(
+                    ContractRow.document_id.in_(document_ids),
+                    ContractRow.id.in_(
+                        select(ContractVersionRow.contract_id).where(
+                            ContractVersionRow.tenant_id == tenant_id,
+                            ContractVersionRow.source_document_id.in_(document_ids),
+                        )
+                    ),
+                ),
+            )
+        )
+    ).scalars().all()
+    contract_ids = {contract.id for contract in contracts}
+
+    versions: list[ContractVersionRow] = []
+    if contract_ids:
+        versions = (
+            await session.execute(
+                select(ContractVersionRow).where(
+                    ContractVersionRow.tenant_id == tenant_id,
+                    ContractVersionRow.contract_id.in_(contract_ids),
+                )
+            )
+        ).scalars().all()
+
+    deleted_versions = [
+        version for version in versions if version.source_document_id in document_ids
+    ]
+    deleted_version_ids = {version.id for version in deleted_versions}
+    surviving_versions = [
+        version for version in versions if version.id not in deleted_version_ids
+    ]
+    surviving_contract_ids = {version.contract_id for version in surviving_versions}
+    contracts_to_delete = [
+        contract for contract in contracts if contract.id not in surviving_contract_ids
+    ]
+    contract_ids_to_delete = {contract.id for contract in contracts_to_delete}
+
+    terms = (
+        await session.execute(
+            select(ContractTermsVersionRow).where(
+                ContractTermsVersionRow.tenant_id == tenant_id,
+                or_(
+                    ContractTermsVersionRow.contract_version_id.in_(deleted_version_ids),
+                    ContractTermsVersionRow.amendment_document_id.in_(document_ids),
+                ),
+            )
+        )
+    ).scalars().all()
+    deleted_term_ids = {term.id for term in terms}
+    term_line_ids = {term.contract_line_id for term in terms}
+
+    contract_lines = (
+        await session.execute(
+            select(ContractLineRow).where(
+                ContractLineRow.tenant_id == tenant_id,
+                or_(
+                    ContractLineRow.contract_id.in_(contract_ids_to_delete),
+                    ContractLineRow.initial_document_id.in_(document_ids),
+                    ContractLineRow.id.in_(term_line_ids),
+                ),
+            )
+        )
+    ).scalars().all()
+
+    line_terms: list[ContractTermsVersionRow] = []
+    if contract_lines:
+        line_terms = (
+            await session.execute(
+                select(ContractTermsVersionRow).where(
+                    ContractTermsVersionRow.tenant_id == tenant_id,
+                    ContractTermsVersionRow.contract_line_id.in_(
+                        {line.id for line in contract_lines}
+                    ),
+                )
+            )
+        ).scalars().all()
+    surviving_line_ids = {
+        term.contract_line_id for term in line_terms if term.id not in deleted_term_ids
+    }
+    lines_to_delete = [
+        line
+        for line in contract_lines
+        if line.contract_id in contract_ids_to_delete or line.id not in surviving_line_ids
+    ]
+    line_ids_to_delete = {line.id for line in lines_to_delete}
+    lines_to_detach = [
+        line for line in contract_lines if line.id not in line_ids_to_delete
+    ]
+
+    exception_clauses = []
+    if invoice_ids:
+        exception_clauses.append(ReconciliationException.invoice_id.in_(invoice_ids))
+    if invoice_line_ids:
+        exception_clauses.append(
+            ReconciliationException.invoice_line_id.in_(invoice_line_ids)
+        )
+    if po_ids:
+        exception_clauses.append(ReconciliationException.po_id.in_(po_ids))
+    if contract_ids_to_delete:
+        exception_clauses.append(
+            ReconciliationException.contract_id.in_(contract_ids_to_delete)
+        )
+    if deleted_version_ids:
+        exception_clauses.append(
+            ReconciliationException.contract_version_id.in_(deleted_version_ids)
+        )
+    if deleted_term_ids:
+        exception_clauses.append(
+            ReconciliationException.contract_term_id.in_(deleted_term_ids)
+        )
+    exceptions: list[ReconciliationException] = []
+    if exception_clauses:
+        exceptions = (
+            await session.execute(
+                select(ReconciliationException).where(
+                    ReconciliationException.tenant_id == tenant_id,
+                    or_(*exception_clauses),
+                )
+            )
+        ).scalars().all()
+
+    # Detach shared ledger records before any delete is marked. Autoflush runs
+    # before each UPDATE, so this also keeps deletes from firing out of order.
+    if po_ids:
+        await session.execute(
+            update(InvoiceRow)
+            .where(
+                InvoiceRow.tenant_id == tenant_id,
+                InvoiceRow.po_id.in_(po_ids),
+            )
+            .values(po_id=None)
+        )
+    if contract_ids_to_delete:
+        await session.execute(
+            update(InvoiceRow)
+            .where(
+                InvoiceRow.tenant_id == tenant_id,
+                InvoiceRow.contract_id.in_(contract_ids_to_delete),
+            )
+            .values(contract_id=None)
+        )
+        await session.execute(
+            update(PurchaseOrderRow)
+            .where(
+                PurchaseOrderRow.tenant_id == tenant_id,
+                PurchaseOrderRow.contract_id.in_(contract_ids_to_delete),
+            )
+            .values(contract_id=None)
+        )
+    for contract in contracts:
+        if (
+            contract.id not in contract_ids_to_delete
+            and contract.document_id in document_ids
+        ):
+            contract.document_id = None
+    for line in lines_to_detach:
+        if line.initial_document_id in document_ids:
+            line.initial_document_id = None
+
+    parent_by_version = {
+        version.id: version.parent_version_id for version in versions
+    }
+    for version in surviving_versions:
+        parent_id = version.parent_version_id
+        seen: set[uuid.UUID] = set()
+        while parent_id in deleted_version_ids and parent_id not in seen:
+            seen.add(parent_id)
+            parent_id = parent_by_version.get(parent_id)
+        if version.parent_version_id != parent_id:
+            version.parent_version_id = parent_id
+
+    for row in provenance:
+        await session.delete(row)
+    for row in rag_evaluations:
+        await session.delete(row)
+    for row in exceptions:
+        await session.delete(row)
+    for row in terms:
+        await session.delete(row)
+    for row in invoice_lines:
+        await session.delete(row)
+    for row in invoices:
+        await session.delete(row)
+    for row in po_lines:
+        await session.delete(row)
+    for row in purchase_orders:
+        await session.delete(row)
+    for row in deleted_versions:
+        await session.delete(row)
+    for row in lines_to_delete:
+        await session.delete(row)
+    for row in contracts_to_delete:
+        await session.delete(row)
+    for row in documents:
+        await session.delete(row)
+
+    return structured_ids, gcs_keys
+
+
 async def _load_structured_data(
     *,
     document_id: uuid.UUID | None,
@@ -918,6 +1240,124 @@ async def _load_structured_data(
         }
 
     return None
+
+
+@router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_document(
+    document_id: uuid.UUID,
+    user: Any = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+    settings: IngestionAPISettings = Depends(get_app_settings),
+    reader=Depends(get_gcs_reader_dep),  # type: ignore[no-untyped-def]
+) -> None:
+    """Delete a document and every downstream record derived from it.
+
+    Explorer documents are upload leases. Deleting a lease alone would leave
+    structured ledger rows behind, so the handler removes the extraction
+    artifact, provenance, invoices, purchase orders, contract history, and
+    reconciliation exceptions in one transaction. Source and artifact blobs
+    plus RAG vectors are removed best-effort after the commit; a storage or
+    Qdrant failure is logged and does not resurrect the database rows.
+
+    Only settled uploads (``completed`` or ``failed``) may be deleted. Pending,
+    staged, and processing leases are rejected so a running worker cannot
+    recreate derived rows immediately after the delete.
+
+    Args:
+        document_id: Upload lease id shown by the Document Explorer.
+        user: Authenticated procurement member (JWT).
+        session: Async DB session.
+        settings: Service settings (GCS bucket).
+        reader: GCS object reader (fake in tests).
+
+    Raises:
+        HTTPException: 404 unknown document, 409 while the upload is still in
+            flight or when a foreign key still blocks the delete.
+    """
+    lease = await _load_lease(document_id, session)
+    if lease.status not in {DbUploadStatus.COMPLETED, DbUploadStatus.FAILED}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"cannot delete document while upload is {lease.status.value}",
+        )
+
+    tenant_id = lease.tenant_id
+    upload_id = lease.id
+    user_id = str(getattr(user, "id", ""))
+
+    artifact = (
+        await session.execute(
+            select(ExtractionArtifact).where(
+                ExtractionArtifact.upload_id == lease.id,
+                ExtractionArtifact.tenant_id == tenant_id,
+            )
+        )
+    ).scalar_one_or_none()
+
+    structured_ids, gcs_keys = await _delete_document_cascade(
+        session,
+        lease=lease,
+        artifact=artifact,
+    )
+    if artifact is not None:
+        await session.delete(artifact)
+    await session.delete(lease)
+
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        logger.error(
+            "document_delete_conflict",
+            tenant_id=tenant_id,
+            upload_id=str(upload_id),
+            error_class=type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The document is still referenced by ledger records and could not be deleted.",
+        ) from exc
+
+    if settings.gcs_raw_bucket:
+        for key in sorted(gcs_keys):
+            try:
+                reader.delete_object(bucket=settings.gcs_raw_bucket, key=key)
+            except Exception as exc:
+                logger.warning(
+                    "document_delete_blob_cleanup_failed",
+                    tenant_id=tenant_id,
+                    upload_id=str(upload_id),
+                    gcs_key=key,
+                    error_class=type(exc).__name__,
+                )
+
+    if structured_ids:
+        from zellovest_shared.rag import delete_document_points
+
+        for structured_id in structured_ids:
+            try:
+                await asyncio.to_thread(
+                    delete_document_points,
+                    tenant_id=tenant_id,
+                    document_id=str(structured_id),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "document_delete_vector_cleanup_failed",
+                    tenant_id=tenant_id,
+                    upload_id=str(upload_id),
+                    structured_document_id=str(structured_id),
+                    error_class=type(exc).__name__,
+                )
+
+    logger.info(
+        "document_deleted",
+        tenant_id=tenant_id,
+        upload_id=str(upload_id),
+        user_id=user_id,
+        structured_document_ids=[str(structured_id) for structured_id in structured_ids],
+        gcs_object_count=len(gcs_keys),
+    )
 
 
 @router.get("/{document_id}", response_model=DocumentDetailResponse)

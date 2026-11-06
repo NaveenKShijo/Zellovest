@@ -1701,7 +1701,7 @@ Potential backend technology choices:
 * Dedicated Memorystore for Redis for caching and asynchronous queues.
 * Celery or equivalent workers for background processing.
 * Dedicated GCS bucket for source documents.
-* Vector database via pgvector on Cloud SQL or Vertex AI Vector Search for semantic retrieval.
+* Qdrant for dense and sparse document retrieval; local development runs Qdrant in Docker with a persistent volume.
 * Google Cloud Document AI / OCR services for difficult documents.
 * LLMs for extraction, reasoning, summarization, and agent workflows.
 

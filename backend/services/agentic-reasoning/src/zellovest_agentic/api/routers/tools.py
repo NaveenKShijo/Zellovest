@@ -1,5 +1,7 @@
 """Tool Calling Sandbox Engine router."""
 
+import asyncio
+import time
 from typing import Any
 from uuid import UUID
 
@@ -7,8 +9,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from zellovest_agentic.api.deps import get_db_session
+from zellovest_agentic.api.deps import get_current_user, get_db_session
+from zellovest_agentic.services.tracing import trace_span
+from zellovest_shared.db.models import User
 from zellovest_shared.logging_conf import get_logger
+from zellovest_shared.rag import search_documents
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/tools", tags=["tools"])
@@ -247,10 +252,15 @@ async def get_tool(tool_name: str) -> ToolSchema:
 @router.post("/call", response_model=ToolCallResponse)
 async def call_tool(
     body: ToolCallRequest,
+    current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> ToolCallResponse:
     """Execute a tool call (sandbox for testing)."""
-    logger.info("tool_call_requested", tool=body.tool_name, tenant_id=body.tenant_id)
+    del session
+    tenant_id = current_user.tenant_id
+    logger.info("tool_call_requested", tool=body.tool_name, tenant_id=tenant_id)
+    if body.tenant_id != tenant_id:
+        raise HTTPException(status_code=403, detail="tenant context mismatch")
     
     if body.tool_name not in AVAILABLE_TOOLS:
         raise HTTPException(
@@ -258,7 +268,33 @@ async def call_tool(
             detail=f"Tool {body.tool_name} not found",
         )
     
-    # TODO: Implement actual tool execution via MCP clients
+    if body.tool_name in {"search_documents", "search_contracts"}:
+        query = str(body.arguments.get("query", "")).strip()
+        if not query:
+            raise HTTPException(status_code=422, detail="query is required")
+        started = time.perf_counter()
+        try:
+            with trace_span("mcp.document_search", {"tenant_id": tenant_id,
+                                                      "tool": body.tool_name}):
+                chunks = await asyncio.to_thread(
+                    search_documents, tenant_id=tenant_id, query=query,
+                    vendor_id=body.arguments.get("vendor_id"),
+                    document_type=("contract" if body.tool_name == "search_contracts"
+                                   else body.arguments.get("document_type")),
+                    limit=min(20, int(body.arguments.get("limit", 10))),
+                )
+        except Exception as exc:
+            logger.error("document_tool_failed", tenant_id=tenant_id,
+                         tool=body.tool_name, error_class=type(exc).__name__)
+            return ToolCallResponse(tool_name=body.tool_name, success=False,
+                                    error="document search unavailable",
+                                    execution_time_ms=int((time.perf_counter() - started) * 1000))
+        return ToolCallResponse(
+            tool_name=body.tool_name, success=True, result={"chunks": chunks},
+            execution_time_ms=int((time.perf_counter() - started) * 1000),
+            provenance={"tenant_id": tenant_id, "source": "qdrant"},
+        )
+    # Remaining tools are metadata-only until their domain handlers are wired.
     return ToolCallResponse(
         tool_name=body.tool_name,
         success=False,

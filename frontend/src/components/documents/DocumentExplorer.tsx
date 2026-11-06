@@ -4,9 +4,11 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
     DocumentListResponse,
+    DocumentRecord,
     DocumentStatus,
 } from '@/types';
 import { useApi } from '@/lib/api';
+import { useToast } from '@/contexts/ToastContext';
 import { DocumentFilters } from './DocumentFilters';
 import { DocumentTable } from './DocumentTable';
 import type { DocumentSortField } from './DocumentTable';
@@ -49,6 +51,7 @@ export function DocumentExplorer() {
     const router = useRouter();
     const searchParams = useSearchParams();
     const api = useApi();
+    const { notify } = useToast();
 
     // ---- URL state ------------------------------------------------------
     const tabParam = searchParams.get('tab') ?? 'all';
@@ -128,6 +131,10 @@ export function DocumentExplorer() {
     const [retryKey, setRetryKey] = useState(0);
     const requestIdRef = useRef(0);
 
+    // ---- Delete flow -----------------------------------------------------
+    const [deleteTarget, setDeleteTarget] = useState<DocumentRecord | null>(null);
+    const [deletingId, setDeletingId] = useState<string | null>(null);
+
     useEffect(() => {
         const requestId = ++requestIdRef.current;
         api.documents
@@ -188,6 +195,49 @@ export function DocumentExplorer() {
         },
         [sortField, sortDir, updateParams]
     );
+
+    useEffect(() => {
+        if (!deleteTarget) return;
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape' && !deletingId) setDeleteTarget(null);
+        };
+        document.addEventListener('keydown', handleKeyDown);
+        const previousOverflow = document.body.style.overflow;
+        document.body.style.overflow = 'hidden';
+        return () => {
+            document.removeEventListener('keydown', handleKeyDown);
+            document.body.style.overflow = previousOverflow;
+        };
+    }, [deleteTarget, deletingId]);
+
+    const handleDeleteConfirm = useCallback(async () => {
+        if (!deleteTarget || deletingId) return;
+        const target = deleteTarget;
+        setDeletingId(target.id);
+        try {
+            await api.documents.delete(target.id);
+            setDeleteTarget(null);
+            notify.success(
+                'Document deleted',
+                `${target.filename} and every record derived from it were removed.`
+            );
+            // Deleting the only row on a later page leaves the URL pointing
+            // past the end; step back one page instead of showing an empty
+            // stale page.
+            if (visible.length <= 1 && page > 1) {
+                updateParams({ page: String(page - 1) });
+            } else {
+                setRetryKey((key) => key + 1);
+            }
+        } catch (error) {
+            notify.error(
+                'Delete failed',
+                error instanceof Error ? error.message : 'The document could not be deleted.'
+            );
+        } finally {
+            setDeletingId(null);
+        }
+    }, [api, deleteTarget, deletingId, notify, page, updateParams, visible.length]);
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -309,6 +359,8 @@ export function DocumentExplorer() {
                     sortField={sortField}
                     sortDir={sortDir}
                     onSortChange={handleSort}
+                    onDelete={setDeleteTarget}
+                    deletingId={deletingId}
                 />
             )}
 
@@ -371,6 +423,152 @@ export function DocumentExplorer() {
                         >
                             Next →
                         </button>
+                    </div>
+                </div>
+            )}
+
+            {/* Destructive confirmation: deleting cascades into every ledger. */}
+            {deleteTarget && (
+                <div
+                    role="presentation"
+                    onMouseDown={(event) => {
+                        if (event.target === event.currentTarget && !deletingId) {
+                            setDeleteTarget(null);
+                        }
+                    }}
+                    style={{
+                        position: 'fixed',
+                        inset: 0,
+                        zIndex: 250,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        padding: '20px',
+                        backgroundColor: 'rgba(15, 23, 42, 0.45)',
+                        backdropFilter: 'blur(2px)',
+                    }}
+                >
+                    <div
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="delete-document-title"
+                        aria-describedby="delete-document-description"
+                        style={{
+                            width: 'min(480px, 100%)',
+                            padding: '22px 24px',
+                            borderRadius: 'var(--radius-lg)',
+                            border: '1px solid var(--border-subtle)',
+                            backgroundColor: 'var(--bg-surface)',
+                            boxShadow: '0 24px 64px rgba(15, 23, 42, 0.25)',
+                        }}
+                    >
+                        <h2
+                            id="delete-document-title"
+                            style={{
+                                margin: 0,
+                                fontSize: '17px',
+                                fontWeight: 700,
+                                color: 'var(--text-primary)',
+                            }}
+                        >
+                            Delete document?
+                        </h2>
+                        <div
+                            style={{
+                                marginTop: '10px',
+                                padding: '10px 12px',
+                                borderRadius: 'var(--radius-sm)',
+                                backgroundColor: 'var(--bg-surface-tint)',
+                                border: '1px solid var(--border-subtle)',
+                                fontSize: '12.5px',
+                                fontWeight: 600,
+                                color: 'var(--text-primary)',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                            }}
+                            title={deleteTarget.filename}
+                        >
+                            {deleteTarget.filename}
+                        </div>
+                        <p
+                            id="delete-document-description"
+                            style={{
+                                margin: '12px 0 0',
+                                fontSize: '13px',
+                                lineHeight: 1.55,
+                                color: 'var(--text-secondary)',
+                            }}
+                        >
+                            This permanently removes the file and its extraction artifact from
+                            storage, its RAG search vectors, and every downstream record generated
+                            from it — including invoices, purchase orders, contract versions and
+                            terms, and reconciliation exceptions. This cannot be undone.
+                        </p>
+                        {deleteTarget.status === 'processing' && (
+                            <p
+                                role="alert"
+                                style={{
+                                    margin: '12px 0 0',
+                                    fontSize: '12.5px',
+                                    lineHeight: 1.5,
+                                    color: 'var(--color-danger)',
+                                }}
+                            >
+                                This upload is still processing and cannot be deleted until the
+                                pipeline finishes.
+                            </p>
+                        )}
+                        <div
+                            style={{
+                                display: 'flex',
+                                justifyContent: 'flex-end',
+                                gap: '10px',
+                                marginTop: '20px',
+                            }}
+                        >
+                            <button
+                                type="button"
+                                disabled={Boolean(deletingId)}
+                                onClick={() => setDeleteTarget(null)}
+                                style={{
+                                    padding: '8px 14px',
+                                    borderRadius: 'var(--radius-sm)',
+                                    border: '1px solid var(--border-subtle)',
+                                    backgroundColor: 'var(--bg-surface)',
+                                    color: 'var(--text-secondary)',
+                                    fontSize: '12.5px',
+                                    fontWeight: 600,
+                                    cursor: deletingId ? 'default' : 'pointer',
+                                    opacity: deletingId ? 0.6 : 1,
+                                }}
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                autoFocus
+                                disabled={Boolean(deletingId) || deleteTarget.status === 'processing'}
+                                onClick={handleDeleteConfirm}
+                                style={{
+                                    padding: '8px 14px',
+                                    borderRadius: 'var(--radius-sm)',
+                                    border: '1px solid var(--color-danger-border)',
+                                    backgroundColor: 'var(--color-danger)',
+                                    color: '#FFFFFF',
+                                    fontSize: '12.5px',
+                                    fontWeight: 700,
+                                    cursor:
+                                        deletingId || deleteTarget.status === 'processing'
+                                            ? 'default'
+                                            : 'pointer',
+                                    opacity:
+                                        deletingId || deleteTarget.status === 'processing' ? 0.6 : 1,
+                                }}
+                            >
+                                {deletingId ? 'Deleting…' : 'Delete document'}
+                            </button>
+                        </div>
                     </div>
                 </div>
             )}

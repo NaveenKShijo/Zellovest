@@ -100,7 +100,7 @@
 
 ### Week 2 Acceptance
 
-- [ ] Upload → routed → classified → extracted with provenance
+- [x] Upload → routed → classified → extracted with provenance
 - [ ] Low-confidence extractions go to HITL
 - [ ] Versioned terms queryable
 - [ ] Hybrid search returns passage + page/section
