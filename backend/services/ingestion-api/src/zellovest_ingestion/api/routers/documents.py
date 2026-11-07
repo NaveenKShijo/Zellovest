@@ -24,7 +24,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, delete, func, not_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -780,83 +780,65 @@ async def _delete_document_cascade(
 
     documents = (
         await session.execute(
-            select(DocumentRow).where(
+            select(DocumentRow.id, DocumentRow.gcs_key).where(
                 DocumentRow.upload_id == lease.id,
                 DocumentRow.tenant_id == tenant_id,
             )
         )
-    ).scalars().all()
+    ).all()
     structured_ids = [document.id for document in documents]
     gcs_keys.update(document.gcs_key for document in documents if document.gcs_key)
+
     if not documents:
+        await session.execute(
+            delete(ExtractionArtifact).where(
+                ExtractionArtifact.tenant_id == tenant_id,
+                ExtractionArtifact.upload_id == lease.id,
+            )
+        )
+        await session.execute(
+            delete(UploadRow).where(
+                UploadRow.tenant_id == tenant_id,
+                UploadRow.id == lease.id,
+            )
+        )
         return structured_ids, gcs_keys
 
     document_ids = set(structured_ids)
 
-    provenance = (
-        await session.execute(
-            select(ExtractionProvenance).where(
-                ExtractionProvenance.tenant_id == tenant_id,
-                ExtractionProvenance.document_id.in_(document_ids),
-            )
-        )
-    ).scalars().all()
-
-    rag_evaluations = (
-        await session.execute(
-            select(RAGEvaluationRecord).where(
-                RAGEvaluationRecord.tenant_id == tenant_id,
-                RAGEvaluationRecord.source_document_id.in_(document_ids),
-            )
-        )
-    ).scalars().all()
-
     invoices = (
         await session.execute(
-            select(InvoiceRow).where(
+            select(InvoiceRow.id).where(
                 InvoiceRow.tenant_id == tenant_id,
                 InvoiceRow.document_id.in_(document_ids),
             )
         )
     ).scalars().all()
-    invoice_ids = {invoice.id for invoice in invoices}
-
-    invoice_lines: list[InvoiceLineItemRow] = []
-    if invoice_ids:
-        invoice_lines = (
+    invoice_ids = set(invoices)
+    invoice_line_ids = set(
+        (
             await session.execute(
-                select(InvoiceLineItemRow).where(
+                select(InvoiceLineItemRow.id).where(
                     InvoiceLineItemRow.tenant_id == tenant_id,
                     InvoiceLineItemRow.invoice_id.in_(invoice_ids),
                 )
             )
         ).scalars().all()
-    invoice_line_ids = {line.id for line in invoice_lines}
+    ) if invoice_ids else set()
 
     purchase_orders = (
         await session.execute(
-            select(PurchaseOrderRow).where(
+            select(PurchaseOrderRow.id).where(
                 PurchaseOrderRow.tenant_id == tenant_id,
                 PurchaseOrderRow.source_document_id.in_(document_ids),
             )
         )
     ).scalars().all()
-    po_ids = {purchase_order.id for purchase_order in purchase_orders}
-
-    po_lines: list[POLineItemRow] = []
-    if po_ids:
-        po_lines = (
-            await session.execute(
-                select(POLineItemRow).where(
-                    POLineItemRow.tenant_id == tenant_id,
-                    POLineItemRow.po_id.in_(po_ids),
-                )
-            )
-        ).scalars().all()
+    po_ids = set(purchase_orders)
 
     contracts = (
         await session.execute(
-            select(ContractRow).where(
+            select(ContractRow.id, ContractRow.document_id).where(
                 ContractRow.tenant_id == tenant_id,
                 or_(
                     ContractRow.document_id.in_(document_ids),
@@ -869,19 +851,26 @@ async def _delete_document_cascade(
                 ),
             )
         )
-    ).scalars().all()
+    ).all()
     contract_ids = {contract.id for contract in contracts}
 
-    versions: list[ContractVersionRow] = []
+    versions: list[Any] = []  # noqa: ANN401
     if contract_ids:
-        versions = (
-            await session.execute(
-                select(ContractVersionRow).where(
-                    ContractVersionRow.tenant_id == tenant_id,
-                    ContractVersionRow.contract_id.in_(contract_ids),
+        versions = list(
+            (
+                await session.execute(
+                    select(
+                        ContractVersionRow.id,
+                        ContractVersionRow.contract_id,
+                        ContractVersionRow.source_document_id,
+                        ContractVersionRow.parent_version_id,
+                    ).where(
+                        ContractVersionRow.tenant_id == tenant_id,
+                        ContractVersionRow.contract_id.in_(contract_ids),
+                    )
                 )
-            )
-        ).scalars().all()
+            ).all()
+        )
 
     deleted_versions = [
         version for version in versions if version.source_document_id in document_ids
@@ -896,23 +885,31 @@ async def _delete_document_cascade(
     ]
     contract_ids_to_delete = {contract.id for contract in contracts_to_delete}
 
-    terms = (
-        await session.execute(
-            select(ContractTermsVersionRow).where(
-                ContractTermsVersionRow.tenant_id == tenant_id,
-                or_(
-                    ContractTermsVersionRow.contract_version_id.in_(deleted_version_ids),
-                    ContractTermsVersionRow.amendment_document_id.in_(document_ids),
-                ),
+    term_delete_clauses = [
+        ContractTermsVersionRow.contract_version_id.in_(deleted_version_ids)
+    ] if deleted_version_ids else []
+    term_delete_clauses.append(
+        ContractTermsVersionRow.amendment_document_id.in_(document_ids)
+    )
+    clauses = list(term_delete_clauses)
+    term_line_ids = set(
+        (
+            await session.execute(
+                select(ContractTermsVersionRow.contract_line_id).where(
+                    ContractTermsVersionRow.tenant_id == tenant_id,
+                    or_(*clauses),
+                )
             )
-        )
-    ).scalars().all()
-    deleted_term_ids = {term.id for term in terms}
-    term_line_ids = {term.contract_line_id for term in terms}
+        ).scalars().all()
+    )
 
     contract_lines = (
         await session.execute(
-            select(ContractLineRow).where(
+            select(
+                ContractLineRow.id,
+                ContractLineRow.contract_id,
+                ContractLineRow.initial_document_id,
+            ).where(
                 ContractLineRow.tenant_id == tenant_id,
                 or_(
                     ContractLineRow.contract_id.in_(contract_ids_to_delete),
@@ -921,23 +918,20 @@ async def _delete_document_cascade(
                 ),
             )
         )
-    ).scalars().all()
+    ).all()
 
-    line_terms: list[ContractTermsVersionRow] = []
-    if contract_lines:
-        line_terms = (
+    candidate_line_ids = {line.id for line in contract_lines}
+    surviving_line_ids = set(
+        (
             await session.execute(
-                select(ContractTermsVersionRow).where(
+                select(ContractTermsVersionRow.contract_line_id).where(
                     ContractTermsVersionRow.tenant_id == tenant_id,
-                    ContractTermsVersionRow.contract_line_id.in_(
-                        {line.id for line in contract_lines}
-                    ),
+                    ContractTermsVersionRow.contract_line_id.in_(candidate_line_ids),
+                    not_(or_(*clauses)),
                 )
             )
         ).scalars().all()
-    surviving_line_ids = {
-        term.contract_line_id for term in line_terms if term.id not in deleted_term_ids
-    }
+    ) if candidate_line_ids else set()
     lines_to_delete = [
         line
         for line in contract_lines
@@ -965,23 +959,17 @@ async def _delete_document_cascade(
         exception_clauses.append(
             ReconciliationException.contract_version_id.in_(deleted_version_ids)
         )
-    if deleted_term_ids:
-        exception_clauses.append(
-            ReconciliationException.contract_term_id.in_(deleted_term_ids)
+    if clauses:
+        term_ids_subquery = select(ContractTermsVersionRow.id).where(
+            ContractTermsVersionRow.tenant_id == tenant_id,
+            or_(*clauses),
         )
-    exceptions: list[ReconciliationException] = []
-    if exception_clauses:
-        exceptions = (
-            await session.execute(
-                select(ReconciliationException).where(
-                    ReconciliationException.tenant_id == tenant_id,
-                    or_(*exception_clauses),
-                )
-            )
-        ).scalars().all()
+        exception_clauses.append(
+            ReconciliationException.contract_term_id.in_(term_ids_subquery)
+        )
 
-    # Detach shared ledger records before any delete is marked. Autoflush runs
-    # before each UPDATE, so this also keeps deletes from firing out of order.
+    # Detach shared ledger records and re-link survivor rows before deleting
+    # anything so no foreign key is left pointing at a row being removed.
     if po_ids:
         await session.execute(
             update(InvoiceRow)
@@ -1013,10 +1001,24 @@ async def _delete_document_cascade(
             contract.id not in contract_ids_to_delete
             and contract.document_id in document_ids
         ):
-            contract.document_id = None
+            await session.execute(
+                update(ContractRow)
+                .where(
+                    ContractRow.tenant_id == tenant_id,
+                    ContractRow.id == contract.id,
+                )
+                .values(document_id=None)
+            )
     for line in lines_to_detach:
         if line.initial_document_id in document_ids:
-            line.initial_document_id = None
+            await session.execute(
+                update(ContractLineRow)
+                .where(
+                    ContractLineRow.tenant_id == tenant_id,
+                    ContractLineRow.id == line.id,
+                )
+                .values(initial_document_id=None)
+            )
 
     parent_by_version = {
         version.id: version.parent_version_id for version in versions
@@ -1028,32 +1030,116 @@ async def _delete_document_cascade(
             seen.add(parent_id)
             parent_id = parent_by_version.get(parent_id)
         if version.parent_version_id != parent_id:
-            version.parent_version_id = parent_id
+            await session.execute(
+                update(ContractVersionRow)
+                .where(
+                    ContractVersionRow.tenant_id == tenant_id,
+                    ContractVersionRow.id == version.id,
+                )
+                .values(parent_version_id=parent_id)
+            )
+    if deleted_version_ids:
+        await session.execute(
+            update(ContractVersionRow)
+            .where(
+                ContractVersionRow.tenant_id == tenant_id,
+                ContractVersionRow.id.in_(deleted_version_ids),
+            )
+            .values(parent_version_id=None)
+        )
 
-    for row in provenance:
-        await session.delete(row)
-    for row in rag_evaluations:
-        await session.delete(row)
-    for row in exceptions:
-        await session.delete(row)
-    for row in terms:
-        await session.delete(row)
-    for row in invoice_lines:
-        await session.delete(row)
-    for row in invoices:
-        await session.delete(row)
-    for row in po_lines:
-        await session.delete(row)
-    for row in purchase_orders:
-        await session.delete(row)
-    for row in deleted_versions:
-        await session.delete(row)
-    for row in lines_to_delete:
-        await session.delete(row)
-    for row in contracts_to_delete:
-        await session.delete(row)
-    for row in documents:
-        await session.delete(row)
+    # Delete children before parents in a fixed order. Direct SQL keeps
+    # Postgres from seeing deletes in an arbitrary Unit-of-Work order.
+    await session.execute(
+        delete(ExtractionProvenance).where(
+            ExtractionProvenance.tenant_id == tenant_id,
+            ExtractionProvenance.document_id.in_(document_ids),
+        )
+    )
+    await session.execute(
+        delete(RAGEvaluationRecord).where(
+            RAGEvaluationRecord.tenant_id == tenant_id,
+            RAGEvaluationRecord.source_document_id.in_(document_ids),
+        )
+    )
+    if exception_clauses:
+        await session.execute(
+            delete(ReconciliationException).where(
+                ReconciliationException.tenant_id == tenant_id,
+                or_(*exception_clauses),
+            )
+        )
+    await session.execute(
+        delete(ContractTermsVersionRow).where(
+            ContractTermsVersionRow.tenant_id == tenant_id,
+            or_(*clauses),
+        )
+    )
+    if invoice_ids:
+        await session.execute(
+            delete(InvoiceLineItemRow).where(
+                InvoiceLineItemRow.tenant_id == tenant_id,
+                InvoiceLineItemRow.invoice_id.in_(invoice_ids),
+            )
+        )
+        await session.execute(
+            delete(InvoiceRow).where(
+                InvoiceRow.tenant_id == tenant_id,
+                InvoiceRow.id.in_(invoice_ids),
+            )
+        )
+    if po_ids:
+        await session.execute(
+            delete(POLineItemRow).where(
+                POLineItemRow.tenant_id == tenant_id,
+                POLineItemRow.po_id.in_(po_ids),
+            )
+        )
+        await session.execute(
+            delete(PurchaseOrderRow).where(
+                PurchaseOrderRow.tenant_id == tenant_id,
+                PurchaseOrderRow.id.in_(po_ids),
+            )
+        )
+    if line_ids_to_delete:
+        await session.execute(
+            delete(ContractLineRow).where(
+                ContractLineRow.tenant_id == tenant_id,
+                ContractLineRow.id.in_(line_ids_to_delete),
+            )
+        )
+    if deleted_version_ids:
+        await session.execute(
+            delete(ContractVersionRow).where(
+                ContractVersionRow.tenant_id == tenant_id,
+                ContractVersionRow.id.in_(deleted_version_ids),
+            )
+        )
+    if contract_ids_to_delete:
+        await session.execute(
+            delete(ContractRow).where(
+                ContractRow.tenant_id == tenant_id,
+                ContractRow.id.in_(contract_ids_to_delete),
+            )
+        )
+    await session.execute(
+        delete(DocumentRow).where(
+            DocumentRow.tenant_id == tenant_id,
+            DocumentRow.id.in_(document_ids),
+        )
+    )
+    await session.execute(
+        delete(ExtractionArtifact).where(
+            ExtractionArtifact.tenant_id == tenant_id,
+            ExtractionArtifact.upload_id == lease.id,
+        )
+    )
+    await session.execute(
+        delete(UploadRow).where(
+            UploadRow.tenant_id == tenant_id,
+            UploadRow.id == lease.id,
+        )
+    )
 
     return structured_ids, gcs_keys
 
@@ -1299,9 +1385,6 @@ async def delete_document(
         lease=lease,
         artifact=artifact,
     )
-    if artifact is not None:
-        await session.delete(artifact)
-    await session.delete(lease)
 
     try:
         await session.commit()

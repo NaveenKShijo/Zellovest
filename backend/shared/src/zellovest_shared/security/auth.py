@@ -53,6 +53,9 @@ def validate_password(password: str) -> str | None:
     return None
 
 
+DEFAULT_TENANT_ID = "default-org"
+
+
 async def get_user_by_email(session: Any, email: str) -> User | None:
     """Fetch an active user row by normalized email."""
     result = await session.execute(select(User).where(User.email == normalize_email(email)))
@@ -73,7 +76,7 @@ async def create_user(
     email: str,
     password: str,
     name: str = "",
-    tenant_id: str = "default",
+    tenant_id: str = DEFAULT_TENANT_ID,
 ) -> User:
     """Validate, hash, and persist a new user row (shared by seed + invites).
 

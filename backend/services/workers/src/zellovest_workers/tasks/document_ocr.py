@@ -287,13 +287,16 @@ def _persist_extraction_artifact(
                 min(max(payload["extraction"]["extraction_confidence"], 0.0), 1.0), 4
             )
             row.text_snippet = text_snippet
+
+            text_chars = len(payload["extraction"]["full_text"])
             session.commit()
+
         logger.info(
             "extraction_artifact_persisted",
             tenant_id=tenant_id,
             upload_id=upload_id,
             artifact_key=artifact_key,
-            text_chars=row.text_chars,
+            text_chars=text_chars
         )
         return artifact_key
     except Exception as exc:

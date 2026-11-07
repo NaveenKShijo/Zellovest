@@ -10,7 +10,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from zellovest_agentic.api.deps import get_current_user, get_db_session
+from zellovest_agentic.api.deps import get_current_user, get_db_session, normalize_tenant_id
 from zellovest_agentic.services.rag_llm import answer_question, generate_questions, judge_answer
 from zellovest_agentic.services.tracing import trace_span
 from zellovest_agentic.schemas.rag import (
@@ -39,8 +39,8 @@ async def search_documents(
 ) -> DocumentSearchResponse:
     """Search tenant-indexed documents using dense and sparse retrieval."""
     del session
-    tenant_id = current_user.tenant_id
-    if body.tenant_id and body.tenant_id != tenant_id:
+    tenant_id = normalize_tenant_id(current_user.tenant_id)
+    if body.tenant_id and normalize_tenant_id(body.tenant_id) != tenant_id:
         raise HTTPException(status_code=403, detail="tenant context mismatch")
     if body.date_from or body.date_to:
         raise HTTPException(status_code=422, detail="date filtering is not supported for indexed passages yet")
@@ -95,7 +95,7 @@ async def upload_document(
 ) -> DocumentUploadResponse:
     """Reject direct content upload; documents must use the audited upload pipeline."""
     del session
-    if body.tenant_id and body.tenant_id != current_user.tenant_id:
+    if body.tenant_id and normalize_tenant_id(body.tenant_id) != normalize_tenant_id(current_user.tenant_id):
         raise HTTPException(status_code=403, detail="tenant context mismatch")
     raise HTTPException(status_code=status.HTTP_410_GONE,
                          detail="Use the document upload pipeline to preserve provenance")
@@ -134,8 +134,8 @@ async def evaluate_rag(
     session: AsyncSession = Depends(get_db_session),
 ) -> RAGEvaluationResult:
     """Generate questions from indexed contract passages and score RAG with an LLM judge."""
-    tenant_id = current_user.tenant_id
-    if body.tenant_id and body.tenant_id != tenant_id:
+    tenant_id = normalize_tenant_id(current_user.tenant_id)
+    if body.tenant_id and normalize_tenant_id(body.tenant_id) != tenant_id:
         raise HTTPException(status_code=403, detail="tenant context mismatch")
     try:
         contexts = await asyncio.to_thread(sample_indexed_contexts,

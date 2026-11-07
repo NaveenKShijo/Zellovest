@@ -634,7 +634,7 @@ def _upsert_po(
     """Idempotent upsert for purchase-order header + line items."""
     existing = session.execute(
         select(PORow).where(
-            PORow.document_id == document_id,
+            PORow.source_document_id == document_id,
             PORow.po_number == data["po_number"],
         )
     ).scalar_one_or_none()
@@ -654,7 +654,7 @@ def _upsert_po(
         id=po_id,
         tenant_id=tenant_id,
         vendor_id=vendor_id,
-        document_id=document_id,
+        source_document_id=document_id,
         po_number=data["po_number"],
         order_date=_parse_date(data.get("order_date")) or now,
         expected_date=_parse_date(data.get("expected_date")),

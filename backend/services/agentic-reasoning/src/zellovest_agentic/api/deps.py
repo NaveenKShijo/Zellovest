@@ -21,6 +21,13 @@ async def get_db_session() -> AsyncSession:
         yield session
 
 
+def normalize_tenant_id(tenant_id: str | None) -> str:
+    """Normalize single-tenant deployment ID aliases (default -> default-org)."""
+    if tenant_id in (None, "", "default", "default-org"):
+        return "default-org"
+    return tenant_id
+
+
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
     session: AsyncSession = Depends(get_db_session),
@@ -36,6 +43,8 @@ async def get_current_user(
     except ValueError as exc:
         raise HTTPException(status_code=401, detail="invalid access token") from exc
     user = await session.scalar(select(User).where(User.id == user_id, User.is_active.is_(True)))
-    if user is None or user.tenant_id != claims.tenant_id:
+    if user is None:
+        raise HTTPException(status_code=401, detail="invalid access token")
+    if normalize_tenant_id(user.tenant_id) != normalize_tenant_id(claims.tenant_id):
         raise HTTPException(status_code=401, detail="invalid access token")
     return user

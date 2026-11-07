@@ -180,7 +180,7 @@ def create_access_token(
 def create_user_access_token(
     user_id: str,
     email: str,
-    tenant_id: str = "default",
+    tenant_id: str = "default-org",
     role: str = "procurement_member",
     expires_delta: timedelta | None = None,
 ) -> str:
@@ -211,7 +211,7 @@ def create_user_access_token(
 def create_refresh_token(
     user_id: str,
     email: str,
-    tenant_id: str = "default",
+    tenant_id: str = "default-org",
     expires_delta: timedelta | None = None,
 ) -> str:
     """Create a long-lived JWT refresh token for rotating access tokens.

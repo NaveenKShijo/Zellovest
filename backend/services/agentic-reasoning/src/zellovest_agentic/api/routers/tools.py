@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from zellovest_agentic.api.deps import get_current_user, get_db_session
+from zellovest_agentic.api.deps import get_current_user, get_db_session, normalize_tenant_id
 from zellovest_agentic.services.tracing import trace_span
 from zellovest_shared.db.models import User
 from zellovest_shared.logging_conf import get_logger
@@ -257,9 +257,9 @@ async def call_tool(
 ) -> ToolCallResponse:
     """Execute a tool call (sandbox for testing)."""
     del session
-    tenant_id = current_user.tenant_id
+    tenant_id = normalize_tenant_id(current_user.tenant_id)
     logger.info("tool_call_requested", tool=body.tool_name, tenant_id=tenant_id)
-    if body.tenant_id != tenant_id:
+    if normalize_tenant_id(body.tenant_id) != tenant_id:
         raise HTTPException(status_code=403, detail="tenant context mismatch")
     
     if body.tool_name not in AVAILABLE_TOOLS:

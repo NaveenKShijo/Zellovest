@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from zellovest_agentic.api.deps import get_current_user, get_db_session
+from zellovest_agentic.api.deps import get_current_user, get_db_session, normalize_tenant_id
 from zellovest_agentic.services.rag_llm import answer_question
 from zellovest_agentic.services.tracing import trace_span
 from zellovest_agentic.schemas.ask_ai import (
@@ -102,8 +102,8 @@ async def ask_ai(
 ) -> AskAIResponse:
     """Answer a procurement question using tenant-scoped document evidence."""
     del session
-    tenant_id = current_user.tenant_id
-    if body.tenant_id and body.tenant_id != tenant_id:
+    tenant_id = normalize_tenant_id(current_user.tenant_id)
+    if body.tenant_id and normalize_tenant_id(body.tenant_id) != tenant_id:
         raise HTTPException(status_code=403, detail="tenant context mismatch")
     request_id = request.state.request_id
     vendor_id = (body.context or {}).get("vendor_id")
@@ -142,8 +142,8 @@ async def ask_ai_stream(
 ) -> StreamingResponse:
     """Ask AI with an SSE response containing grounded answer and citations."""
     del session
-    tenant_id = current_user.tenant_id
-    if body.tenant_id and body.tenant_id != tenant_id:
+    tenant_id = normalize_tenant_id(current_user.tenant_id)
+    if body.tenant_id and normalize_tenant_id(body.tenant_id) != tenant_id:
         raise HTTPException(status_code=403, detail="tenant context mismatch")
     conversation_id = body.conversation_id or uuid4()
     request_id = request.state.request_id

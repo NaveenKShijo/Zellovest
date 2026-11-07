@@ -1005,90 +1005,230 @@ def test_delete_rejects_in_flight_upload() -> None:
     assert session.deleted == []
 
 
-def test_delete_removes_document_and_downstream_rows(monkeypatch: Any) -> None:
-    """Deleting a completed document cascades through ledger and provenance."""
-    lease = _lease()
-    artifact = _artifact(upload_id=lease.id)
-    document = SimpleNamespace(
-        id=uuid.uuid4(),
-        tenant_id="default-org",
-        upload_id=lease.id,
-        gcs_key=lease.gcs_key,
-    )
-    provenance = SimpleNamespace(id=uuid.uuid4())
-    evaluation = SimpleNamespace(id=uuid.uuid4())
-    invoice = SimpleNamespace(id=uuid.uuid4())
-    invoice_line = SimpleNamespace(id=uuid.uuid4())
-    purchase_order = SimpleNamespace(id=uuid.uuid4())
-    po_line = SimpleNamespace(id=uuid.uuid4())
-    contract = SimpleNamespace(
-        id=uuid.uuid4(), document_id=document.id, contract_id=uuid.uuid4()
-    )
-    version = SimpleNamespace(
-        id=uuid.uuid4(),
-        contract_id=contract.id,
-        source_document_id=document.id,
-        parent_version_id=None,
-    )
-    term = SimpleNamespace(
-        id=uuid.uuid4(),
-        contract_line_id=uuid.uuid4(),
-        amendment_document_id=document.id,
-    )
-    contract_line = SimpleNamespace(
-        id=term.contract_line_id,
-        contract_id=contract.id,
-        initial_document_id=document.id,
-    )
-    exception = SimpleNamespace(id=uuid.uuid4())
-    session = _FakeSession(
-        upload_row=lease,
-        execute_results=[
-            _OptionalResult(artifact),
-            _RowsResult([document]),
-            _RowsResult([provenance]),
-            _RowsResult([evaluation]),
-            _RowsResult([invoice]),
-            _RowsResult([invoice_line]),
-            _RowsResult([purchase_order]),
-            _RowsResult([po_line]),
-            _RowsResult([contract]),
-            _RowsResult([version]),
-            _RowsResult([term]),
-            _RowsResult([contract_line]),
-            _RowsResult([term]),          # all terms for the candidate line
-            _RowsResult([exception]),
-            _RowsResult([]),              # null invoices.po_id
-            _RowsResult([]),              # null invoices.contract_id
-            _RowsResult([]),              # null purchase_orders.contract_id
-        ],
-    )
-    deleted_points: list[str] = []
-    monkeypatch.setattr(
-        "zellovest_shared.rag.delete_document_points",
-        lambda *, tenant_id, document_id: deleted_points.append(document_id),
-    )
-    client = _make_client(session=session)
+def test_delete_document_cascade_removes_related_rows() -> None:
+    """Cascade deletes remove document-owned ledger rows with FK enforcement."""
+    import asyncio
 
-    response = client.delete(f"/api/v1/documents/{lease.id}")
+    from sqlalchemy import event, select
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-    assert response.status_code == 204
-    assert session.commits == 1
-    for row in (
-        provenance,
-        evaluation,
-        invoice_line,
-        invoice,
-        po_line,
-        purchase_order,
-        term,
-        version,
-        contract_line,
-        contract,
-        document,
-        artifact,
-        lease,
-    ):
-        assert row in session.deleted
-    assert exception in session.deleted
-    assert deleted_points == [str(document.id)]
+    from zellovest_ingestion.api.routers.documents import _delete_document_cascade
+    from zellovest_shared.db.core import Vendor
+    from zellovest_shared.db.intelligence import (
+        ExceptionRule,
+        ExceptionStatus,
+        ReconciliationException,
+    )
+    from zellovest_shared.db.models import (
+      Contract as ContractRow,
+      ContractChangeType,
+      ContractLine as ContractLineRow,
+      ContractStatus,
+      ContractTermsVersion as ContractTermsVersionRow,
+      ContractVersion as ContractVersionRow,
+      Document as DocumentRow,
+      ExtractionArtifact,
+      ExtractionProvenance,
+      Invoice as InvoiceRow,
+      InvoiceLineItem as InvoiceLineItemRow,
+      POLineItem as POLineItemRow,
+      PurchaseOrder as PurchaseOrderRow,
+      RAGEvaluationRecord,
+      Upload as UploadRow,
+    )
+    from zellovest_shared.db.transact import DocType, DocStatus
+    from zellovest_shared.db.models import Base
+
+    tenant_id = "default-org"
+
+    async def run() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+
+        @event.listens_for(engine.sync_engine, "connect")
+        def _enable_fk(dbapi_connection, _record):  # noqa: ANN001, ANN202
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
+
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with maker() as db:
+            now = datetime.now(UTC)
+            vendor = Vendor(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                name="Aster Cloud Systems, Inc.",
+                status="active",
+            )
+            db.add(vendor)
+
+            upload = UploadRow(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                filename="INV-2025-0020.pdf",
+                gcs_key=f"uploads/{tenant_id}/invoice/{uuid.uuid4().hex}/INV-2025-0020.pdf",
+                mime_type="application/pdf",
+                size_expected=1234,
+                document_type="invoice",
+                status=DbUploadStatus.COMPLETED,
+            )
+            db.add(upload)
+            await db.flush()
+            artifact = ExtractionArtifact(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                upload_id=upload.id,
+                source_gcs_key=upload.gcs_key,
+                artifact_gcs_key=f"artifacts/{tenant_id}/{upload.id}/extraction.json",
+                text_chars=100,
+                extraction_method="document_ai",
+                text_snippet="INVOICE",
+            )
+            document = DocumentRow(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                upload_id=upload.id,
+                gcs_key=upload.gcs_key,
+                filename=upload.filename,
+                document_type=DocType.INVOICE,
+                mime_type="application/pdf",
+                status=DocStatus.EXTRACTED,
+            )
+            db.add(artifact)
+            db.add(document)
+            await db.flush()
+            db.add(
+                ExtractionProvenance(
+                    id=uuid.uuid4(),
+                    tenant_id=tenant_id,
+                    document_id=document.id,
+                    entity_type="invoice",
+                    entity_id=uuid.uuid4(),
+                    field_name="invoice_number",
+                    field_value_text="INV-2025-0020",
+                )
+            )
+            db.add(
+                RAGEvaluationRecord(
+                    id=uuid.uuid4(),
+                    tenant_id=tenant_id,
+                    run_id=uuid.uuid4(),
+                    evaluator_model="test",
+                    question_hash="abc123",
+                    source_document_id=document.id,
+                    scores={"groundedness": 1.0},
+                )
+            )
+            invoice = InvoiceRow(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                vendor_id=vendor.id,
+                document_id=document.id,
+                invoice_number="INV-2025-0020",
+                invoice_date=now,
+                currency="USD",
+                subtotal=7387.2,
+                tax_amount=609.44,
+                total_amount=7996.64,
+            )
+            db.add(invoice)
+            await db.flush()
+            invoice_line = InvoiceLineItemRow(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                invoice_id=invoice.id,
+                line_no=1,
+                description="Cloud plan",
+                quantity=1,
+                unit_price=7387.2,
+                total=7387.2,
+            )
+            contract = ContractRow(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                vendor_id=vendor.id,
+                document_id=document.id,
+                contract_number="CON-001",
+                status=ContractStatus.ACTIVE,
+                start_date=now.date(),
+            )
+            db.add(invoice_line)
+            db.add(contract)
+            await db.flush()
+            contract_line = ContractLineRow(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                contract_id=contract.id,
+                initial_document_id=document.id,
+            )
+            version = ContractVersionRow(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                contract_id=contract.id,
+                version_no=1,
+                source_document_id=document.id,
+                change_type=ContractChangeType.ORIGINAL,
+                effective_from=now.date(),
+            )
+            db.add(contract_line)
+            db.add(version)
+            await db.flush()
+            term = ContractTermsVersionRow(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                contract_id=contract.id,
+                contract_version_id=version.id,
+                contract_line_id=contract_line.id,
+                version_no=1,
+                line_no=1,
+                unit_price=120.0,
+                currency="USD",
+                effective_from=now.date(),
+                amendment_document_id=document.id,
+            )
+            db.add(term)
+            await db.flush()
+            db.add(
+                ReconciliationException(
+                    id=uuid.uuid4(),
+                    tenant_id=tenant_id,
+                    invoice_id=invoice.id,
+                    invoice_line_id=invoice_line.id,
+                    contract_id=contract.id,
+                    contract_version_id=version.id,
+                    contract_term_id=term.id,
+                    rule_type=ExceptionRule.PRICE,
+                    status=ExceptionStatus.OPEN,
+                )
+            )
+            await db.flush()
+
+            structured_ids, _ = await _delete_document_cascade(
+                db, lease=upload, artifact=artifact
+            )
+            await db.commit()
+
+            assert structured_ids == [document.id]
+            for model in (
+                ExtractionArtifact,
+                ExtractionProvenance,
+                RAGEvaluationRecord,
+                InvoiceLineItemRow,
+                InvoiceRow,
+                POLineItemRow,
+                PurchaseOrderRow,
+                ContractTermsVersionRow,
+                ContractLineRow,
+                ContractVersionRow,
+                ContractRow,
+                DocumentRow,
+                UploadRow,
+            ):
+                remaining = (await db.execute(select(model))).all()
+                assert remaining == []
+
+        await engine.dispose()
+
+    asyncio.run(run())
