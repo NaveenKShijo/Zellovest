@@ -1,6 +1,7 @@
 """OAuth lifecycle router: connect (authorize URL) + callback (token exchange) + status."""
 
 from datetime import UTC, datetime, timedelta
+import json
 
 import redis
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -8,9 +9,14 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from zellovest_shared.db.models import TenantIntegration, effective_connection_status
-from zellovest_shared.db.repository import aupsert_integration
+from zellovest_shared.db.repository import adelete_integration, aupsert_integration
 from zellovest_shared.logging_conf import get_logger
-from zellovest_shared.schemas.integrations import ConnectRequest, ConnectResponse
+from zellovest_shared.schemas.integrations import (
+    ConnectRequest,
+    ConnectResponse,
+    DisconnectRequest,
+    DisconnectResponse,
+)
 from zellovest_shared.security.crypto import encrypt_token, generate_nonce
 from zellovest_shared.security.oauth_state import consume_state, create_state
 
@@ -26,6 +32,14 @@ from zellovest_ingestion.services.integration_tokens import has_refresh_token
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/integrations/ramp", tags=["integrations"])
+
+STATUS_CACHE_TTL_SECONDS = 60
+
+
+def _status_cache_key(tenant_id: str, provider: str = "ramp") -> str:
+    """Redis key for caching integration connection status."""
+    return f"integration:status:{tenant_id}:{provider}"
+
 
 @router.post("/connect", response_model=ConnectResponse, status_code=200)
 def connect(
@@ -128,6 +142,13 @@ async def callback(
     )
 
     await session.commit()
+
+    if redis_client is not None:
+        try:
+            redis_client.delete(_status_cache_key(tenant_id, "ramp"))
+        except Exception:
+            pass
+
     logger.info(
         "oauth_callback_stored",
         tenant_id=tenant_id,
@@ -146,8 +167,10 @@ async def callback(
 @router.get("/status", status_code=200)
 async def status(
     tenant_id: str = Query(default="default-org"),
+    fresh: bool = Query(default=False),
     settings: IngestionAPISettings = Depends(get_app_settings),
     session: AsyncSession = Depends(get_db_session),
+    redis_client: redis.Redis = Depends(get_redis_client),
 ) -> dict:
     """Check whether Ramp integration is active for this tenant.
 
@@ -155,6 +178,16 @@ async def status(
     token is stored. The ingestion worker renews it on the next sync; only
     a missing/rejected refresh grant needs a user reconnect.
     """
+    cache_key = _status_cache_key(tenant_id, "ramp")
+    if not fresh and redis_client is not None:
+        try:
+            cached = redis_client.get(cache_key)
+            if cached:
+                raw_str = cached.decode("utf-8") if isinstance(cached, bytes) else str(cached)
+                return json.loads(raw_str)
+        except Exception:
+            pass
+
     stmt = select(TenantIntegration).where(
         TenantIntegration.tenant_id == tenant_id,
         TenantIntegration.provider == "ramp",
@@ -163,7 +196,7 @@ async def status(
     integration = result.scalar_one_or_none()
 
     if integration is None:
-        return {
+        resp_data = {
             "connected": False,
             "provider": "ramp",
             "tenant_id": tenant_id,
@@ -175,6 +208,12 @@ async def status(
             "token_expires_at": None,
             "updated_at": None,
         }
+        if redis_client is not None:
+            try:
+                redis_client.set(cache_key, json.dumps(resp_data), ex=STATUS_CACHE_TTL_SECONDS)
+            except Exception:
+                pass
+        return resp_data
 
     refresh_available = has_refresh_token(
         integration, settings.credentials_encryption_key
@@ -186,7 +225,7 @@ async def status(
     )
     status_str = effective.value
     needs_reconnect = effective.value in ("EXPIRED", "REVOKED")
-    return {
+    resp_data = {
         "connected": effective.value == "ACTIVE",
         "provider": "ramp",
         "tenant_id": tenant_id,
@@ -200,3 +239,54 @@ async def status(
         ),
         "updated_at": integration.updated_at.isoformat() if integration.updated_at else None,
     }
+    if redis_client is not None:
+        try:
+            redis_client.set(cache_key, json.dumps(resp_data), ex=STATUS_CACHE_TTL_SECONDS)
+        except Exception:
+            pass
+    return resp_data
+
+
+@router.post("/disconnect", response_model=DisconnectResponse, status_code=200)
+@router.delete("/disconnect", response_model=DisconnectResponse, status_code=200)
+@router.delete("", response_model=DisconnectResponse, status_code=200)
+async def disconnect(
+    body: DisconnectRequest | None = None,
+    tenant_id: str | None = Query(default=None),
+    session: AsyncSession = Depends(get_db_session),
+    redis_client: redis.Redis = Depends(get_redis_client),
+) -> DisconnectResponse:
+    """Disconnect Ramp integration by deleting credentials for this tenant.
+
+    Purges the stored encrypted OAuth tokens so background syncs halt and
+    the integration status transitions to DISCONNECTED.
+
+    Args:
+        body: Optional request body specifying tenant_id.
+        tenant_id: Optional query parameter for tenant_id.
+        session: Database session.
+        redis_client: Redis client for cache invalidation.
+
+    Returns:
+        Disconnect confirmation response.
+    """
+    resolved_tenant = (
+        (body.tenant_id if body and body.tenant_id else None) or tenant_id or "default-org"
+    )
+    await adelete_integration(session, tenant_id=resolved_tenant, provider="ramp")
+    await session.commit()
+
+    if redis_client is not None:
+        try:
+            redis_client.delete(_status_cache_key(resolved_tenant, "ramp"))
+        except Exception:
+            pass
+
+    logger.info("ramp_integration_disconnected", tenant_id=resolved_tenant)
+    return DisconnectResponse(
+        tenant_id=resolved_tenant,
+        provider="ramp",
+        disconnected=True,
+        status="DISCONNECTED",
+    )
+

@@ -1,9 +1,10 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { Vendor, Contract, Invoice, CardTransaction, Document } from '@/types';
+import { useApi } from '@/lib/api';
 import { VendorHeader } from '@/components/vendors/VendorHeader';
 import { TabNavigation, createVendorTabs, TabConfig } from '@/components/vendors/TabNavigation';
 import { ContractTable } from '@/components/vendors/ContractTable';
@@ -254,13 +255,35 @@ const MOCK_DOCUMENTS: Document[] = [
 export default function VendorDetailPage() {
   const params = useParams();
   const vendorId = params.id as string;
-  const [vendor] = useState<Vendor | null>(() => MOCK_VENDORS.find((v) => v.id === vendorId) || null);
+  const api = useApi();
+
+  const [vendor, setVendor] = useState<Vendor | null>(() => MOCK_VENDORS.find((v) => v.id === vendorId) || null);
   const [contracts] = useState<Contract[]>(() => MOCK_CONTRACTS.filter((c) => c.vendorId === vendorId));
   const [invoices] = useState<Invoice[]>(() => MOCK_INVOICES.filter((i) => i.vendorId === vendorId));
   const [transactions] = useState<CardTransaction[]>(() => MOCK_TRANSACTIONS.filter((t) => t.vendorId === vendorId));
   const [documents] = useState<Document[]>(() => MOCK_DOCUMENTS.filter((d) => d.vendorId === vendorId));
-  const [isLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(!vendor);
   const [activeTab, setActiveTab] = useState<'overview' | 'contracts' | 'invoices' | 'transactions' | 'documents'>('overview');
+
+  useEffect(() => {
+    let active = true;
+    api.vendors
+      .get(vendorId)
+      .then((data) => {
+        if (!active) return;
+        setVendor(data);
+      })
+      .catch((err) => {
+        console.warn('Could not fetch vendor by id:', err);
+      })
+      .finally(() => {
+        if (active) setIsLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [vendorId, api]);
 
   if (isLoading) {
     return (

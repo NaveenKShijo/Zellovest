@@ -229,6 +229,67 @@ async def aclear_integration_error(
     session.add(row)
 
 
+async def adelete_integration(
+    session: AsyncSession,
+    *,
+    tenant_id: str,
+    provider: str,
+) -> bool:
+    """Delete the tenant's integration row to disconnect and purge credentials (async).
+
+    Args:
+        session: Async DB session (caller commits).
+        tenant_id: Tenant owning the integration row.
+        provider: Provider key (e.g. ramp, okta, google_drive).
+
+    Returns:
+        True if the row existed and was deleted, False otherwise.
+    """
+    row = (
+        await session.execute(
+            select(TenantIntegration).where(
+                TenantIntegration.tenant_id == tenant_id,
+                TenantIntegration.provider == provider,
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        return False
+    await session.delete(row)
+    logger.info("integration_deleted", tenant_id=tenant_id, provider=provider)
+    return True
+
+
+def delete_integration_sync(
+    session: Session,
+    *,
+    tenant_id: str,
+    provider: str,
+) -> bool:
+    """Delete the tenant's integration row to disconnect and purge credentials (sync).
+
+    Args:
+        session: Sync DB session (caller commits).
+        tenant_id: Tenant owning the integration row.
+        provider: Provider key (e.g. ramp, okta, google_drive).
+
+    Returns:
+        True if the row existed and was deleted, False otherwise.
+    """
+    row = session.execute(
+        select(TenantIntegration).where(
+            TenantIntegration.tenant_id == tenant_id,
+            TenantIntegration.provider == provider,
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        return False
+    session.delete(row)
+    logger.info("integration_deleted", tenant_id=tenant_id, provider=provider)
+    return True
+
+
+
 async def acreate_pending_checkpoint(
     session: AsyncSession,
     *,

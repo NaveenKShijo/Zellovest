@@ -3,6 +3,8 @@
 import React, { FormEvent, useEffect, useRef, useState } from 'react';
 import { ContractCandidate, ContractReviewCommitRequest, ContractReviewRecord, DocumentDetail } from '@/types';
 import { useApi } from '@/lib/api';
+import { useAuth } from '@/contexts/AuthContext';
+import { readContractCandidates } from '@/lib/documentDataCache';
 import { ExceptionDrawer } from './ExceptionDrawer';
 import { ReviewConfidenceChips } from './ReviewConfidenceChips';
 import { useReviewHashRequest } from './useReviewHashRequest';
@@ -264,6 +266,8 @@ export function ContractReviewPanel({
     onCommitted: () => void;
 }) {
     const api = useApi();
+    const { user } = useAuth();
+    const documentCacheScopeId = user?.id ?? 'anonymous';
     const review = document.review;
     const [form, setForm] = useState<ReviewForm>(() =>
         initializeForm(review, document.vendor_name, document.structured_data, document.document_type)
@@ -301,12 +305,16 @@ export function ContractReviewPanel({
         if (!isCommercial) return;
         let active = true;
         setCandidateLoading(true);
-        apiRef.current.documents.contractCandidates(document.id)
+        readContractCandidates(
+            documentCacheScopeId,
+            document.id,
+            () => apiRef.current.documents.contractCandidates(document.id)
+        )
             .then((response) => { if (active) setCandidates(response.candidates); })
             .catch((caught) => { if (active) setCandidateError(caught instanceof Error ? caught.message : 'Unable to load parent contracts.'); })
             .finally(() => { if (active) setCandidateLoading(false); });
         return () => { active = false; };
-    }, [document.id, isCommercial]);
+    }, [document.id, documentCacheScopeId, isCommercial]);
 
     useEffect(() => {
         if (form.parent_contract_id || form.change_type === 'original') return;

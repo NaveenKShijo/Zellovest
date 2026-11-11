@@ -1,11 +1,13 @@
 'use client';
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { DocumentDetail } from '@/types';
 import { useApi } from '@/lib/api';
+import { useAuth } from '@/contexts/AuthContext';
+import { invalidateDocumentDetail, readDocumentDetail } from '@/lib/documentDataCache';
 import { StatusPill } from '@/components/documents/StatusPill';
 import { ProvenanceBadge } from '@/components/documents/ProvenanceBadge';
 import { VendorTag } from '@/components/documents/VendorTag';
@@ -61,6 +63,8 @@ export default function DocumentDetailPage() {
     const documentId = typeof params.id === 'string' ? params.id : Array.isArray(params.id) ? params.id[0] : null;
 
     const api = useApi();
+    const { user } = useAuth();
+    const documentCacheScopeId = useMemo(() => user?.id ?? 'anonymous', [user]);
     const [view, setView] = useState<DetailView>(INITIAL_VIEW);
     const [retryKey, setRetryKey] = useState(0);
     const requestIdRef = useRef(0);
@@ -75,8 +79,11 @@ export default function DocumentDetailPage() {
     useEffect(() => {
         if (!documentId) return; // malformed id handled by derivation below
         const requestId = ++requestIdRef.current;
-        api.documents
-            .get(documentId)
+        readDocumentDetail(
+            documentCacheScopeId,
+            documentId,
+            () => api.documents.get(documentId)
+        )
             .then((response) => {
                 if (requestId !== requestIdRef.current) return; // stale response
                 setView({ status: 'ready', detail: response, message: null });
@@ -92,7 +99,13 @@ export default function DocumentDetailPage() {
         // api.documents.filter chain is recreated per render; documentId is
         // the real input and changes with the route.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [documentId, retryKey]);
+    }, [documentCacheScopeId, documentId, retryKey]);
+
+    /** Invalidate detail after a user action that can change its server representation. */
+    const refreshDetail = useCallback(() => {
+        if (documentId) invalidateDocumentDetail(documentCacheScopeId, documentId);
+        setRetryKey((key) => key + 1);
+    }, [documentCacheScopeId, documentId]);
 
     // Stale-content guard: while a new id is fetching, show the loading view
     // instead of the previous document's data (no extra state needed).
@@ -211,7 +224,7 @@ export default function DocumentDetailPage() {
                         {!isMalformed && (
                             <button
                                 type="button"
-                                onClick={() => setRetryKey((key) => key + 1)}
+                                onClick={refreshDetail}
                                 style={{ all: 'unset', cursor: 'pointer', fontWeight: 700, fontSize: '12px', textDecoration: 'underline' }}
                             >
                                 Retry
@@ -272,14 +285,14 @@ export default function DocumentDetailPage() {
                     <ContractReviewPanel
                         key={`${detail.id}:${detail.review?.status ?? 'none'}:${detail.review?.reviewed_at ?? ''}`}
                         document={detail}
-                        onCommitted={() => setRetryKey((key) => key + 1)}
+                        onCommitted={refreshDetail}
                     />
                 )}
                 {detail && (
                     <InvoiceReviewPanel
                         key={`invoice:${detail.id}:${detail.review?.status ?? 'none'}:${detail.review?.reviewed_at ?? ''}`}
                         document={detail}
-                        onCommitted={() => setRetryKey((key) => key + 1)}
+                        onCommitted={refreshDetail}
                     />
                 )}
                 <StructuredDataPanel

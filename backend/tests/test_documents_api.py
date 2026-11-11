@@ -1232,3 +1232,86 @@ def test_delete_document_cascade_removes_related_rows() -> None:
         await engine.dispose()
 
     asyncio.run(run())
+
+
+def test_purge_document_artifacts_worker_task(monkeypatch: Any) -> None:
+    """Worker task purges GCS blobs and Qdrant vector points asynchronously."""
+    import zellovest_workers.tasks.maintenance as maint_module
+
+    deleted_blobs: list[str] = []
+    deleted_vectors: list[str] = []
+
+    class FakeReader:
+        def delete_object(self, *, bucket: str, key: str) -> bool:
+            deleted_blobs.append(key)
+            return True
+
+    monkeypatch.setattr(
+        maint_module,
+        "GcsStorageReader",
+        lambda: FakeReader(),
+    )
+    monkeypatch.setattr(
+        "zellovest_shared.rag.delete_document_points",
+        lambda tenant_id, document_id: deleted_vectors.append(document_id),
+    )
+
+    result = maint_module.purge_document_artifacts(
+        tenant_id="t1",
+        upload_id="u1",
+        gcs_keys=["raw/file.pdf", "artifacts/file.json"],
+        structured_ids=["doc-uuid-1", "doc-uuid-2"],
+    )
+
+    assert result["status"] == "completed"
+    assert result["deleted_blobs"] == 2
+    assert result["deleted_vectors"] == 2
+    assert deleted_blobs == ["artifacts/file.json", "raw/file.pdf"]
+    assert deleted_vectors == ["doc-uuid-1", "doc-uuid-2"]
+
+
+def test_delete_document_dispatches_async_cleanup(monkeypatch: Any) -> None:
+    """DELETE /documents/{id} enqueues Celery purge task without blocking."""
+    from zellovest_workers.celery_app import celery_app
+
+    enqueued_tasks: list[dict[str, Any]] = []
+
+    def fake_send_task(task_name: str, kwargs: dict[str, Any]) -> None:
+        enqueued_tasks.append({"task_name": task_name, "kwargs": kwargs})
+
+    monkeypatch.setattr(celery_app, "send_task", fake_send_task)
+
+    lease = _lease(status=DbUploadStatus.COMPLETED)
+
+    class _MockResult:
+        def __init__(self, value: Any = None) -> None:
+            self._value = value
+
+        def scalar_one_or_none(self) -> Any:
+            return self._value
+
+        def all(self) -> list[Any]:
+            return self._value or []
+
+        def scalars(self) -> Any:
+            return self
+
+    session = _FakeSession(
+        upload_row=lease,
+        execute_results=[
+            _MockResult(None),  # ExtractionArtifact lookup
+            _MockResult([]),    # DocumentRow lookup
+            _MockResult(None),  # delete(ExtractionArtifact)
+            _MockResult(None),  # delete(UploadRow)
+        ],
+    )
+    client = _make_client(session=session)
+
+    response = client.delete(f"/api/v1/documents/{lease.id}")
+    assert response.status_code == 204
+    assert len(enqueued_tasks) == 1
+    assert enqueued_tasks[0]["task_name"] == "zellovest.workers.tasks.maintenance.purge_document_artifacts"
+    assert enqueued_tasks[0]["kwargs"]["tenant_id"] == lease.tenant_id
+    assert enqueued_tasks[0]["kwargs"]["upload_id"] == str(lease.id)
+
+

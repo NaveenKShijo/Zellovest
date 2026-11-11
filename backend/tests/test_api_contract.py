@@ -192,6 +192,35 @@ def test_status_disconnected_by_default(client):  # type: ignore[no-untyped-def]
         client.app.dependency_overrides.clear()
 
 
+def test_disconnect_ramp_deletes_integration(client):  # type: ignore[no-untyped-def]
+    """POST /integrations/ramp/disconnect deletes the integration and returns DISCONNECTED."""
+    from zellovest_ingestion.api.deps import get_db_session
+
+    mock_session = AsyncMock()
+    mock_row = MagicMock()
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = mock_row
+    mock_session.execute.return_value = mock_result
+
+    async def fake_session():  # type: ignore[no-untyped-def]
+        yield mock_session
+
+    client.app.dependency_overrides[get_db_session] = fake_session
+    try:
+        response = client.post("/api/v1/integrations/ramp/disconnect", json={"tenant_id": "t1"})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["disconnected"] is True
+        assert data["status"] == "DISCONNECTED"
+        assert data["provider"] == "ramp"
+        assert data["tenant_id"] == "t1"
+        mock_session.delete.assert_called_once_with(mock_row)
+        mock_session.commit.assert_called_once()
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+
 def test_sync_validates_entity(client):  # type: ignore[no-untyped-def]
     """POST /sync rejects unknown entities with 422 (Pydantic validation)."""
     response = client.post("/api/v1/sync/ramp", json={"tenant_id": "t1", "entity": "nope"})

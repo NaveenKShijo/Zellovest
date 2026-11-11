@@ -147,3 +147,61 @@ def ensure_drive_watch(
         return None
     logger.info("drive_watch_created", tenant_id=tenant_id, channel_id=channel_id)
     return description
+
+
+def teardown_drive_watch(
+    redis_client: redis.Redis | None,
+    *,
+    tenant_id: str,
+    access_token: str | None = None,
+    client_factory: Callable[[str], GoogleDriveClient] | None = None,
+) -> bool:
+    """Tear down any active push channel for the tenant and purge Redis keys.
+
+    Best-effort: stops the channel on Google Drive if an access token is provided,
+    and purges both the channel-to-tenant and tenant-to-channel Redis keys.
+
+    Args:
+        redis_client: Redis client (optional, skips Redis if None).
+        tenant_id: Owning tenant whose watch is being torn down.
+        access_token: Drive access token to call channels.stop (optional).
+        client_factory: Injectable access_token -> client factory (for tests).
+
+    Returns:
+        True if an active watch mapping was found and cleaned up, False otherwise.
+    """
+    if redis_client is None:
+        return False
+    watch = get_drive_watch(redis_client, tenant_id)
+    channel_id = watch.get("channel_id") if watch else None
+    resource_id = watch.get("resource_id") if watch else None
+
+    if access_token and channel_id and resource_id:
+        factory = client_factory or (lambda tok: GoogleDriveClient(access_token=tok))
+        try:
+            client = factory(access_token)
+            client.stop_channel(channel_id, resource_id)
+        except Exception as exc:
+            logger.warning(
+                "drive_watch_stop_channel_failed",
+                tenant_id=tenant_id,
+                channel_id=channel_id,
+                error=str(exc),
+            )
+
+    try:
+        pipe = redis_client.pipeline()
+        if channel_id:
+            pipe.delete(_watch_key(channel_id))
+        pipe.delete(_tenant_key(tenant_id))
+        pipe.execute()
+        logger.info("drive_watch_torn_down", tenant_id=tenant_id, channel_id=channel_id)
+        return True
+    except Exception as exc:
+        logger.warning(
+            "drive_watch_teardown_redis_failed",
+            tenant_id=tenant_id,
+            error_class=type(exc).__name__,
+        )
+        return False
+

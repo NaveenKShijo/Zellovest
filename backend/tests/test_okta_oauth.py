@@ -222,6 +222,27 @@ def test_okta_status_disconnected_by_default(client):
     assert data["provider"] == "okta"
 
 
+def test_okta_disconnect_endpoint(client):
+    """POST /disconnect deletes the integration and returns DISCONNECTED."""
+    mock_session = AsyncMock()
+    mock_row = MagicMock()
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = mock_row
+    mock_session.execute.return_value = mock_result
+    _override_session(client, mock_session)
+
+    resp = client.post("/api/v1/integrations/okta/disconnect", json={"tenant_id": "t1"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["disconnected"] is True
+    assert data["status"] == "DISCONNECTED"
+    assert data["provider"] == "okta"
+    assert data["tenant_id"] == "t1"
+    mock_session.delete.assert_called_once_with(mock_row)
+    mock_session.commit.assert_called_once()
+
+
+
 # --- Service unit tests ------------------------------------------------------
 
 

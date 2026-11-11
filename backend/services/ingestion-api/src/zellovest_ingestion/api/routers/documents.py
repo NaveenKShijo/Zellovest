@@ -23,7 +23,7 @@ import uuid
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
 from sqlalchemy import and_, delete, func, not_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1328,9 +1328,114 @@ async def _load_structured_data(
     return None
 
 
+DOCUMENT_PURGE_TASK_NAME = "zellovest.workers.tasks.maintenance.purge_document_artifacts"
+
+
+def _run_local_cleanup(
+    tenant_id: str,
+    upload_id: str,
+    gcs_keys: list[str],
+    structured_ids: list[str],
+    bucket: str | None = None,
+    reader: Any = None,
+) -> None:
+    """Fallback in-process cleanup helper when Celery is not available."""
+    if bucket and reader:
+        for key in sorted(gcs_keys):
+            try:
+                reader.delete_object(bucket=bucket, key=key)
+            except Exception as exc:
+                logger.warning(
+                    "document_delete_blob_cleanup_failed",
+                    tenant_id=tenant_id,
+                    upload_id=str(upload_id),
+                    gcs_key=key,
+                    error_class=type(exc).__name__,
+                )
+    if structured_ids:
+        try:
+            from zellovest_shared.rag import delete_document_points
+
+            for structured_id in structured_ids:
+                try:
+                    delete_document_points(
+                        tenant_id=tenant_id,
+                        document_id=str(structured_id),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "document_delete_vector_cleanup_failed",
+                        tenant_id=tenant_id,
+                        upload_id=str(upload_id),
+                        structured_document_id=str(structured_id),
+                        error_class=type(exc).__name__,
+                    )
+        except Exception:
+            pass
+
+
+def _dispatch_document_cleanup(
+    tenant_id: str,
+    upload_id: str,
+    gcs_keys: set[str],
+    structured_ids: list[uuid.UUID],
+    background_tasks: BackgroundTasks | None = None,
+    bucket: str | None = None,
+    reader: Any = None,
+) -> None:
+    """Dispatch asynchronous cleanup of GCS blobs and Qdrant points.
+
+    Offloads remote storage and vector database I/O to a Celery worker task,
+    falling back to FastAPI BackgroundTasks if Celery is not configured or in tests.
+    """
+    sorted_keys = sorted(gcs_keys)
+    str_ids = [str(sid) for sid in structured_ids]
+    enqueued = False
+
+    try:
+        from zellovest_workers.celery_app import celery_app
+
+        celery_app.send_task(
+            DOCUMENT_PURGE_TASK_NAME,
+            kwargs={
+                "tenant_id": tenant_id,
+                "upload_id": str(upload_id),
+                "gcs_keys": sorted_keys,
+                "structured_ids": str_ids,
+            },
+        )
+        enqueued = True
+        logger.info(
+            "document_cleanup_task_enqueued",
+            tenant_id=tenant_id,
+            upload_id=str(upload_id),
+            gcs_keys_count=len(sorted_keys),
+            structured_ids_count=len(str_ids),
+        )
+    except Exception as exc:
+        logger.warning(
+            "document_cleanup_celery_enqueue_fallback",
+            tenant_id=tenant_id,
+            upload_id=str(upload_id),
+            error_class=type(exc).__name__,
+        )
+
+    if not enqueued and background_tasks is not None:
+        background_tasks.add_task(
+            _run_local_cleanup,
+            tenant_id=tenant_id,
+            upload_id=str(upload_id),
+            gcs_keys=sorted_keys,
+            structured_ids=str_ids,
+            bucket=bucket,
+            reader=reader,
+        )
+
+
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_document(
     document_id: uuid.UUID,
+    background_tasks: BackgroundTasks = None,  # type: ignore[assignment]
     user: Any = Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session),
     settings: IngestionAPISettings = Depends(get_app_settings),
@@ -1341,9 +1446,11 @@ async def delete_document(
     Explorer documents are upload leases. Deleting a lease alone would leave
     structured ledger rows behind, so the handler removes the extraction
     artifact, provenance, invoices, purchase orders, contract history, and
-    reconciliation exceptions in one transaction. Source and artifact blobs
-    plus RAG vectors are removed best-effort after the commit; a storage or
-    Qdrant failure is logged and does not resurrect the database rows.
+    reconciliation exceptions in one fast transaction.
+
+    Heavy I/O (deleting source/artifact blobs from GCS and vectors from Qdrant)
+    is offloaded asynchronously to a Celery worker, ensuring the user is never
+    stuck waiting on remote network calls.
 
     Only settled uploads (``completed`` or ``failed``) may be deleted. Pending,
     staged, and processing leases are rejected so a running worker cannot
@@ -1351,6 +1458,7 @@ async def delete_document(
 
     Args:
         document_id: Upload lease id shown by the Document Explorer.
+        background_tasks: FastAPI background tasks fallback.
         user: Authenticated procurement member (JWT).
         session: Async DB session.
         settings: Service settings (GCS bucket).
@@ -1401,37 +1509,15 @@ async def delete_document(
             detail="The document is still referenced by ledger records and could not be deleted.",
         ) from exc
 
-    if settings.gcs_raw_bucket:
-        for key in sorted(gcs_keys):
-            try:
-                reader.delete_object(bucket=settings.gcs_raw_bucket, key=key)
-            except Exception as exc:
-                logger.warning(
-                    "document_delete_blob_cleanup_failed",
-                    tenant_id=tenant_id,
-                    upload_id=str(upload_id),
-                    gcs_key=key,
-                    error_class=type(exc).__name__,
-                )
-
-    if structured_ids:
-        from zellovest_shared.rag import delete_document_points
-
-        for structured_id in structured_ids:
-            try:
-                await asyncio.to_thread(
-                    delete_document_points,
-                    tenant_id=tenant_id,
-                    document_id=str(structured_id),
-                )
-            except Exception as exc:
-                logger.warning(
-                    "document_delete_vector_cleanup_failed",
-                    tenant_id=tenant_id,
-                    upload_id=str(upload_id),
-                    structured_document_id=str(structured_id),
-                    error_class=type(exc).__name__,
-                )
+    _dispatch_document_cleanup(
+        tenant_id=tenant_id,
+        upload_id=str(upload_id),
+        gcs_keys=gcs_keys,
+        structured_ids=structured_ids,
+        background_tasks=background_tasks,
+        bucket=settings.gcs_raw_bucket,
+        reader=reader,
+    )
 
     logger.info(
         "document_deleted",
@@ -1441,6 +1527,7 @@ async def delete_document(
         structured_document_ids=[str(structured_id) for structured_id in structured_ids],
         gcs_object_count=len(gcs_keys),
     )
+
 
 
 @router.get("/{document_id}", response_model=DocumentDetailResponse)

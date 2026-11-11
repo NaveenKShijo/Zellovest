@@ -4,6 +4,8 @@ from zellovest_shared.schemas.ingest import SyncRequest, SyncResponse
 from zellovest_shared.schemas.integrations import (
     ConnectRequest,
     ConnectResponse,
+    DisconnectRequest,
+    DisconnectResponse,
     IntegrationStatus,
     OAuthCallbackRequest,
     OAuthStartRequest,
@@ -17,6 +19,8 @@ __all__ = [
     "SyncResponse",
     "ConnectRequest",
     "ConnectResponse",
+    "DisconnectRequest",
+    "DisconnectResponse",
     "IntegrationStatus",
     "OAuthCallbackRequest",
     "OAuthStartRequest",

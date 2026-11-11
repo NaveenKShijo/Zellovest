@@ -8,6 +8,9 @@ import {
     DocumentStatus,
 } from '@/types';
 import { useApi } from '@/lib/api';
+import { useAuth } from '@/contexts/AuthContext';
+import { invalidateDocumentPreview } from '@/lib/documentPreviewCache';
+import { invalidateDocumentDetail, invalidateDocumentLists, readDocumentList } from '@/lib/documentDataCache';
 import { useToast } from '@/contexts/ToastContext';
 import { DocumentFilters } from './DocumentFilters';
 import { DocumentTable } from './DocumentTable';
@@ -51,7 +54,9 @@ export function DocumentExplorer() {
     const router = useRouter();
     const searchParams = useSearchParams();
     const api = useApi();
+    const { user } = useAuth();
     const { notify } = useToast();
+    const documentCacheScopeId = useMemo(() => user?.id ?? 'anonymous', [user]);
 
     // ---- URL state ------------------------------------------------------
     const tabParam = searchParams.get('tab') ?? 'all';
@@ -134,11 +139,22 @@ export function DocumentExplorer() {
     // ---- Delete flow -----------------------------------------------------
     const [deleteTarget, setDeleteTarget] = useState<DocumentRecord | null>(null);
     const [deletingId, setDeletingId] = useState<string | null>(null);
+    const [optimisticDeletedIds, setOptimisticDeletedIds] = useState<Set<string>>(new Set());
+
+    useEffect(() => {
+        if (result.done && result.data?.documents) {
+            const serverIds = new Set(result.data.documents.map((d) => d.id));
+            setOptimisticDeletedIds((prev) => {
+                const next = new Set(Array.from(prev).filter((id) => serverIds.has(id)));
+                return next.size === prev.size ? prev : next;
+            });
+        }
+    }, [result]);
 
     useEffect(() => {
         const requestId = ++requestIdRef.current;
-        api.documents
-            .list({
+        readDocumentList(documentCacheScopeId, viewKey, () =>
+            api.documents.list({
                 document_type: activeTab.documentType,
                 document_types: activeTab.documentTypes,
                 status: status ?? undefined,
@@ -147,6 +163,7 @@ export function DocumentExplorer() {
                 page,
                 page_size: pageSize,
             })
+        )
             .then((response) => {
                 if (requestId !== requestIdRef.current) return; // stale response
                 setResult({ key: viewKey, data: response, error: null, done: true });
@@ -163,7 +180,7 @@ export function DocumentExplorer() {
         // api.documents.list is recreated each render; the params above are
         // the real inputs and change with the URL key.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [viewKey, retryKey]);
+    }, [documentCacheScopeId, viewKey, retryKey]);
 
     const isCurrent = result.done && result.key === viewKey;
     const isLoading = !result.done || result.key !== viewKey;
@@ -171,7 +188,9 @@ export function DocumentExplorer() {
     // Server returns newest-first always; when the user picks a sort field
     // we re-order the current page client-side (small pages keep it simple).
     const visible = useMemo(() => {
-        const rows = result.data?.documents ?? [];
+        const rows = (result.data?.documents ?? []).filter(
+            (doc) => !optimisticDeletedIds.has(doc.id)
+        );
         if (!sortField) return rows;
         const sorted = [...rows].sort((a, b) => {
             const key = sortField as keyof (typeof rows)[number];
@@ -181,7 +200,11 @@ export function DocumentExplorer() {
             return String(av).localeCompare(String(bv));
         });
         return sortDir === 'asc' ? sorted : sorted.reverse();
-    }, [result, sortField, sortDir]);
+    }, [result, sortField, sortDir, optimisticDeletedIds]);
+
+    const displayedTotal = result.data
+        ? Math.max(0, result.data.total - optimisticDeletedIds.size)
+        : 0;
 
     const totalPages = result.data ? Math.max(1, Math.ceil(result.data.total / result.data.page_size)) : 1;
 
@@ -213,14 +236,21 @@ export function DocumentExplorer() {
     const handleDeleteConfirm = useCallback(async () => {
         if (!deleteTarget || deletingId) return;
         const target = deleteTarget;
+        // Optimistic UI: immediately close confirmation modal and remove from visible table
+        setDeleteTarget(null);
         setDeletingId(target.id);
+        setOptimisticDeletedIds((prev) => new Set(prev).add(target.id));
+        notify.success(
+            'Document deleted',
+            `${target.filename} and every record derived from it are being removed.`
+        );
+
         try {
             await api.documents.delete(target.id);
-            setDeleteTarget(null);
-            notify.success(
-                'Document deleted',
-                `${target.filename} and every record derived from it were removed.`
-            );
+            invalidateDocumentPreview(documentCacheScopeId, target.id);
+            invalidateDocumentDetail(documentCacheScopeId, target.id);
+            invalidateDocumentLists(documentCacheScopeId);
+
             // Deleting the only row on a later page leaves the URL pointing
             // past the end; step back one page instead of showing an empty
             // stale page.
@@ -230,6 +260,12 @@ export function DocumentExplorer() {
                 setRetryKey((key) => key + 1);
             }
         } catch (error) {
+            // Rollback optimistic removal if the backend returned an error
+            setOptimisticDeletedIds((prev) => {
+                const next = new Set(prev);
+                next.delete(target.id);
+                return next;
+            });
             notify.error(
                 'Delete failed',
                 error instanceof Error ? error.message : 'The document could not be deleted.'
@@ -237,7 +273,7 @@ export function DocumentExplorer() {
         } finally {
             setDeletingId(null);
         }
-    }, [api, deleteTarget, deletingId, notify, page, updateParams, visible.length]);
+    }, [api, deleteTarget, deletingId, documentCacheScopeId, notify, page, updateParams, visible.length]);
 
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -253,7 +289,7 @@ export function DocumentExplorer() {
                 </div>
                 {result.data && isCurrent && (
                     <span style={{ fontSize: '12.5px', fontWeight: 600, color: 'var(--text-muted)' }}>
-                        {result.data.total} document{result.data.total === 1 ? '' : 's'}
+                        {displayedTotal} document{displayedTotal === 1 ? '' : 's'}
                     </span>
                 )}
             </div>

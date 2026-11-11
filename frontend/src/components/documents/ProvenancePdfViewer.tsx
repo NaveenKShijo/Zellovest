@@ -3,6 +3,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 import { useApi } from '@/lib/api';
+import { useAuth } from '@/contexts/AuthContext';
+import { acquireDocumentPreview } from '@/lib/documentPreviewCache';
 import { DocumentDetail } from '@/types';
 import { formatConfidence, humanizeLabel } from './format';
 import { ProvenanceOverlay } from './ProvenanceOverlay';
@@ -45,11 +47,6 @@ interface PdfDocumentCanvasProps {
     onDocumentLoadSuccess: (result: { numPages: number }) => void;
     onLoadError: (error: unknown) => void;
     onGetPage: (page: { width: number; height: number }) => void;
-    onPageRenderSuccess: (result: {
-        pageNumber: number;
-        width: number;
-        height: number;
-    }) => void;
 }
 
 /** Keep react-pdf's canvas mounted when citation or metadata state changes. */
@@ -60,7 +57,6 @@ const PdfDocumentCanvas = React.memo(function PdfDocumentCanvas({
     onDocumentLoadSuccess,
     onLoadError,
     onGetPage,
-    onPageRenderSuccess,
 }: PdfDocumentCanvasProps) {
     return (
         <Document
@@ -72,7 +68,6 @@ const PdfDocumentCanvas = React.memo(function PdfDocumentCanvas({
                 pageNumber={pageNumber}
                 width={width}
                 onLoadSuccess={onGetPage}
-                onRenderSuccess={onPageRenderSuccess}
                 rotate={0}
             />
         </Document>
@@ -100,6 +95,7 @@ export function ProvenancePdfViewer({
     onFieldCite,
 }: ProvenancePdfViewerProps) {
     const api = useApi();
+    const { user } = useAuth();
     const [result, setResult] = useState<PreviewResult>({
         key: '',
         url: null,
@@ -112,8 +108,6 @@ export function ProvenancePdfViewer({
     const [zoomIndex, setZoomIndex] = useState(1); // default 1.0
     const [pdfWidth, setPdfWidth] = useState<number | null>(null);
     const [pdfHeight, setPdfHeight] = useState<number | null>(null);
-    const [renderedWidth, setRenderedWidth] = useState<number | null>(null);
-    const [renderedHeight, setRenderedHeight] = useState<number | null>(null);
     const [renderError, setRenderError] = useState<string | null>(null);
     const [containerWidth, setContainerWidth] = useState(0);
 
@@ -126,20 +120,22 @@ export function ProvenancePdfViewer({
         if (!documentId) return;
         const requestId = ++requestIdRef.current;
         let active = true;
-        let objectUrl: string | null = null;
-        api.documents
-            .fileContent(documentId)
-            .then((blob) => {
-                const nextObjectUrl = URL.createObjectURL(blob);
+        let releasePreview: (() => void) | null = null;
+        acquireDocumentPreview(
+            user?.id ?? 'anonymous',
+            documentId,
+            () => api.documents.fileContent(documentId)
+        )
+            .then((preview) => {
                 if (!active || requestId !== requestIdRef.current) {
-                    URL.revokeObjectURL(nextObjectUrl);
+                    preview.release();
                     return;
                 }
-                objectUrl = nextObjectUrl;
+                releasePreview = preview.release;
                 setResult({
                     key: documentId,
-                    url: nextObjectUrl,
-                    mimeType: blob.type || null,
+                    url: preview.url,
+                    mimeType: preview.mimeType,
                     error: null,
                     done: true,
                 });
@@ -157,13 +153,14 @@ export function ProvenancePdfViewer({
                     done: true,
                 });
             });
-        // The hook returns a new API object per render; documentId is the input.
-        // eslint-disable-next-line react-hooks/exhaustive-deps
         return () => {
             active = false;
-            if (objectUrl) URL.revokeObjectURL(objectUrl);
+            releasePreview?.();
         };
-    }, [documentId]);
+        // The hook returns a new API object per render; documentId and the
+        // authenticated cache scope are the real inputs.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [documentId, user?.id]);
 
     const isCurrent = result.done && result.key === documentId;
     const url = isCurrent ? result.url : null;
@@ -208,23 +205,6 @@ export function ProvenancePdfViewer({
         setNumPages(n);
         setRenderError(null);
     }, []);
-
-    const onPageRenderSuccess = useCallback(
-        ({
-            pageNumber: n,
-            width,
-            height,
-        }: {
-            pageNumber: number;
-            width: number;
-            height: number;
-        }) => {
-            if (n !== pageNumber) return;
-            setRenderedWidth(width);
-            setRenderedHeight(height);
-        },
-        [pageNumber]
-    );
 
     const onGetPage = useCallback(
         (pdfPage: { width: number; height: number }) => {
@@ -321,7 +301,10 @@ export function ProvenancePdfViewer({
         );
     }
 
-    const pageWidth = containerWidth * zoom || undefined;
+    const pageWidth = containerWidth > 0 ? Math.floor(containerWidth * zoom) : undefined;
+    const renderedWidth = pageWidth ?? null;
+    const renderedHeight =
+        pageWidth && pdfWidth && pdfHeight ? (pageWidth / pdfWidth) * pdfHeight : null;
 
     return (
         <section
@@ -501,7 +484,6 @@ export function ProvenancePdfViewer({
                             onDocumentLoadSuccess={onDocumentLoadSuccess}
                             onLoadError={onLoadError}
                             onGetPage={onGetPage}
-                            onPageRenderSuccess={onPageRenderSuccess}
                         />
                         {pdfWidth && pdfHeight && renderedWidth && renderedHeight ? (
                             <ProvenanceOverlay

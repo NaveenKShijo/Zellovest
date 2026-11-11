@@ -66,6 +66,10 @@ def _override_session(client, mock_session):
         yield mock_session
 
     client.app.dependency_overrides[get_db_session] = fake_session
+    if hasattr(client.app.state, "redis") and client.app.state.redis:
+        for key in client.app.state.redis.keys("integration:status:*"):
+            client.app.state.redis.delete(key)
+
 
 
 # --- OAuth connect -----------------------------------------------------------
@@ -218,6 +222,38 @@ def test_drive_status_connected_with_watch(client):
     data = resp.json()
     assert data["connected"] is True
     assert data["watch"]["channel_id"] == "ch-1"
+
+
+def test_drive_disconnect_endpoint(client):
+    """POST /disconnect tears down watch, deletes integration row, and returns DISCONNECTED."""
+    mock_session = AsyncMock()
+    mock_row = MagicMock()
+    mock_row.encrypted_access_token = b"dummy"
+    mock_row.access_nonce = b"dummy"
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = mock_row
+    mock_session.execute.return_value = mock_result
+    _override_session(client, mock_session)
+
+    client.app.state.redis.set(
+        "drive:channel:t1",
+        json.dumps({"channel_id": "ch-1", "resource_id": "res-1", "expiration": "99"}),
+    )
+    client.app.state.redis.set("drive:watch:ch-1", "t1")
+
+    resp = client.post("/api/v1/integrations/google-drive/disconnect", json={"tenant_id": "t1"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["disconnected"] is True
+    assert data["status"] == "DISCONNECTED"
+    assert data["provider"] == "google-drive"
+    assert data["tenant_id"] == "t1"
+    mock_session.delete.assert_called_once_with(mock_row)
+    mock_session.commit.assert_called_once()
+    # Watch mappings should be cleaned up from Redis
+    assert client.app.state.redis.get("drive:channel:t1") is None
+    assert client.app.state.redis.get("drive:watch:ch-1") is None
+
 
 
 # --- Pull sync ---------------------------------------------------------------

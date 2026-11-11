@@ -1,6 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import {
+  fetchIntegrationStatuses,
+  getCachedIntegrationStatuses,
+} from '@/lib/integrationCache';
 
 /**
  * Shared integration-connection state for Ramp + Okta + Google Drive OAuth.
@@ -112,38 +116,33 @@ export function useIntegrationStatus(
   tenantId: string = 'default-org',
   pollIntervalMs: number = 5 * 60 * 1000
 ): IntegrationStatusResult {
-  const [ramp, setRamp] = useState<ProviderState | null>(null);
-  const [okta, setOkta] = useState<ProviderState | null>(null);
-  const [drive, setDrive] = useState<ProviderState | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const initialCache = getCachedIntegrationStatuses(tenantId);
+  const initialNow = Date.now();
+  const [ramp, setRamp] = useState<ProviderState | null>(
+    initialCache ? toProviderState(initialCache.ramp, 'ramp', tenantId, initialNow) : null
+  );
+  const [okta, setOkta] = useState<ProviderState | null>(
+    initialCache ? toProviderState(initialCache.okta, 'okta', tenantId, initialNow) : null
+  );
+  const [drive, setDrive] = useState<ProviderState | null>(
+    initialCache ? toProviderState(initialCache.drive, 'drive', tenantId, initialNow) : null
+  );
+  const [isLoading, setIsLoading] = useState<boolean>(!initialCache);
 
   const refresh = useCallback(async () => {
     try {
-      const [rampRes, oktaRes, driveRes] = await Promise.all([
-        fetch(`/api/v1/integrations/ramp/status?tenant_id=${tenantId}`),
-        fetch(`/api/v1/integrations/okta/status?tenant_id=${tenantId}`),
-        fetch(`/api/v1/integrations/google-drive/status?tenant_id=${tenantId}`),
-      ]);
+      const data = await fetchIntegrationStatuses(tenantId);
       const now = Date.now();
-      const rampJson = rampRes.ok
-        ? ((await rampRes.json()) as IntegrationStatus)
-        : null;
-      const oktaJson = oktaRes.ok
-        ? ((await oktaRes.json()) as IntegrationStatus)
-        : null;
-      const driveJson = driveRes.ok
-        ? ((await driveRes.json()) as IntegrationStatus)
-        : null;
       setRamp(
-        toProviderState(rampJson, 'ramp', tenantId, now) ??
+        toProviderState(data.ramp, 'ramp', tenantId, now) ??
           disconnectedState('ramp', tenantId)
       );
       setOkta(
-        toProviderState(oktaJson, 'okta', tenantId, now) ??
+        toProviderState(data.okta, 'okta', tenantId, now) ??
           disconnectedState('okta', tenantId)
       );
       setDrive(
-        toProviderState(driveJson, 'drive', tenantId, now) ??
+        toProviderState(data.drive, 'drive', tenantId, now) ??
           disconnectedState('drive', tenantId)
       );
     } catch {

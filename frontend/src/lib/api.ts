@@ -12,7 +12,6 @@ import {
   Invoice,
   CardTransaction,
   Document,
-  UploadFile,
   DocumentListParams,
   DocumentListResponse,
   DocumentDetail,
@@ -187,20 +186,20 @@ export function useApi() {
           });
         }
         const query = searchParams.toString();
-        return request<VendorListResponse>(`/vendors${query ? `?${query}` : ''}`);
+        return request<VendorListResponse>(`/v1/vendors${query ? `?${query}` : ''}`);
       },
-      get: (id: string) => request<Vendor>(`/vendors/${id}`),
+      get: (id: string) => request<Vendor>(`/v1/vendors/${id}`),
       create: (data: Partial<Vendor>) =>
-        request<Vendor>('/vendors', {
+        request<Vendor>('/v1/vendors', {
           method: 'POST',
           body: JSON.stringify(data),
         }),
       update: (id: string, data: Partial<Vendor>) =>
-        request<Vendor>(`/vendors/${id}`, {
+        request<Vendor>(`/v1/vendors/${id}`, {
           method: 'PATCH',
           body: JSON.stringify(data),
         }),
-      delete: (id: string) => request<void>(`/vendors/${id}`, { method: 'DELETE' }),
+      delete: (id: string) => request<void>(`/v1/vendors/${id}`, { method: 'DELETE' }),
     },
     contracts: {
       listByVendor: (vendorId: string) => request<VendorContractLine[]>(`/vendors/${vendorId}/contracts`),

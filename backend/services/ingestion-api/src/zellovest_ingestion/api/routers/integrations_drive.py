@@ -11,6 +11,7 @@ watch setup, and pull sync all build on):
 """
 
 from datetime import UTC, datetime, timedelta
+import json
 from urllib.parse import urlparse
 
 import redis
@@ -19,9 +20,14 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from zellovest_shared.db.models import TenantIntegration, effective_connection_status
-from zellovest_shared.db.repository import aupsert_integration
+from zellovest_shared.db.repository import adelete_integration, aupsert_integration
 from zellovest_shared.logging_conf import get_logger
-from zellovest_shared.schemas.integrations import ConnectRequest, ConnectResponse
+from zellovest_shared.schemas.integrations import (
+    ConnectRequest,
+    ConnectResponse,
+    DisconnectRequest,
+    DisconnectResponse,
+)
 from zellovest_shared.security.crypto import encrypt_token, generate_nonce
 from zellovest_shared.security.oauth_state import consume_state, create_state
 
@@ -38,10 +44,19 @@ from zellovest_ingestion.services.drive_watch import (
     DRIVE_PROVIDER,
     ensure_drive_watch,
     get_drive_watch,
+    teardown_drive_watch,
 )
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/integrations/google-drive", tags=["integrations"])
+
+STATUS_CACHE_TTL_SECONDS = 60
+
+
+def _status_cache_key(tenant_id: str, provider: str = DRIVE_PROVIDER) -> str:
+    """Redis key for caching integration connection status."""
+    return f"integration:status:{tenant_id}:{provider}"
+
 
 # Must match the redirect URI registered on the Google Cloud OAuth client.
 ACCEPTED_CALLBACK_SUFFIXES = ("/api/v1/integrations/google-drive/callback",)
@@ -193,6 +208,13 @@ async def callback(
         scopes=tokens.scopes,
     )
     await session.commit()
+
+    if redis_client is not None:
+        try:
+            redis_client.delete(_status_cache_key(tenant_id, DRIVE_PROVIDER))
+        except Exception:
+            pass
+
     logger.info(
         "drive_oauth_callback_stored",
         tenant_id=tenant_id,
@@ -221,6 +243,7 @@ async def callback(
 @router.get("/status", status_code=200)
 async def status(
     tenant_id: str = Query(default="default-org"),
+    fresh: bool = Query(default=False),
     settings: IngestionAPISettings = Depends(get_app_settings),
     session: AsyncSession = Depends(get_db_session),
     redis_client: redis.Redis = Depends(get_redis_client),
@@ -231,6 +254,16 @@ async def status(
     access token expires. The worker renews it on the next sync; missing
     or unreadable refresh credentials require reconnecting.
     """
+    cache_key = _status_cache_key(tenant_id, DRIVE_PROVIDER)
+    if not fresh and redis_client is not None:
+        try:
+            cached = redis_client.get(cache_key)
+            if cached:
+                raw_str = cached.decode("utf-8") if isinstance(cached, bytes) else str(cached)
+                return json.loads(raw_str)
+        except Exception:
+            pass
+
     stmt = select(TenantIntegration).where(
         TenantIntegration.tenant_id == tenant_id,
         TenantIntegration.provider == DRIVE_PROVIDER,
@@ -241,7 +274,7 @@ async def status(
     watch = get_drive_watch(redis_client, tenant_id)
 
     if integration is None:
-        return {
+        resp_data = {
             "connected": False,
             "provider": "google-drive",
             "tenant_id": tenant_id,
@@ -251,6 +284,12 @@ async def status(
             "updated_at": None,
             "watch": None,
         }
+        if redis_client is not None:
+            try:
+                redis_client.set(cache_key, json.dumps(resp_data), ex=STATUS_CACHE_TTL_SECONDS)
+            except Exception:
+                pass
+        return resp_data
 
     refresh_available = has_refresh_token(
         integration, settings.credentials_encryption_key
@@ -261,7 +300,7 @@ async def status(
         refresh_token_available=refresh_available,
     )
     status_str = effective.value
-    return {
+    resp_data = {
         "connected": status_str.upper() == "ACTIVE",
         "provider": "google-drive",
         "tenant_id": tenant_id,
@@ -276,3 +315,77 @@ async def status(
         "updated_at": integration.updated_at.isoformat() if integration.updated_at else None,
         "watch": watch,
     }
+    if redis_client is not None:
+        try:
+            redis_client.set(cache_key, json.dumps(resp_data), ex=STATUS_CACHE_TTL_SECONDS)
+        except Exception:
+            pass
+    return resp_data
+
+
+@router.post("/disconnect", response_model=DisconnectResponse, status_code=200)
+@router.delete("/disconnect", response_model=DisconnectResponse, status_code=200)
+@router.delete("", response_model=DisconnectResponse, status_code=200)
+async def disconnect(
+    body: DisconnectRequest | None = None,
+    tenant_id: str | None = Query(default=None),
+    settings: IngestionAPISettings = Depends(get_app_settings),
+    session: AsyncSession = Depends(get_db_session),
+    redis_client: redis.Redis = Depends(get_redis_client),
+) -> DisconnectResponse:
+    """Disconnect Google Drive integration by deleting credentials and tearing down push watch.
+
+    Attempts to decrypt the stored access token to call channels.stop on Google Drive,
+    removes Redis watch mappings, and deletes the integration credentials row.
+
+    Args:
+        body: Optional request body specifying tenant_id.
+        tenant_id: Optional query parameter for tenant_id.
+        settings: Ingestion API settings for encryption key.
+        session: Database session.
+        redis_client: Redis client for push watch cleanup.
+
+    Returns:
+        Disconnect confirmation response.
+    """
+    resolved_tenant = (
+        (body.tenant_id if body and body.tenant_id else None) or tenant_id or "default-org"
+    )
+    access_token: str | None = None
+    stmt = select(TenantIntegration).where(
+        TenantIntegration.tenant_id == resolved_tenant,
+        TenantIntegration.provider == DRIVE_PROVIDER,
+    )
+    result = await session.execute(stmt)
+    integration = result.scalar_one_or_none()
+    if integration is not None:
+        try:
+            from zellovest_shared.security.crypto import decrypt_token
+
+            access_token = decrypt_token(
+                integration.encrypted_access_token,
+                integration.access_nonce,
+                settings.credentials_encryption_key,
+            )
+        except Exception:
+            access_token = None
+
+    teardown_drive_watch(redis_client, tenant_id=resolved_tenant, access_token=access_token)
+
+    await adelete_integration(session, tenant_id=resolved_tenant, provider=DRIVE_PROVIDER)
+    await session.commit()
+
+    if redis_client is not None:
+        try:
+            redis_client.delete(_status_cache_key(resolved_tenant, DRIVE_PROVIDER))
+        except Exception:
+            pass
+
+    logger.info("drive_integration_disconnected", tenant_id=resolved_tenant)
+    return DisconnectResponse(
+        tenant_id=resolved_tenant,
+        provider="google-drive",
+        disconnected=True,
+        status="DISCONNECTED",
+    )
+

@@ -101,3 +101,95 @@ def purge_expired_uploads(batch_size: int = 1000) -> dict[str, Any]:
         raise
     logger.info("uploads_purge_complete", **counts, batch_size=batch_size)
     return {**counts, "batch_size": batch_size}
+
+
+@celery_app.task(
+    name="zellovest.workers.tasks.maintenance.purge_document_artifacts",
+    queue=QUEUE_INGESTION,
+    max_retries=3,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_jitter=True,
+)
+def purge_document_artifacts(
+    tenant_id: str,
+    upload_id: str,
+    gcs_keys: list[str],
+    structured_ids: list[str],
+) -> dict[str, Any]:
+    """Asynchronously purge raw/extracted GCS blobs and Qdrant RAG points.
+
+    Offloaded from DELETE /api/v1/documents/{document_id} so the HTTP response
+    returns to the user immediately rather than waiting seconds for remote storage I/O.
+
+    Args:
+        tenant_id: Owning tenant.
+        upload_id: Upload lease id.
+        gcs_keys: List of GCS object keys to delete.
+        structured_ids: List of structured document UUID strings to purge from Qdrant.
+
+    Returns:
+        Summary dict of cleaned resources.
+    """
+    from zellovest_shared.config import get_settings
+
+    settings = get_settings()
+    bucket = settings.gcs_raw_bucket
+    deleted_blobs = 0
+    failed_blobs = 0
+
+    if bucket and gcs_keys:
+        reader = GcsStorageReader()
+        for key in sorted(gcs_keys):
+            try:
+                if reader.delete_object(bucket=bucket, key=key):
+                    deleted_blobs += 1
+            except Exception as exc:
+                failed_blobs += 1
+                logger.warning(
+                    "document_async_blob_cleanup_failed",
+                    tenant_id=tenant_id,
+                    upload_id=upload_id,
+                    gcs_key=key,
+                    error_class=type(exc).__name__,
+                )
+
+    deleted_vectors = 0
+    failed_vectors = 0
+    if structured_ids:
+        from zellovest_shared.rag import delete_document_points
+
+        for structured_id in structured_ids:
+            try:
+                delete_document_points(
+                    tenant_id=tenant_id,
+                    document_id=str(structured_id),
+                )
+                deleted_vectors += 1
+            except Exception as exc:
+                failed_vectors += 1
+                logger.warning(
+                    "document_async_vector_cleanup_failed",
+                    tenant_id=tenant_id,
+                    upload_id=upload_id,
+                    structured_document_id=str(structured_id),
+                    error_class=type(exc).__name__,
+                )
+
+    logger.info(
+        "document_artifacts_purged",
+        tenant_id=tenant_id,
+        upload_id=upload_id,
+        deleted_blobs=deleted_blobs,
+        failed_blobs=failed_blobs,
+        deleted_vectors=deleted_vectors,
+        failed_vectors=failed_vectors,
+    )
+    return {
+        "status": "completed",
+        "deleted_blobs": deleted_blobs,
+        "failed_blobs": failed_blobs,
+        "deleted_vectors": deleted_vectors,
+        "failed_vectors": failed_vectors,
+    }
+

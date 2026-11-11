@@ -15,6 +15,7 @@ app to the users/groups whose directories should sync.
 """
 
 from datetime import UTC, datetime, timedelta
+import json
 from urllib.parse import urlparse
 
 import redis
@@ -23,9 +24,14 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from zellovest_shared.db.models import TenantIntegration, effective_connection_status
-from zellovest_shared.db.repository import aupsert_integration
+from zellovest_shared.db.repository import adelete_integration, aupsert_integration
 from zellovest_shared.logging_conf import get_logger
-from zellovest_shared.schemas.integrations import ConnectRequest, ConnectResponse
+from zellovest_shared.schemas.integrations import (
+    ConnectRequest,
+    ConnectResponse,
+    DisconnectRequest,
+    DisconnectResponse,
+)
 from zellovest_shared.security.crypto import encrypt_token, generate_nonce
 from zellovest_shared.security.oauth_state import consume_state, create_state
 
@@ -44,6 +50,14 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/integrations/okta", tags=["integrations"])
 # Unprefixed alias router: serves GET /okta/callback (see callback_alias).
 alias_router = APIRouter(tags=["integrations"])
+
+STATUS_CACHE_TTL_SECONDS = 60
+
+
+def _status_cache_key(tenant_id: str, provider: str = OKTA_PROVIDER) -> str:
+    """Redis key for caching integration connection status."""
+    return f"integration:status:{tenant_id}:{provider}"
+
 
 # The callback route path served by this router (under the /api/v1 prefix).
 CALLBACK_PATH = "/api/v1/integrations/okta/callback"
@@ -227,6 +241,13 @@ async def _handle_okta_callback(
         scopes=tokens.scopes,
     )
     await session.commit()
+
+    if redis_client is not None:
+        try:
+            redis_client.delete(_status_cache_key(tenant_id, OKTA_PROVIDER))
+        except Exception:
+            pass
+
     logger.info(
         "okta_oauth_callback_stored",
         tenant_id=tenant_id,
@@ -245,8 +266,10 @@ async def _handle_okta_callback(
 @router.get("/status", status_code=200)
 async def status(
     tenant_id: str = Query(default="default-org"),
+    fresh: bool = Query(default=False),
     settings: IngestionAPISettings = Depends(get_app_settings),
     session: AsyncSession = Depends(get_db_session),
+    redis_client: redis.Redis = Depends(get_redis_client),
 ) -> dict:
     """Check whether the Okta integration can remain active for this tenant.
 
@@ -254,6 +277,16 @@ async def status(
     access token expires. The worker renews that token when the next sync
     runs; missing or unreadable refresh credentials require reconnecting.
     """
+    cache_key = _status_cache_key(tenant_id, OKTA_PROVIDER)
+    if not fresh and redis_client is not None:
+        try:
+            cached = redis_client.get(cache_key)
+            if cached:
+                raw_str = cached.decode("utf-8") if isinstance(cached, bytes) else str(cached)
+                return json.loads(raw_str)
+        except Exception:
+            pass
+
     stmt = select(TenantIntegration).where(
         TenantIntegration.tenant_id == tenant_id,
         TenantIntegration.provider == OKTA_PROVIDER,
@@ -262,7 +295,7 @@ async def status(
     integration = result.scalar_one_or_none()
 
     if integration is None:
-        return {
+        resp_data = {
             "connected": False,
             "provider": OKTA_PROVIDER,
             "tenant_id": tenant_id,
@@ -274,6 +307,12 @@ async def status(
             "token_expires_at": None,
             "updated_at": None,
         }
+        if redis_client is not None:
+            try:
+                redis_client.set(cache_key, json.dumps(resp_data), ex=STATUS_CACHE_TTL_SECONDS)
+            except Exception:
+                pass
+        return resp_data
 
     refresh_available = has_refresh_token(
         integration, settings.credentials_encryption_key
@@ -285,7 +324,7 @@ async def status(
     )
     status_str = effective.value
     needs_reconnect = effective.value in ("EXPIRED", "REVOKED")
-    return {
+    resp_data = {
         "connected": effective.value == "ACTIVE",
         "provider": OKTA_PROVIDER,
         "tenant_id": tenant_id,
@@ -299,3 +338,54 @@ async def status(
         ),
         "updated_at": integration.updated_at.isoformat() if integration.updated_at else None,
     }
+    if redis_client is not None:
+        try:
+            redis_client.set(cache_key, json.dumps(resp_data), ex=STATUS_CACHE_TTL_SECONDS)
+        except Exception:
+            pass
+    return resp_data
+
+
+@router.post("/disconnect", response_model=DisconnectResponse, status_code=200)
+@router.delete("/disconnect", response_model=DisconnectResponse, status_code=200)
+@router.delete("", response_model=DisconnectResponse, status_code=200)
+async def disconnect(
+    body: DisconnectRequest | None = None,
+    tenant_id: str | None = Query(default=None),
+    session: AsyncSession = Depends(get_db_session),
+    redis_client: redis.Redis = Depends(get_redis_client),
+) -> DisconnectResponse:
+    """Disconnect Okta integration by deleting credentials for this tenant.
+
+    Purges the stored encrypted OAuth tokens so background syncs halt and
+    the integration status transitions to DISCONNECTED.
+
+    Args:
+        body: Optional request body specifying tenant_id.
+        tenant_id: Optional query parameter for tenant_id.
+        session: Database session.
+        redis_client: Redis client for cache invalidation.
+
+    Returns:
+        Disconnect confirmation response.
+    """
+    resolved_tenant = (
+        (body.tenant_id if body and body.tenant_id else None) or tenant_id or "default-org"
+    )
+    await adelete_integration(session, tenant_id=resolved_tenant, provider=OKTA_PROVIDER)
+    await session.commit()
+
+    if redis_client is not None:
+        try:
+            redis_client.delete(_status_cache_key(resolved_tenant, OKTA_PROVIDER))
+        except Exception:
+            pass
+
+    logger.info("okta_integration_disconnected", tenant_id=resolved_tenant)
+    return DisconnectResponse(
+        tenant_id=resolved_tenant,
+        provider=OKTA_PROVIDER,
+        disconnected=True,
+        status="DISCONNECTED",
+    )
+

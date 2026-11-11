@@ -168,7 +168,7 @@ export interface ToastContextType {
     info: (title: string, message?: string, action?: ToastNotification['action']) => string;
   };
   removeToast: (id: string) => void;
-  addAlert: (alert: Omit<SystemAlert, 'id' | 'timestamp'>) => string;
+  addAlert: (alert: Omit<SystemAlert, 'id' | 'timestamp'>, autoDismissMs?: number) => string;
   dismissAlert: (id: string) => void;
 }
 

@@ -86,7 +86,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   };
 
   // Persistent System Alert Banners
-  const addAlert = useCallback((alert: Omit<SystemAlert, 'id' | 'timestamp'>): string => {
+  const addAlert = useCallback((alert: Omit<SystemAlert, 'id' | 'timestamp'>, autoDismissMs: number = 10000): string => {
     const id = `alert_${crypto.randomUUID()}`;
     const newAlert: SystemAlert = {
       ...alert,
@@ -94,6 +94,13 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
     setAlerts((prev) => [newAlert, ...prev]);
+
+    if (autoDismissMs > 0) {
+      setTimeout(() => {
+        setAlerts((prev) => prev.filter((a) => a.id !== id));
+      }, autoDismissMs);
+    }
+
     return id;
   }, []);
 

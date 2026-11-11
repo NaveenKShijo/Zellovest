@@ -63,3 +63,19 @@ class TokenExchangeResult(BaseModel):
     refresh_token: str = Field(default="")
     expires_in: int = Field(default=3600)
     scopes: list[str] = Field(default_factory=list)
+
+
+class DisconnectRequest(BaseModel):
+    """Request to disconnect an integration and purge credentials."""
+
+    tenant_id: str = Field(default="default-org", min_length=1, max_length=128)
+
+
+class DisconnectResponse(BaseModel):
+    """Response confirming integration disconnection."""
+
+    tenant_id: str
+    provider: str
+    disconnected: bool = True
+    status: Literal["DISCONNECTED"] = "DISCONNECTED"
+

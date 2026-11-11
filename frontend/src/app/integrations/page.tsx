@@ -1,27 +1,13 @@
 'use client';
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-
-interface DriveWatchState {
-  channel_id?: string;
-  resource_id?: string;
-  /** Channel expiry as returned by Google (epoch milliseconds string). */
-  expiration?: string | null;
-}
-
-interface IntegrationStatusState {
-  connected: boolean;
-  provider: string;
-  tenant_id: string;
-  status: string;
-  scopes: string[];
-  needs_reconnect?: boolean;
-  refresh_available?: boolean;
-  last_error?: string | null;
-  token_expires_at?: string | null;
-  updated_at?: string | null;
-  watch?: DriveWatchState | null;
-}
+import {
+  clearCachedIntegrationStatuses,
+  disconnectedIntegration,
+  fetchIntegrationStatuses,
+  getCachedIntegrationStatuses,
+  IntegrationStatusState,
+} from '@/lib/integrationCache';
 
 /** True when the user must reconnect (EXPIRED/REVOKED or past expiry). */
 function needsReconnect(status: IntegrationStatusState | null): boolean {
@@ -64,36 +50,49 @@ function formatWatchExpiry(expiration?: string | null): string | null {
   return Number.isNaN(date.getTime()) ? null : date.toLocaleString();
 }
 
-/** Fallback status used when an integration status request fails. */
-function disconnectedIntegration(
-  provider: string,
-  tenantId: string
-): IntegrationStatusState {
-  return {
-    connected: false,
-    provider,
-    tenant_id: tenantId,
-    status: 'DISCONNECTED',
-    scopes: [],
-  };
-}
-
 export default function IntegrationsPage() {
-  const [rampStatus, setRampStatus] = useState<IntegrationStatusState | null>(null);
-  const [oktaStatus, setOktaStatus] = useState<IntegrationStatusState | null>(null);
-  const [driveStatus, setDriveStatus] = useState<IntegrationStatusState | null>(null);
-  const [isLoadingStatus, setIsLoadingStatus] = useState<boolean>(true);
+  const tenantId = 'default-org';
+
+  const initialCache = getCachedIntegrationStatuses(tenantId);
+  const [rampStatus, setRampStatus] = useState<IntegrationStatusState | null>(initialCache?.ramp ?? null);
+  const [oktaStatus, setOktaStatus] = useState<IntegrationStatusState | null>(initialCache?.okta ?? null);
+  const [driveStatus, setDriveStatus] = useState<IntegrationStatusState | null>(initialCache?.drive ?? null);
+  const [isLoadingStatus, setIsLoadingStatus] = useState<boolean>(!initialCache);
   const [isConnecting, setIsConnecting] = useState<boolean>(false);
   const [connectingProvider, setConnectingProvider] = useState<'ramp' | 'okta' | 'drive' | null>(null);
+  const [isDisconnecting, setIsDisconnecting] = useState<boolean>(false);
+  const [disconnectingProvider, setDisconnectingProvider] = useState<'ramp' | 'okta' | 'drive' | null>(null);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [rampDateFrom, setRampDateFrom] = useState<string>(''); // YYYY-MM-DD
   const [oktaSince, setOktaSince] = useState<string>('');       // YYYY-MM-DD → converted to ISO
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
   const [bannerNotice, setBannerNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
-  // Guard so a single OAuth return kicks off the initial full Drive import once.
-  const driveInitialImportStarted = useRef<boolean>(false);
+  const bannerTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const syncFeedbackTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  const tenantId = 'default-org';
+  // Auto-dismiss banner notices after 10 seconds
+  useEffect(() => {
+    if (!bannerNotice) return;
+    if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
+    bannerTimerRef.current = setTimeout(() => {
+      setBannerNotice(null);
+    }, 10000);
+    return () => {
+      if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
+    };
+  }, [bannerNotice]);
+
+  // Auto-dismiss sync feedback after 10 seconds
+  useEffect(() => {
+    if (!syncFeedback) return;
+    if (syncFeedbackTimerRef.current) clearTimeout(syncFeedbackTimerRef.current);
+    syncFeedbackTimerRef.current = setTimeout(() => {
+      setSyncFeedback(null);
+    }, 10000);
+    return () => {
+      if (syncFeedbackTimerRef.current) clearTimeout(syncFeedbackTimerRef.current);
+    };
+  }, [syncFeedback]);
 
   const monthsAgo = (m: number) => {
     const d = new Date(); d.setMonth(d.getMonth() - m);
@@ -102,17 +101,15 @@ export default function IntegrationsPage() {
   const todayStr = () => new Date().toISOString().slice(0, 10);
 
   // Fetch current integration statuses (Ramp + Okta + Google Drive)
-  const checkStatus = useCallback(async () => {
-    setIsLoadingStatus(true);
+  const checkStatus = useCallback(async (options?: { force?: boolean }) => {
+    if (options?.force) {
+      setIsLoadingStatus(true);
+    }
     try {
-      const [rampRes, oktaRes, driveRes] = await Promise.all([
-        fetch(`/api/v1/integrations/ramp/status?tenant_id=${tenantId}`),
-        fetch(`/api/v1/integrations/okta/status?tenant_id=${tenantId}`),
-        fetch(`/api/v1/integrations/google-drive/status?tenant_id=${tenantId}`),
-      ]);
-      setRampStatus(rampRes.ok ? await rampRes.json() : disconnectedIntegration('ramp', tenantId));
-      setOktaStatus(oktaRes.ok ? await oktaRes.json() : disconnectedIntegration('okta', tenantId));
-      setDriveStatus(driveRes.ok ? await driveRes.json() : disconnectedIntegration('google-drive', tenantId));
+      const data = await fetchIntegrationStatuses(tenantId, options);
+      setRampStatus(data.ramp);
+      setOktaStatus(data.okta);
+      setDriveStatus(data.drive);
     } catch {
       setRampStatus(disconnectedIntegration('ramp', tenantId));
       setOktaStatus(disconnectedIntegration('okta', tenantId));
@@ -144,6 +141,67 @@ export default function IntegrationsPage() {
   // Handle Connect to Google Drive: same OAuth-connect flow as Ramp/Okta.
   const handleConnectDrive = async () => {
     await handleConnectProvider('drive', '/api/v1/integrations/google-drive/connect', 'Google Drive');
+  };
+
+  // Shared disconnect flow: confirm -> POST disconnect -> update local state + refresh
+  const handleDisconnectProvider = async (
+    provider: 'ramp' | 'okta' | 'drive',
+    disconnectUrl: string,
+    label: string
+  ) => {
+    const confirmed = window.confirm(
+      `Are you sure you want to disconnect ${label}? Ingestion syncs will be stopped until you reconnect.`
+    );
+    if (!confirmed) return;
+
+    setIsDisconnecting(true);
+    setDisconnectingProvider(provider);
+    setBannerNotice(null);
+    setSyncFeedback(null);
+    try {
+      const res = await fetch(disconnectUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tenant_id: tenantId }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `Server returned ${res.status}`);
+      }
+
+      setBannerNotice({
+        type: 'success',
+        message: `${label} has been successfully disconnected.`,
+      });
+      // Invalidate cache and eagerly clear local provider state
+      clearCachedIntegrationStatuses(tenantId);
+      if (provider === 'ramp') setRampStatus(disconnectedIntegration('ramp', tenantId));
+      if (provider === 'okta') setOktaStatus(disconnectedIntegration('okta', tenantId));
+      if (provider === 'drive') setDriveStatus(disconnectedIntegration('google-drive', tenantId));
+      await checkStatus({ force: true });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setBannerNotice({
+        type: 'error',
+        message: `Unable to disconnect ${label}: ${message}`,
+      });
+    } finally {
+      setIsDisconnecting(false);
+      setDisconnectingProvider(null);
+    }
+  };
+
+  const handleDisconnectRamp = async () => {
+    await handleDisconnectProvider('ramp', '/api/v1/integrations/ramp/disconnect', 'Ramp');
+  };
+
+  const handleDisconnectOkta = async () => {
+    await handleDisconnectProvider('okta', '/api/v1/integrations/okta/disconnect', 'Okta');
+  };
+
+  const handleDisconnectDrive = async () => {
+    await handleDisconnectProvider('drive', '/api/v1/integrations/google-drive/disconnect', 'Google Drive');
   };
 
   // Shared OAuth-connect flow: POST connect -> redirect to the provider's
@@ -202,7 +260,7 @@ export default function IntegrationsPage() {
           body: JSON.stringify({ tenant_id: tenantId, full_sync: fullSync }),
         });
         const data = await res.json().catch(() => ({}));
-        const label = fullSync ? 'Google Drive full import' : 'Google Drive incremental sync';
+        const label = fullSync ? 'Google Drive full load' : 'Google Drive incremental sync';
         if (res.ok) {
           setSyncFeedback(
             data.deduped
@@ -231,9 +289,8 @@ export default function IntegrationsPage() {
 
   // Check URL query parameters on return from the OAuth callback.
   //
-  // On the first successful Google Drive connection we kick off the initial
-  // full import automatically; once connected, new/updated Drive files flow in
-  // through the incremental `changes.list` cursor (push watch + Sync Now).
+  // Google Drive connects via OAuth only. Data ingestion is not started
+  // automatically; the user must explicitly click 'Full Load' to begin.
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const params = new URLSearchParams(window.location.search);
@@ -251,15 +308,13 @@ export default function IntegrationsPage() {
       setBannerNotice({
         type: 'success',
         message: isDrive
-          ? `${providerLabel} successfully connected! A full import of your Drive documents has started.`
+          ? `${providerLabel} successfully connected! Click 'Full Load' below to begin ingesting documents.`
           : `${providerLabel} successfully connected! Your access tokens are securely stored and encrypted.`,
       });
       // Clean up the URL query params without reloading
       window.history.replaceState({}, document.title, window.location.pathname);
-      if (isDrive && !driveInitialImportStarted.current) {
-        driveInitialImportStarted.current = true;
-        void triggerDriveSync(true, { clearBanner: false });
-      }
+      clearCachedIntegrationStatuses(tenantId);
+      void checkStatus({ force: true });
     } else if (statusParam === 'error') {
       setBannerNotice({
         type: 'error',
@@ -267,7 +322,7 @@ export default function IntegrationsPage() {
       });
       window.history.replaceState({}, document.title, window.location.pathname);
     }
-  }, [triggerDriveSync]);
+  }, []);
 
   // Single Sync Now for Ramp: schedules both entities sequentially and
   // reports one combined result instead of two separate buttons.
@@ -522,7 +577,7 @@ export default function IntegrationsPage() {
             </p>
           </div>
           <button
-            onClick={checkStatus}
+            onClick={() => void checkStatus({ force: true })}
             disabled={isLoadingStatus}
             style={{
               padding: '6px 12px',
@@ -662,7 +717,7 @@ export default function IntegrationsPage() {
               {!rampStatus?.connected && !rampNeedsReconnect ? (
                 <button
                   onClick={handleConnectRamp}
-                  disabled={isConnecting}
+                  disabled={isConnecting || isDisconnecting}
                   style={{
                     padding: '8px 16px',
                     fontSize: '13px',
@@ -671,35 +726,62 @@ export default function IntegrationsPage() {
                     backgroundColor: 'var(--color-brand)',
                     border: 'none',
                     borderRadius: 'var(--radius-md)',
-                    cursor: isConnecting ? 'wait' : 'pointer',
+                    cursor: (isConnecting || isDisconnecting) ? 'wait' : 'pointer',
                     transition: 'background-color 0.15s ease',
                   }}
                 >
                   {isConnecting && connectingProvider === 'ramp' ? 'Redirecting to Ramp...' : 'Connect Ramp'}
                 </button>
               ) : rampNeedsReconnect ? (
-                <button
-                  onClick={handleConnectRamp}
-                  disabled={isConnecting}
-                  style={{
-                    padding: '8px 16px',
-                    fontSize: '13px',
-                    fontWeight: 700,
-                    color: '#FFFFFF',
-                    backgroundColor: 'var(--color-danger)',
-                    border: 'none',
-                    borderRadius: 'var(--radius-md)',
-                    cursor: isConnecting ? 'wait' : 'pointer',
-                    transition: 'background-color 0.15s ease',
-                  }}
-                >
-                  {isConnecting && connectingProvider === 'ramp' ? 'Redirecting to Ramp...' : 'Reconnect Ramp now'}
-                </button>
+                <>
+                  <button
+                    onClick={handleConnectRamp}
+                    disabled={isConnecting || isDisconnecting}
+                    style={{
+                      padding: '8px 16px',
+                      fontSize: '13px',
+                      fontWeight: 700,
+                      color: '#FFFFFF',
+                      backgroundColor: 'var(--color-danger)',
+                      border: 'none',
+                      borderRadius: 'var(--radius-md)',
+                      cursor: (isConnecting || isDisconnecting) ? 'wait' : 'pointer',
+                      transition: 'background-color 0.15s ease',
+                    }}
+                  >
+                    {isConnecting && connectingProvider === 'ramp' ? 'Redirecting to Ramp...' : 'Reconnect Ramp now'}
+                  </button>
+                  <button
+                    onClick={handleDisconnectRamp}
+                    disabled={isDisconnecting || isConnecting || isSyncing}
+                    style={{
+                      padding: '7px 12px',
+                      fontSize: '12px',
+                      fontWeight: 600,
+                      color: 'var(--color-danger)',
+                      backgroundColor: 'var(--color-danger-subtle)',
+                      border: '1px solid var(--color-danger-border)',
+                      borderRadius: 'var(--radius-md)',
+                      cursor: isDisconnecting ? 'wait' : 'pointer',
+                      transition: 'all 0.15s ease',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.backgroundColor = 'var(--color-danger)';
+                      e.currentTarget.style.color = '#FFFFFF';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.backgroundColor = 'var(--color-danger-subtle)';
+                      e.currentTarget.style.color = 'var(--color-danger)';
+                    }}
+                  >
+                    {isDisconnecting && disconnectingProvider === 'ramp' ? 'Disconnecting...' : 'Disconnect'}
+                  </button>
+                </>
               ) : (
                 <>
                   <button
                     onClick={handleSyncRampNow}
-                    disabled={isSyncing}
+                    disabled={isSyncing || isDisconnecting}
                     style={{
                       padding: '7px 12px',
                       fontSize: '12px',
@@ -708,29 +790,33 @@ export default function IntegrationsPage() {
                       backgroundColor: 'var(--bg-surface)',
                       border: '1px solid var(--border-strong)',
                       borderRadius: 'var(--radius-md)',
-                      cursor: isSyncing ? 'wait' : 'pointer',
+                      cursor: (isSyncing || isDisconnecting) ? 'wait' : 'pointer',
                     }}
                   >
                     {isSyncing ? 'Syncing...' : 'Sync Now'}
-                    </button>
+                  </button>
 
-                    <button onClick={handleBackfillRamp} disabled={isSyncing || !rampDateFrom} title={!rampDateFrom ? 'Pick a start date first' : `Backfill since ${rampDateFrom}`}
-                      style={{
-                        padding: '7px 12px',
-                        fontSize: '12px',
-                        fontWeight: 600,
-                        color: 'var(--text-primary)',
-                        backgroundColor: 'var(--bg-surface)',
-                        border: '1px solid var(--border-strong)',
-                        borderRadius: 'var(--radius-md)',
-                        cursor: (isSyncing || !rampDateFrom) ? 'not-allowed' : 'pointer',
-                        opacity: !rampDateFrom ? 0.5 : 1,
-                      }}>
-                      {isSyncing ? 'Working...' : 'Backfill'}
-                    </button>
+                  <button
+                    onClick={handleBackfillRamp}
+                    disabled={isSyncing || isDisconnecting || !rampDateFrom}
+                    title={!rampDateFrom ? 'Pick a start date first' : `Backfill since ${rampDateFrom}`}
+                    style={{
+                      padding: '7px 12px',
+                      fontSize: '12px',
+                      fontWeight: 600,
+                      color: 'var(--text-primary)',
+                      backgroundColor: 'var(--bg-surface)',
+                      border: '1px solid var(--border-strong)',
+                      borderRadius: 'var(--radius-md)',
+                      cursor: (isSyncing || isDisconnecting || !rampDateFrom) ? 'not-allowed' : 'pointer',
+                      opacity: !rampDateFrom ? 0.5 : 1,
+                    }}
+                  >
+                    {isSyncing ? 'Working...' : 'Backfill'}
+                  </button>
                   <button
                     onClick={handleConnectRamp}
-                    disabled={isConnecting}
+                    disabled={isConnecting || isDisconnecting}
                     style={{
                       padding: '7px 12px',
                       fontSize: '12px',
@@ -739,10 +825,35 @@ export default function IntegrationsPage() {
                       backgroundColor: 'transparent',
                       border: '1px solid var(--border-subtle)',
                       borderRadius: 'var(--radius-md)',
-                      cursor: isConnecting ? 'wait' : 'pointer',
+                      cursor: (isConnecting || isDisconnecting) ? 'wait' : 'pointer',
                     }}
                   >
                     Reconnect
+                  </button>
+                  <button
+                    onClick={handleDisconnectRamp}
+                    disabled={isDisconnecting || isConnecting || isSyncing}
+                    style={{
+                      padding: '7px 12px',
+                      fontSize: '12px',
+                      fontWeight: 600,
+                      color: 'var(--color-danger)',
+                      backgroundColor: 'var(--color-danger-subtle)',
+                      border: '1px solid var(--color-danger-border)',
+                      borderRadius: 'var(--radius-md)',
+                      cursor: isDisconnecting ? 'wait' : 'pointer',
+                      transition: 'all 0.15s ease',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.backgroundColor = 'var(--color-danger)';
+                      e.currentTarget.style.color = '#FFFFFF';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.backgroundColor = 'var(--color-danger-subtle)';
+                      e.currentTarget.style.color = 'var(--color-danger)';
+                    }}
+                  >
+                    {isDisconnecting && disconnectingProvider === 'ramp' ? 'Disconnecting...' : 'Disconnect'}
                   </button>
                 </>
               )}
@@ -870,7 +981,7 @@ export default function IntegrationsPage() {
               {!oktaStatus?.connected && !oktaNeedsReconnect ? (
                 <button
                   onClick={handleConnectOkta}
-                  disabled={isConnecting}
+                  disabled={isConnecting || isDisconnecting}
                   style={{
                     padding: '8px 16px',
                     fontSize: '13px',
@@ -879,35 +990,62 @@ export default function IntegrationsPage() {
                     backgroundColor: 'var(--color-brand)',
                     border: 'none',
                     borderRadius: 'var(--radius-md)',
-                    cursor: isConnecting ? 'wait' : 'pointer',
+                    cursor: (isConnecting || isDisconnecting) ? 'wait' : 'pointer',
                     transition: 'background-color 0.15s ease',
                   }}
                 >
                   {isConnecting && connectingProvider === 'okta' ? 'Redirecting to Okta...' : 'Connect Okta'}
                 </button>
               ) : oktaNeedsReconnect ? (
-                <button
-                  onClick={handleConnectOkta}
-                  disabled={isConnecting}
-                  style={{
-                    padding: '8px 16px',
-                    fontSize: '13px',
-                    fontWeight: 700,
-                    color: '#FFFFFF',
-                    backgroundColor: 'var(--color-danger)',
-                    border: 'none',
-                    borderRadius: 'var(--radius-md)',
-                    cursor: isConnecting ? 'wait' : 'pointer',
-                    transition: 'background-color 0.15s ease',
-                  }}
-                >
-                  {isConnecting && connectingProvider === 'okta' ? 'Redirecting to Okta...' : 'Reconnect Okta now'}
-                </button>
+                <>
+                  <button
+                    onClick={handleConnectOkta}
+                    disabled={isConnecting || isDisconnecting}
+                    style={{
+                      padding: '8px 16px',
+                      fontSize: '13px',
+                      fontWeight: 700,
+                      color: '#FFFFFF',
+                      backgroundColor: 'var(--color-danger)',
+                      border: 'none',
+                      borderRadius: 'var(--radius-md)',
+                      cursor: (isConnecting || isDisconnecting) ? 'wait' : 'pointer',
+                      transition: 'background-color 0.15s ease',
+                    }}
+                  >
+                    {isConnecting && connectingProvider === 'okta' ? 'Redirecting to Okta...' : 'Reconnect Okta now'}
+                  </button>
+                  <button
+                    onClick={handleDisconnectOkta}
+                    disabled={isDisconnecting || isConnecting || isSyncing}
+                    style={{
+                      padding: '7px 12px',
+                      fontSize: '12px',
+                      fontWeight: 600,
+                      color: 'var(--color-danger)',
+                      backgroundColor: 'var(--color-danger-subtle)',
+                      border: '1px solid var(--color-danger-border)',
+                      borderRadius: 'var(--radius-md)',
+                      cursor: isDisconnecting ? 'wait' : 'pointer',
+                      transition: 'all 0.15s ease',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.backgroundColor = 'var(--color-danger)';
+                      e.currentTarget.style.color = '#FFFFFF';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.backgroundColor = 'var(--color-danger-subtle)';
+                      e.currentTarget.style.color = 'var(--color-danger)';
+                    }}
+                  >
+                    {isDisconnecting && disconnectingProvider === 'okta' ? 'Disconnecting...' : 'Disconnect'}
+                  </button>
+                </>
               ) : (
                 <>
                   <button
                     onClick={handleSyncOktaNow}
-                    disabled={isSyncing}
+                    disabled={isSyncing || isDisconnecting}
                     style={{
                       padding: '7px 12px',
                       fontSize: '12px',
@@ -916,12 +1054,15 @@ export default function IntegrationsPage() {
                       backgroundColor: 'var(--bg-surface)',
                       border: '1px solid var(--border-strong)',
                       borderRadius: 'var(--radius-md)',
-                      cursor: isSyncing ? 'wait' : 'pointer',
+                      cursor: (isSyncing || isDisconnecting) ? 'wait' : 'pointer',
                     }}
                   >
                     {isSyncing ? 'Syncing...' : 'Sync Now'}
                   </button>
-                  <button onClick={handleBackfillOkta} disabled={isSyncing || !oktaSince} title={!oktaSince ? 'Pick a start date first' : `Backfill since ${oktaSince}`}
+                  <button
+                    onClick={handleBackfillOkta}
+                    disabled={isSyncing || isDisconnecting || !oktaSince}
+                    title={!oktaSince ? 'Pick a start date first' : `Backfill since ${oktaSince}`}
                     style={{
                       padding: '7px 12px',
                       fontSize: '12px',
@@ -930,14 +1071,15 @@ export default function IntegrationsPage() {
                       backgroundColor: 'var(--bg-surface)',
                       border: '1px solid var(--border-strong)',
                       borderRadius: 'var(--radius-md)',
-                      cursor: (isSyncing || !oktaSince) ? 'not-allowed' : 'pointer',
+                      cursor: (isSyncing || isDisconnecting || !oktaSince) ? 'not-allowed' : 'pointer',
                       opacity: !oktaSince ? 0.5 : 1,
-                    }}>
+                    }}
+                  >
                     {isSyncing ? 'Working...' : 'Backfill'}
                   </button>
                   <button
                     onClick={handleConnectOkta}
-                    disabled={isConnecting}
+                    disabled={isConnecting || isDisconnecting}
                     style={{
                       padding: '7px 12px',
                       fontSize: '12px',
@@ -946,10 +1088,35 @@ export default function IntegrationsPage() {
                       backgroundColor: 'transparent',
                       border: '1px solid var(--border-subtle)',
                       borderRadius: 'var(--radius-md)',
-                      cursor: isConnecting ? 'wait' : 'pointer',
+                      cursor: (isConnecting || isDisconnecting) ? 'wait' : 'pointer',
                     }}
                   >
                     Reconnect
+                  </button>
+                  <button
+                    onClick={handleDisconnectOkta}
+                    disabled={isDisconnecting || isConnecting || isSyncing}
+                    style={{
+                      padding: '7px 12px',
+                      fontSize: '12px',
+                      fontWeight: 600,
+                      color: 'var(--color-danger)',
+                      backgroundColor: 'var(--color-danger-subtle)',
+                      border: '1px solid var(--color-danger-border)',
+                      borderRadius: 'var(--radius-md)',
+                      cursor: isDisconnecting ? 'wait' : 'pointer',
+                      transition: 'all 0.15s ease',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.backgroundColor = 'var(--color-danger)';
+                      e.currentTarget.style.color = '#FFFFFF';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.backgroundColor = 'var(--color-danger-subtle)';
+                      e.currentTarget.style.color = 'var(--color-danger)';
+                    }}
+                  >
+                    {isDisconnecting && disconnectingProvider === 'okta' ? 'Disconnecting...' : 'Disconnect'}
                   </button>
                 </>
               )}
@@ -1071,9 +1238,10 @@ export default function IntegrationsPage() {
                       lineHeight: '1.45',
                     }}
                   >
-                    The first connection runs a <strong style={{ color: 'var(--text-primary)' }}>full import</strong> of your Drive
-                    documents automatically. New or updated files afterwards are pulled
-                    <strong style={{ color: 'var(--text-primary)' }}> incrementally</strong>.
+                    OAuth connection active. No data is ingested automatically.
+                    Click <strong style={{ color: 'var(--text-primary)' }}>Full Load</strong> to begin
+                    ingesting your Drive documents, or <strong style={{ color: 'var(--text-primary)' }}>Sync Now</strong> for
+                    incremental updates.
                   </div>
                 </div>
               )}
@@ -1083,7 +1251,7 @@ export default function IntegrationsPage() {
               {!driveStatus?.connected && !driveNeedsReconnect ? (
                 <button
                   onClick={handleConnectDrive}
-                  disabled={isConnecting}
+                  disabled={isConnecting || isDisconnecting}
                   style={{
                     padding: '8px 16px',
                     fontSize: '13px',
@@ -1092,35 +1260,62 @@ export default function IntegrationsPage() {
                     backgroundColor: 'var(--color-brand)',
                     border: 'none',
                     borderRadius: 'var(--radius-md)',
-                    cursor: isConnecting ? 'wait' : 'pointer',
+                    cursor: (isConnecting || isDisconnecting) ? 'wait' : 'pointer',
                     transition: 'background-color 0.15s ease',
                   }}
                 >
                   {isConnecting && connectingProvider === 'drive' ? 'Redirecting to Google Drive...' : 'Connect Google Drive'}
                 </button>
               ) : driveNeedsReconnect ? (
-                <button
-                  onClick={handleConnectDrive}
-                  disabled={isConnecting}
-                  style={{
-                    padding: '8px 16px',
-                    fontSize: '13px',
-                    fontWeight: 700,
-                    color: '#FFFFFF',
-                    backgroundColor: 'var(--color-danger)',
-                    border: 'none',
-                    borderRadius: 'var(--radius-md)',
-                    cursor: isConnecting ? 'wait' : 'pointer',
-                    transition: 'background-color 0.15s ease',
-                  }}
-                >
-                  {isConnecting && connectingProvider === 'drive' ? 'Redirecting to Google Drive...' : 'Reconnect Google Drive now'}
-                </button>
+                <>
+                  <button
+                    onClick={handleConnectDrive}
+                    disabled={isConnecting || isDisconnecting}
+                    style={{
+                      padding: '8px 16px',
+                      fontSize: '13px',
+                      fontWeight: 700,
+                      color: '#FFFFFF',
+                      backgroundColor: 'var(--color-danger)',
+                      border: 'none',
+                      borderRadius: 'var(--radius-md)',
+                      cursor: (isConnecting || isDisconnecting) ? 'wait' : 'pointer',
+                      transition: 'background-color 0.15s ease',
+                    }}
+                  >
+                    {isConnecting && connectingProvider === 'drive' ? 'Redirecting to Google Drive...' : 'Reconnect Google Drive now'}
+                  </button>
+                  <button
+                    onClick={handleDisconnectDrive}
+                    disabled={isDisconnecting || isConnecting || isSyncing}
+                    style={{
+                      padding: '7px 12px',
+                      fontSize: '12px',
+                      fontWeight: 600,
+                      color: 'var(--color-danger)',
+                      backgroundColor: 'var(--color-danger-subtle)',
+                      border: '1px solid var(--color-danger-border)',
+                      borderRadius: 'var(--radius-md)',
+                      cursor: isDisconnecting ? 'wait' : 'pointer',
+                      transition: 'all 0.15s ease',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.backgroundColor = 'var(--color-danger)';
+                      e.currentTarget.style.color = '#FFFFFF';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.backgroundColor = 'var(--color-danger-subtle)';
+                      e.currentTarget.style.color = 'var(--color-danger)';
+                    }}
+                  >
+                    {isDisconnecting && disconnectingProvider === 'drive' ? 'Disconnecting...' : 'Disconnect'}
+                  </button>
+                </>
               ) : (
                 <>
                   <button
                     onClick={() => void triggerDriveSync(false)}
-                    disabled={isSyncing}
+                    disabled={isSyncing || isDisconnecting}
                     title="Pull new and updated Drive files since the last checkpoint"
                     style={{
                       padding: '7px 12px',
@@ -1130,15 +1325,15 @@ export default function IntegrationsPage() {
                       backgroundColor: 'var(--bg-surface)',
                       border: '1px solid var(--border-strong)',
                       borderRadius: 'var(--radius-md)',
-                      cursor: isSyncing ? 'wait' : 'pointer',
+                      cursor: (isSyncing || isDisconnecting) ? 'wait' : 'pointer',
                     }}
                   >
                     {isSyncing ? 'Syncing...' : 'Sync Now'}
                   </button>
                   <button
                     onClick={() => void triggerDriveSync(true)}
-                    disabled={isSyncing}
-                    title="Re-run the full Drive import (lists all files again)"
+                    disabled={isSyncing || isDisconnecting}
+                    title="Run full Drive load (lists and imports all documents)"
                     style={{
                       padding: '7px 12px',
                       fontSize: '12px',
@@ -1147,14 +1342,14 @@ export default function IntegrationsPage() {
                       backgroundColor: 'var(--bg-surface)',
                       border: '1px solid var(--border-strong)',
                       borderRadius: 'var(--radius-md)',
-                      cursor: isSyncing ? 'wait' : 'pointer',
+                      cursor: (isSyncing || isDisconnecting) ? 'wait' : 'pointer',
                     }}
                   >
-                    {isSyncing ? 'Working...' : 'Full Import'}
+                    {isSyncing ? 'Working...' : 'Full Load'}
                   </button>
                   <button
                     onClick={handleConnectDrive}
-                    disabled={isConnecting}
+                    disabled={isConnecting || isDisconnecting}
                     style={{
                       padding: '7px 12px',
                       fontSize: '12px',
@@ -1163,10 +1358,35 @@ export default function IntegrationsPage() {
                       backgroundColor: 'transparent',
                       border: '1px solid var(--border-subtle)',
                       borderRadius: 'var(--radius-md)',
-                      cursor: isConnecting ? 'wait' : 'pointer',
+                      cursor: (isConnecting || isDisconnecting) ? 'wait' : 'pointer',
                     }}
                   >
                     Reconnect
+                  </button>
+                  <button
+                    onClick={handleDisconnectDrive}
+                    disabled={isDisconnecting || isConnecting || isSyncing}
+                    style={{
+                      padding: '7px 12px',
+                      fontSize: '12px',
+                      fontWeight: 600,
+                      color: 'var(--color-danger)',
+                      backgroundColor: 'var(--color-danger-subtle)',
+                      border: '1px solid var(--color-danger-border)',
+                      borderRadius: 'var(--radius-md)',
+                      cursor: isDisconnecting ? 'wait' : 'pointer',
+                      transition: 'all 0.15s ease',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.backgroundColor = 'var(--color-danger)';
+                      e.currentTarget.style.color = '#FFFFFF';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.backgroundColor = 'var(--color-danger-subtle)';
+                      e.currentTarget.style.color = 'var(--color-danger)';
+                    }}
+                  >
+                    {isDisconnecting && disconnectingProvider === 'drive' ? 'Disconnecting...' : 'Disconnect'}
                   </button>
                 </>
               )}
