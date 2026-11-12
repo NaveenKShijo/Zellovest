@@ -84,7 +84,6 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 _PROCESSING_STATUSES = (
-    DbUploadStatus.PENDING,
     DbUploadStatus.STAGED,
     DbUploadStatus.PROCESSING,
 )
@@ -612,7 +611,10 @@ async def list_documents(
         Paginated document list with derived statuses and vendor tags.
     """
     del user
-    filters = [UploadRow.tenant_id == DEFAULT_TENANT_ID]
+    filters = [
+        UploadRow.tenant_id == DEFAULT_TENANT_ID,
+        UploadRow.status != DbUploadStatus.PENDING,
+    ]
     artifact_conf = func.coalesce(
         ExtractionArtifact.extraction_confidence, -1.0
     )
@@ -709,7 +711,7 @@ async def _load_lease(
         HTTPException: 404 when the lease does not exist (tenant-scoped).
     """
     row = await session.get(UploadRow, document_id)
-    if row is None or row.tenant_id != DEFAULT_TENANT_ID:
+    if row is None or row.tenant_id != DEFAULT_TENANT_ID or row.status == DbUploadStatus.PENDING:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document not found")
     return row
 

@@ -5,6 +5,7 @@ import { UploadProvider, useUpload } from '@/components/upload/UploadProvider';
 import { DropZone } from '@/components/upload/DropZone';
 import { UploadQueue } from '@/components/upload/UploadQueue';
 import { useApi, UploadLease } from '@/lib/api';
+import { invalidateDocumentLists } from '@/lib/documentDataCache';
 
 // Poll until extraction, classification, and Qdrant indexing reach a
 // terminal upload status. Back off slowly while long-running work continues.
@@ -21,6 +22,8 @@ function UploadPageContent() {
   const pollRefs = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   // Latest api client for use inside timer callbacks (avoids stale closures).
   const apiRef = useRef(api);
+  // Track server-side uploadId per queue item so Cancel/Remove always cleans up the database
+  const leaseMapRef = useRef(new Map<string, string>());
   useEffect(() => {
     apiRef.current = api;
   });
@@ -62,6 +65,7 @@ function UploadPageContent() {
       }
       if (lease.status === 'completed') {
         updateFileStatus(rowId, 'completed', 100, undefined, uploadId);
+        invalidateDocumentLists();
         return;
       }
       if (lease.status === 'failed') {
@@ -92,7 +96,8 @@ function UploadPageContent() {
           vendor_id: item.vendorId ?? null,
         });
 
-        // Track the lease so Cancel can clean up server-side.
+        // Track the lease so Cancel/Remove can clean up server-side.
+        leaseMapRef.current.set(item.id, lease.upload_id);
         setUploadId(item.id, lease.upload_id);
 
         // 2. PUT bytes directly to GCS (pinned content type).
@@ -108,6 +113,7 @@ function UploadPageContent() {
         // 3. Complete: backend verifies bytes + enqueues extraction.
         updateFileStatus(item.id, 'processing', 100);
         const done = await api.uploads.complete(lease.upload_id);
+        invalidateDocumentLists();
         // The lease is now `staged`, not extracted: poll the worker-side
         // status until terminal instead of reporting a premature done.
         pollLeaseStatus(item.id, done.upload_id);
@@ -141,14 +147,23 @@ function UploadPageContent() {
       xhr.abort();
       xhrRefs.current.delete(id);
     }
-    if (target?.uploadId) {
+    const uploadId = target?.uploadId || leaseMapRef.current.get(id);
+    if (uploadId) {
       try {
-        await api.uploads.remove(target.uploadId);
+        await api.uploads.remove(uploadId);
+        invalidateDocumentLists();
       } catch {
         // Best-effort: row/blob may already be gone or beyond pending.
+      } finally {
+        leaseMapRef.current.delete(id);
       }
     }
     removeFile(id);
+  };
+
+  const handleRetry = (id: string) => {
+    leaseMapRef.current.delete(id);
+    retryFile(id);
   };
 
   // --- Recent uploads history (GET /uploads) ---
@@ -215,9 +230,9 @@ function UploadPageContent() {
         <div style={{ backgroundColor: 'var(--bg-surface)', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-subtle)', overflow: 'hidden' }}>
           <UploadQueue
             files={files}
-            onRemove={removeFile}
+            onRemove={handleCancel}
             onCancel={handleCancel}
-            onRetry={retryFile}
+            onRetry={handleRetry}
             onClearCompleted={clearCompleted}
             isProcessing={isUploading}
           />

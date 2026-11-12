@@ -24,7 +24,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from zellovest_shared.db.models import Upload as UploadRow
+from zellovest_shared.db.models import Upload as UploadRow, UploadStatus as DbUploadStatus
 from zellovest_shared.db.session import get_sync_engine
 from zellovest_shared.logging_conf import get_logger
 from zellovest_workers.celery_app import QUEUE_DOCUMENTS, celery_app
@@ -110,6 +110,14 @@ def promote_document(
         if upload is None or upload.tenant_id != tenant_id:
             logger.warning("document_promote_not_found", upload_id=upload_id)
             return {"upload_id": upload_id, "status": "failed", "error": "not found"}
+
+        if upload.status == DbUploadStatus.FAILED:
+            logger.info("document_promote_skip_failed", tenant_id=tenant_id, upload_id=upload_id)
+            return {
+                "upload_id": upload_id,
+                "status": "skipped",
+                "reason": "upload already marked failed",
+            }
 
         # Reuse existing rows so a retry can safely enqueue a lost index event.
         from zellovest_shared.db.models import Document as DocumentRow

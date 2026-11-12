@@ -25,7 +25,11 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from zellovest_shared.db.models import Document as DocumentRow
+from zellovest_shared.db.models import (
+    Document as DocumentRow,
+    Upload as UploadRow,
+    UploadStatus as DbUploadStatus,
+)
 from zellovest_shared.db.session import get_sync_engine
 from zellovest_shared.logging_conf import get_logger
 from zellovest_shared.workers.gcs_client import GcsStorageReader
@@ -356,6 +360,17 @@ def extract_structured(
         if doc is None:
             logger.warning("structured_extract_not_found", document_id=document_id)
             return {"document_id": document_id, "status": "failed", "error": "not found"}
+
+        if doc.upload_id is not None:
+            upload = session.get(UploadRow, doc.upload_id)
+            if upload is not None and upload.status == DbUploadStatus.FAILED:
+                logger.info("structured_extract_skip_failed", upload_id=str(doc.upload_id))
+                return {
+                    "tenant_id": tenant_id,
+                    "document_id": document_id,
+                    "status": "skipped",
+                    "reason": "upload already marked failed",
+                }
 
         # Read text: prefer artifact text_snippet, fall back to GCS artifact.
         from zellovest_shared.db.models import ExtractionArtifact

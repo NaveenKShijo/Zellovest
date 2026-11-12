@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { Vendor, VendorListParams } from '@/types';
 import { useApi } from '@/lib/api';
@@ -22,56 +22,109 @@ export default function VendorsPage() {
   const [sortOrder, setSortOrder] = useState<VendorListParams['sortOrder']>('desc');
   const [searchParams, setSearchParams] = useState<VendorListParams>({});
 
+  const isMountedRef = useRef<boolean>(true);
+  const isFetchingRef = useRef<boolean>(false);
+  const lastFetchedAtRef = useRef<number>(0);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
   const handleSort = (key: string, order: 'asc' | 'desc') => {
-    setLoading(true);
     setSortBy(key as VendorListParams['sortBy']);
     setSortOrder(order);
     setPage(1);
   };
 
   const handleFiltersChange = useCallback((params: VendorListParams) => {
-    setLoading(true);
-    setSearchParams((prev) => (JSON.stringify(prev) === JSON.stringify(params) ? prev : params));
-    setPage(1);
+    setSearchParams((prev) => {
+      if (JSON.stringify(prev) === JSON.stringify(params)) return prev;
+      setPage(1);
+      return params;
+    });
   }, []);
 
   const refetch = () => {
-    setLoading(true);
     setRefreshKey((k) => k + 1);
   };
 
-  useEffect(() => {
-    let active = true;
+  const fetchVendors = useCallback(
+    async (isBackground = false) => {
+      if (isFetchingRef.current) return;
+      isFetchingRef.current = true;
 
-    const queryParams: VendorListParams = {
-      page,
-      pageSize,
-      sortBy,
-      sortOrder,
-      ...searchParams,
-    };
+      if (!isBackground) {
+        setLoading(true);
+      }
 
-    api.vendors
-      .list(queryParams)
-      .then((res) => {
-        if (!active) return;
+      const queryParams: VendorListParams = {
+        page,
+        pageSize,
+        sortBy,
+        sortOrder,
+        ...searchParams,
+      };
+
+      try {
+        const res = await api.vendors.list(queryParams);
+        if (!isMountedRef.current) return;
         setVendors(res.vendors || []);
         setTotal(res.total ?? 0);
         setError(null);
-      })
-      .catch((caught) => {
-        if (!active) return;
+        lastFetchedAtRef.current = Date.now();
+      } catch (caught) {
+        if (!isMountedRef.current) return;
         console.error('Failed to load vendors from database:', caught);
-        setError(caught instanceof Error ? caught.message : 'Unable to load vendors from database.');
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
+        if (!isBackground) {
+          setError(caught instanceof Error ? caught.message : 'Unable to load vendors from database.');
+        }
+      } finally {
+        isFetchingRef.current = false;
+        if (isMountedRef.current && !isBackground) {
+          setLoading(false);
+        }
+      }
+    },
+    [api, page, pageSize, sortBy, sortOrder, searchParams]
+  );
+
+  // Trigger foreground load on initial mount, filter/sort/pagination changes, or manual refetch
+  useEffect(() => {
+    void fetchVendors(false);
+  }, [fetchVendors, refreshKey]);
+
+  // Smart polling: silent background sync every 60s while the tab is active
+  useEffect(() => {
+    const POLLING_INTERVAL_MS = 60_000;
+
+    const intervalId = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        void fetchVendors(true);
+      }
+    }, POLLING_INTERVAL_MS);
+
+    const handleVisibilityOrFocus = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        const now = Date.now();
+        // If 60s has elapsed since the last fetch, refresh immediately on return
+        if (now - lastFetchedAtRef.current >= POLLING_INTERVAL_MS) {
+          void fetchVendors(true);
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    window.addEventListener('focus', handleVisibilityOrFocus);
 
     return () => {
-      active = false;
+      clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
     };
-  }, [page, pageSize, sortBy, sortOrder, searchParams, refreshKey, api]);
+  }, [fetchVendors]);
 
   const totalPages = Math.ceil(total / pageSize) || 1;
 
@@ -119,9 +172,14 @@ export default function VendorsPage() {
             <h2 style={{ fontSize: '16px', fontWeight: 700, color: 'var(--text-primary)' }}>
               Active Vendor Catalog ({total})
             </h2>
-            <span style={{ fontSize: '12px', color: 'var(--color-brand)', fontWeight: 600 }}>
-              Live PostgreSQL Data
-            </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ fontSize: '12px', color: 'var(--color-brand)', fontWeight: 600 }}>
+                Live PostgreSQL Data
+              </span>
+              <span style={{ fontSize: '11.5px', color: 'var(--text-muted)' }}>
+                • Auto-refreshes every 60s
+              </span>
+            </div>
           </div>
 
           {error && (

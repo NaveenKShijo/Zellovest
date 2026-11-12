@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -276,6 +276,7 @@ async def complete_upload(
             detail=f"content-type mismatch: expected {row.mime_type}, found {info.content_type}",
         )
     row.status = DbUploadStatus.STAGED
+    row.expires_at = None
     await session.commit()
     task_id = _enqueue_stage_document(
         tenant_id=row.tenant_id,
@@ -322,6 +323,23 @@ async def list_uploads(
         Paginated lease list.
     """
     del user
+    now = datetime.now(UTC)
+    # Automatically mark expired pending leases as failed so statuses stay accurate
+    await session.execute(
+        update(UploadRow)
+        .where(
+            UploadRow.tenant_id == DEFAULT_TENANT_ID,
+            UploadRow.status == DbUploadStatus.PENDING,
+            UploadRow.expires_at < now,
+        )
+        .values(
+            status=DbUploadStatus.FAILED,
+            error="lease expired before complete",
+            updated_at=now,
+        )
+    )
+    await session.commit()
+
     filters = [UploadRow.tenant_id == DEFAULT_TENANT_ID]
     if status is not None:
         filters.append(UploadRow.status == DbUploadStatus(status.value))
@@ -366,6 +384,14 @@ async def get_upload(
     row = await session.get(UploadRow, upload_id)
     if row is None or row.tenant_id != DEFAULT_TENANT_ID:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="upload not found")
+    now = datetime.now(UTC)
+    if row.status == DbUploadStatus.PENDING and row.expires_at is not None:
+        expires_at = row.expires_at if row.expires_at.tzinfo else row.expires_at.replace(tzinfo=UTC)
+        if expires_at < now:
+            row.status = DbUploadStatus.FAILED
+            row.error = "lease expired before complete"
+            row.updated_at = now
+            await session.commit()
     return _to_upload_response(row)
 
 
@@ -379,7 +405,7 @@ async def delete_upload(
 ) -> None:
     """Cancel a pending lease: best-effort GCS delete, then drop the row.
 
-    Only ``pending`` leases may be cancelled; anything the worker may
+    Only ``pending`` and ``failed`` leases may be cancelled; anything the worker may
     already own is rejected with 409.
 
     Args:
@@ -387,7 +413,7 @@ async def delete_upload(
         user: Authenticated procurement member (JWT).
         settings: Service settings (GCS bucket).
         session: Async DB session.
-        reader: GCS object reader (fake in tests).
+        reader: GcsObjectReader (fake in tests).
 
     Raises:
         HTTPException: 404 unknown lease, 409 non-pending lease.
@@ -395,7 +421,7 @@ async def delete_upload(
     row = await session.get(UploadRow, upload_id)
     if row is None or row.tenant_id != DEFAULT_TENANT_ID:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="upload not found")
-    if row.status != DbUploadStatus.PENDING:
+    if row.status not in (DbUploadStatus.PENDING, DbUploadStatus.FAILED):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"cannot cancel upload in status {row.status.value}",

@@ -994,6 +994,14 @@ def test_delete_unknown_document_returns_404() -> None:
     assert response.status_code == 404
 
 
+def test_get_document_pending_returns_404() -> None:
+    """Unconfirmed pending leases do not appear as documents in explorer detail."""
+    lease = _lease(status=DbUploadStatus.PENDING)
+    client = _make_client(session=_FakeSession(upload_row=lease))
+    response = client.get(f"/api/v1/documents/{lease.id}")
+    assert response.status_code == 404
+
+
 def test_delete_rejects_in_flight_upload() -> None:
     """Pending/staged/processing uploads are rejected to avoid worker races."""
     lease = _lease(status=DbUploadStatus.PROCESSING)

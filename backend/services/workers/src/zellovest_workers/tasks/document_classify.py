@@ -33,8 +33,11 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from zellovest_shared.db.models import ExtractionArtifact
-from zellovest_shared.db.models import Upload as UploadRow
+from zellovest_shared.db.models import (
+    ExtractionArtifact,
+    Upload as UploadRow,
+    UploadStatus as DbUploadStatus,
+)
 from zellovest_shared.db.session import get_sync_engine
 from zellovest_shared.logging_conf import get_logger
 from zellovest_workers.celery_app import QUEUE_DOCUMENTS, celery_app
@@ -472,6 +475,19 @@ def classify_upload(
             "upload_id": upload_id,
             "status": "skipped",
             "error": "upload row not found",
+        }
+
+    if upload.status == DbUploadStatus.FAILED:
+        logger.info(
+            "document_classification_skip_failed",
+            tenant_id=tenant_id,
+            upload_id=upload_id,
+        )
+        return {
+            "tenant_id": tenant_id,
+            "upload_id": upload_id,
+            "status": "skipped",
+            "reason": "upload already marked failed",
         }
 
     effective_filename = filename or upload.filename

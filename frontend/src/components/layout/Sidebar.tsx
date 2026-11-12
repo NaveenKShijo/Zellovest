@@ -55,7 +55,7 @@ const NAVIGATION_SECTIONS: NavSection[] = [
     items: [
       {
         id: 'maverick-spend',
-        label: 'Maverick Spend',
+        label: 'Unauthorized Spend',
         href: '/maverick-spend',
         iconName: 'credit-card',
         badge: '$14k',

@@ -47,6 +47,11 @@ def make_celery(broker_url: str = "redis://localhost:6379/0") -> Celery:
         },
         task_default_queue=QUEUE_INGESTION,
         beat_schedule={
+            "mark-expired-uploads": {
+                "task": "zellovest.workers.tasks.maintenance.mark_expired_uploads",
+                "schedule": 60.0,
+                "options": {"queue": QUEUE_INGESTION},
+            },
             "purge-expired-uploads": {
                 "task": "zellovest.workers.tasks.maintenance.purge_expired_uploads",
                 "schedule": 900.0,

@@ -10,7 +10,13 @@ import {
 import { useApi } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { invalidateDocumentPreview } from '@/lib/documentPreviewCache';
-import { invalidateDocumentDetail, invalidateDocumentLists, readDocumentList } from '@/lib/documentDataCache';
+import {
+    invalidateDocumentDetail,
+    invalidateDocumentLists,
+    peekDocumentList,
+    readDocumentList,
+    subscribeDocumentLists,
+} from '@/lib/documentDataCache';
 import { useToast } from '@/contexts/ToastContext';
 import { DocumentFilters } from './DocumentFilters';
 import { DocumentTable } from './DocumentTable';
@@ -126,13 +132,14 @@ export function DocumentExplorer() {
         [updateParams]
     );
 
-    // ---- Data (only async setState; loading is derived from key staleness)
-    const [result, setResult] = useState<FetchResult>({
-        key: '',
-        data: null,
+    // ---- Data (initializes instantly from SWR cache if previously viewed)
+    const initialCached = peekDocumentList(documentCacheScopeId, viewKey);
+    const [result, setResult] = useState<FetchResult>(() => ({
+        key: initialCached ? viewKey : '',
+        data: initialCached ?? null,
         error: null,
-        done: false,
-    });
+        done: Boolean(initialCached),
+    }));
     const [retryKey, setRetryKey] = useState(0);
     const requestIdRef = useRef(0);
 
@@ -141,6 +148,7 @@ export function DocumentExplorer() {
     const [deletingId, setDeletingId] = useState<string | null>(null);
     const [optimisticDeletedIds, setOptimisticDeletedIds] = useState<Set<string>>(new Set());
 
+    // Clean up optimistic IDs when fresh server payload arrives
     useEffect(() => {
         if (result.done && result.data?.documents) {
             const serverIds = new Set(result.data.documents.map((d) => d.id));
@@ -151,18 +159,49 @@ export function DocumentExplorer() {
         }
     }, [result]);
 
+    // Invalidation subscriber: automatically refresh when an upload, delete, or review commits
+    useEffect(() => {
+        return subscribeDocumentLists(() => {
+            setRetryKey((k) => k + 1);
+        });
+    }, []);
+
+    // Window focus / visibility revalidation (SWR)
+    useEffect(() => {
+        const handleVisibilityChange = () => {
+            if (document.visibilityState === 'visible') {
+                setRetryKey((k) => k + 1);
+            }
+        };
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+        window.addEventListener('focus', handleVisibilityChange);
+        return () => {
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
+            window.removeEventListener('focus', handleVisibilityChange);
+        };
+    }, []);
+
     useEffect(() => {
         const requestId = ++requestIdRef.current;
-        readDocumentList(documentCacheScopeId, viewKey, () =>
-            api.documents.list({
-                document_type: activeTab.documentType,
-                document_types: activeTab.documentTypes,
-                status: status ?? undefined,
-                vendor_id: vendor || undefined,
-                search: q || undefined,
-                page,
-                page_size: pageSize,
-            })
+        readDocumentList(
+            documentCacheScopeId,
+            viewKey,
+            () =>
+                api.documents.list({
+                    document_type: activeTab.documentType,
+                    document_types: activeTab.documentTypes,
+                    status: status ?? undefined,
+                    vendor_id: vendor || undefined,
+                    search: q || undefined,
+                    page,
+                    page_size: pageSize,
+                }),
+            {
+                onRevalidate: (fresh) => {
+                    if (requestId !== requestIdRef.current) return;
+                    setResult({ key: viewKey, data: fresh, error: null, done: true });
+                },
+            }
         )
             .then((response) => {
                 if (requestId !== requestIdRef.current) return; // stale response
@@ -170,12 +209,12 @@ export function DocumentExplorer() {
             })
             .catch((err: unknown) => {
                 if (requestId !== requestIdRef.current) return;
-                setResult({
+                setResult((prev) => ({
                     key: viewKey,
-                    data: null,
-                    error: err instanceof Error ? err.message : 'Failed to load documents',
+                    data: prev.data ?? null,
+                    error: prev.data ? null : (err instanceof Error ? err.message : 'Failed to load documents'),
                     done: true,
-                });
+                }));
             });
         // api.documents.list is recreated each render; the params above are
         // the real inputs and change with the URL key.
@@ -201,6 +240,19 @@ export function DocumentExplorer() {
         });
         return sortDir === 'asc' ? sorted : sorted.reverse();
     }, [result, sortField, sortDir, optimisticDeletedIds]);
+
+    // Active polling: while any visible document is in processing status, poll periodically
+    const hasProcessingDocuments = visible.some(
+        (doc) => doc.status === 'processing'
+    );
+
+    useEffect(() => {
+        if (!hasProcessingDocuments) return;
+        const timer = setInterval(() => {
+            setRetryKey((k) => k + 1);
+        }, 4000);
+        return () => clearInterval(timer);
+    }, [hasProcessingDocuments]);
 
     const displayedTotal = result.data
         ? Math.max(0, result.data.total - optimisticDeletedIds.size)

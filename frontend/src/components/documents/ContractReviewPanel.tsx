@@ -4,7 +4,7 @@ import React, { FormEvent, useEffect, useRef, useState } from 'react';
 import { ContractCandidate, ContractReviewCommitRequest, ContractReviewRecord, DocumentDetail } from '@/types';
 import { useApi } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
-import { readContractCandidates } from '@/lib/documentDataCache';
+import { invalidateDocumentDetail, invalidateDocumentLists, readContractCandidates } from '@/lib/documentDataCache';
 import { ExceptionDrawer } from './ExceptionDrawer';
 import { ReviewConfidenceChips } from './ReviewConfidenceChips';
 import { useReviewHashRequest } from './useReviewHashRequest';
@@ -399,6 +399,8 @@ export function ContractReviewPanel({
         setSaving(true);
         try {
             await api.documents.commitReview(document.id, toRequest(form));
+            invalidateDocumentDetail(user?.id || 'default-org', document.id);
+            invalidateDocumentLists();
             setCommitted(true);
             closeDrawer();
             onCommitted();

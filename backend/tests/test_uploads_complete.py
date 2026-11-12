@@ -288,3 +288,15 @@ def test_delete_non_pending_returns_409() -> None:
     response = client.delete(f"/api/v1/uploads/{row.id}")
     assert response.status_code == 409
     FakeGcsBucket.clear()
+
+
+def test_delete_failed_upload_drops_row() -> None:
+    """Failed leases can be cancelled/removed by the user."""
+    FakeGcsBucket.clear()
+    row = _make_row(status=DbUploadStatus.FAILED)
+    session = _FakeSession(seed=[row])
+    client = _make_client(session)
+    response = client.delete(f"/api/v1/uploads/{row.id}")
+    assert response.status_code == 204
+    assert str(row.id) not in session.store
+    FakeGcsBucket.clear()

@@ -1,10 +1,16 @@
-"""Maintenance tasks: expired upload-lease janitor (Celery Beat, every 15 min).
+"""Maintenance tasks: expired upload-lease janitor.
 
-Deletes abandoned ``pending`` upload rows whose signed-URL lease expired
-more than one hour ago, including best-effort removal of their orphaned
-GCS blobs (PUT succeeded but ``complete`` never ran). Only ``pending``
-rows are touched; staged, processing, completed, and failed rows are
-never deleted by this task.
+Two-phase cleanup lifecycle:
+1. Mark expired pending leases as ``failed`` (Celery Beat, every 1 min):
+   When ``expires_at < now()``, pending leases are updated to ``status = 'failed'``
+   with ``error = 'lease expired before complete'``. This ensures the UI and queries
+   immediately reflect that the signed-URL has expired.
+2. Purge expired leases (Celery Beat, every 15 min):
+   Deletes abandoned upload leases whose signed-URL expired more than one hour ago
+   (``expires_at < now() - INTERVAL '1 hour'`` and ``status IN ('pending', 'failed')``),
+   including best-effort removal of their orphaned GCS blobs. Staged, processing,
+   and completed rows (as well as pipeline documents where expires_at is None)
+   are never touched.
 
 DELETE is idempotent, so Beat redelivery and task retries are safe.
 """
@@ -20,9 +26,19 @@ from zellovest_workers.celery_app import QUEUE_INGESTION, celery_app
 
 logger = get_logger(__name__)
 
+MARK_EXPIRED_UPLOADS_SQL = (
+    "UPDATE uploads "
+    "SET status = 'failed', "
+    "    error = 'lease expired before complete', "
+    "    updated_at = now() "
+    "WHERE status = 'pending' AND expires_at < now()"
+)
+
 SELECT_EXPIRED_UPLOADS_SQL = (
     "SELECT gcs_key FROM uploads "
-    "WHERE status = 'pending' AND expires_at < now() - INTERVAL '1 hour' "
+    "WHERE expires_at IS NOT NULL "
+    "  AND expires_at < now() - INTERVAL '1 hour' "
+    "  AND status IN ('pending', 'failed') "
     "LIMIT :batch_size"
 )
 
@@ -30,14 +46,54 @@ PURGE_EXPIRED_UPLOADS_SQL = (
     "DELETE FROM uploads "
     "WHERE ctid IN ("
     "SELECT ctid FROM uploads "
-    "WHERE status = 'pending' AND expires_at < now() - INTERVAL '1 hour' "
+    "WHERE expires_at IS NOT NULL "
+    "  AND expires_at < now() - INTERVAL '1 hour' "
+    "  AND status IN ('pending', 'failed') "
     "LIMIT :batch_size)"
 )
 
 
-def purge_expired_upload_rows(batch_size: int = 1000) -> dict[str, int]:
-    """Delete one bounded batch of expired pending leases + orphan blobs.
+def mark_expired_upload_rows() -> int:
+    """Mark any pending upload lease whose expires_at has passed as failed.
 
+    Returns:
+        Count of rows marked failed.
+    """
+    engine = get_sync_engine()
+    with engine.begin() as conn:
+        result = conn.execute(text(MARK_EXPIRED_UPLOADS_SQL))
+        marked = result.rowcount or 0
+    return marked
+
+
+@celery_app.task(
+    name="zellovest.workers.tasks.maintenance.mark_expired_uploads",
+    queue=QUEUE_INGESTION,
+    max_retries=3,
+)
+def mark_expired_uploads() -> dict[str, Any]:
+    """Celery Beat entrypoint: mark expired pending uploads as failed.
+
+    Returns:
+        Dict with marked row count.
+    """
+    try:
+        marked = mark_expired_upload_rows()
+    except Exception as exc:
+        logger.error(
+            "uploads_mark_expired_failed",
+            error_class=type(exc).__name__,
+        )
+        raise
+    if marked > 0:
+        logger.info("uploads_mark_expired_complete", marked=marked)
+    return {"marked": marked}
+
+
+def purge_expired_upload_rows(batch_size: int = 1000) -> dict[str, int]:
+    """Delete one bounded batch of expired pending/failed leases + orphan blobs.
+
+    Leases must have expired more than 1 hour ago.
     Blob cleanup is best-effort: GCS failures are logged and counted,
     never fail the purge.
 
@@ -48,6 +104,9 @@ def purge_expired_upload_rows(batch_size: int = 1000) -> dict[str, int]:
         Dict with deleted row count and removed orphan blob count.
     """
     from zellovest_shared.config import get_settings
+
+    # Mark any newly expired leases first
+    mark_expired_upload_rows()
 
     engine = get_sync_engine()
     with engine.begin() as conn:

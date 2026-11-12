@@ -100,6 +100,10 @@ def index_document_task(tenant_id: str, document_id: str) -> dict[str, Any]:
         doc_type = str(getattr(document.document_type, "value", document.document_type))
         if upload_id is None:
             return {"status": "skipped", "reason": "document has no extraction artifact"}
+        upload_check = session.get(UploadRow, upload_id)
+        if upload_check is not None and upload_check.status == DbUploadStatus.FAILED:
+            logger.info("rag_index_skip_failed", upload_id=str(upload_id))
+            return {"status": "skipped", "reason": "upload already marked failed"}
         from zellovest_shared.db.models import ExtractionArtifact
 
         artifact_row = session.query(ExtractionArtifact).filter_by(
@@ -130,9 +134,16 @@ def index_document_task(tenant_id: str, document_id: str) -> dict[str, Any]:
         with Session(get_sync_engine()) as session:
             upload = session.get(UploadRow, upload_id)
             if upload is not None and upload.tenant_id == tenant_id:
-                upload.status = DbUploadStatus.COMPLETED
-                upload.error = None
-                session.commit()
+                if upload.status != DbUploadStatus.FAILED:
+                    upload.status = DbUploadStatus.COMPLETED
+                    upload.error = None
+                    session.commit()
+                else:
+                    logger.warning(
+                        "rag_index_not_overwriting_failed",
+                        tenant_id=tenant_id,
+                        upload_id=str(upload_id),
+                    )
     logger.info(
         "rag_index_task_completed",
         tenant_id=tenant_id,

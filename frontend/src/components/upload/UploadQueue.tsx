@@ -98,13 +98,14 @@ export function UploadQueue({ files, onRemove, onCancel, onRetry, onClearComplet
         {files.map((file) => {
           const colors = STATUS_COLORS[file.status];
           const isExpanded = expandedIds.has(file.id);
-          const canRetry = file.status === 'error';
+          const isError = file.status === 'error';
+          const canRetry = isError;
           // A minted lease means server-side state exists: offer Cancel
           // (abort + DELETE lease + blob) instead of local-only Remove.
           // Completed rows belong to the pipeline and are not cancellable.
           const hasLease = !!file.uploadId && file.status !== 'completed';
-          const showCancel = hasLease && !!onCancel;
-          const canRemove = !showCancel && file.status !== 'uploading';
+          const showCancel = hasLease && !isError && !!onCancel;
+          const canRemove = file.status !== 'uploading' && !showCancel;
 
           return (
             <div
@@ -218,7 +219,14 @@ export function UploadQueue({ files, onRemove, onCancel, onRetry, onClearComplet
                   )}
                   {canRemove && (
                     <button
-                      onClick={(e) => { e.stopPropagation(); onRemove(file.id); }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (file.uploadId && onCancel) {
+                          onCancel(file.id);
+                        } else {
+                          onRemove(file.id);
+                        }
+                      }}
                       style={{
                         padding: '6px 10px',
                         borderRadius: 'var(--radius-sm)',

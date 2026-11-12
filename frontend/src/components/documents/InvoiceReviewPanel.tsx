@@ -3,6 +3,7 @@
 import React, { FormEvent, useState } from 'react';
 import { DocumentDetail, InvoiceReviewCommitRequest } from '@/types';
 import { useApi } from '@/lib/api';
+import { invalidateDocumentDetail, invalidateDocumentLists } from '@/lib/documentDataCache';
 import { ExceptionDrawer } from './ExceptionDrawer';
 import { ReviewConfidenceChips } from './ReviewConfidenceChips';
 import { useReviewHashRequest } from './useReviewHashRequest';
@@ -321,6 +322,8 @@ export function InvoiceReviewPanel({
         setSaving(true);
         try {
             await api.documents.commitInvoiceReview(document.id, toRequest(form));
+            invalidateDocumentDetail('default-org', document.id);
+            invalidateDocumentLists();
             setCommitted(true);
             closeDrawer();
             onCommitted();

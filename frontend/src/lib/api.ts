@@ -1,5 +1,6 @@
 'use client';
 
+import { useCallback, useMemo } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   Vendor,
@@ -80,74 +81,78 @@ export function useApi() {
    *    the race where the token expired between the validity check and
    *    the request.
    */
-  const request = async <T>(
-    endpoint: string,
-    options: RequestInit = {}
-  ): Promise<T> => {
-    const attempt = async (token: string | null): Promise<Response> => {
-      const headers: HeadersInit = {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        ...options.headers,
+  const request = useCallback(
+    async <T>(endpoint: string, options: RequestInit = {}): Promise<T> => {
+      const attempt = async (token: string | null): Promise<Response> => {
+        const headers: HeadersInit = {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...options.headers,
+        };
+        return fetch(`${API_BASE}${endpoint}`, { ...options, headers });
       };
-      return fetch(`${API_BASE}${endpoint}`, { ...options, headers });
-    };
 
-    const token = await getValidAccessToken();
-    let response = await attempt(token);
+      const token = await getValidAccessToken();
+      let response = await attempt(token);
 
-    if (response.status === 401) {
-      // Token expired mid-flight: refresh once and retry.
-      const refreshed = await getValidAccessToken(true);
-      if (refreshed && refreshed !== token) {
-        response = await attempt(refreshed);
-      }
-    }
-
-    return handleResponse<T>(response);
-  };
-
-  const upload = async <T>(
-    endpoint: string,
-    formData: FormData,
-    onProgress?: (progress: number) => void
-  ): Promise<T> => {
-    return new Promise((resolve, reject) => {
-      (async () => {
-        const token = await getValidAccessToken();
-        const xhr = new XMLHttpRequest();
-        xhr.open('POST', `${API_BASE}${endpoint}`);
-        if (token) {
-          xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+      if (response.status === 401) {
+        // Token expired mid-flight: refresh once and retry.
+        const refreshed = await getValidAccessToken(true);
+        if (refreshed && refreshed !== token) {
+          response = await attempt(refreshed);
         }
-        xhr.upload.onprogress = (event) => {
-          if (event.lengthComputable && onProgress) {
-            onProgress(Math.round((event.loaded / event.total) * 100));
-          }
-        };
-        xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            try {
-              resolve(JSON.parse(xhr.responseText));
-            } catch {
-              resolve(undefined as T);
-            }
-          } else {
-            try {
-              const error = JSON.parse(xhr.responseText);
-              reject(new Error(error.message || `Upload failed: ${xhr.status}`));
-            } catch {
-              reject(new Error(`Upload failed: ${xhr.status}`));
-            }
-          }
-        };
-        xhr.onerror = () => reject(new Error('Network error'));
-        xhr.send(formData);
-      })().catch(reject);
-    });
-  };
+      }
 
-  return {
+      return handleResponse<T>(response);
+    },
+    [getValidAccessToken]
+  );
+
+  const upload = useCallback(
+    async <T>(
+      endpoint: string,
+      formData: FormData,
+      onProgress?: (progress: number) => void
+    ): Promise<T> => {
+      return new Promise((resolve, reject) => {
+        (async () => {
+          const token = await getValidAccessToken();
+          const xhr = new XMLHttpRequest();
+          xhr.open('POST', `${API_BASE}${endpoint}`);
+          if (token) {
+            xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+          }
+          xhr.upload.onprogress = (event) => {
+            if (event.lengthComputable && onProgress) {
+              onProgress(Math.round((event.loaded / event.total) * 100));
+            }
+          };
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              try {
+                resolve(JSON.parse(xhr.responseText));
+              } catch {
+                resolve(undefined as T);
+              }
+            } else {
+              try {
+                const error = JSON.parse(xhr.responseText);
+                reject(new Error(error.message || `Upload failed: ${xhr.status}`));
+              } catch {
+                reject(new Error(`Upload failed: ${xhr.status}`));
+              }
+            }
+          };
+          xhr.onerror = () => reject(new Error('Network error'));
+          xhr.send(formData);
+        })().catch(reject);
+      });
+    },
+    [getValidAccessToken]
+  );
+
+  return useMemo(
+    () => ({
     askAi: {
       ask: (question: string, vendorId?: string) =>
         request<AskAIResponse>('/agentic/ask-ai', {
@@ -378,7 +383,7 @@ export function useApi() {
         })();
       },
     },
-  };
+  }), [request, upload, getValidAccessToken]);
 }
 
 export interface UploadInitResponse {

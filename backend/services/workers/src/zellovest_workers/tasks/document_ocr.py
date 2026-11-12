@@ -402,6 +402,22 @@ def process_document(
     if not gcs_key:
         gcs_key = kwargs.get("s3_key", "")
 
+    if upload_id:
+        try:
+            with Session(get_sync_engine()) as session:
+                row = session.get(UploadRow, uuid.UUID(upload_id))
+                if row is not None and row.status == DbUploadStatus.FAILED:
+                    logger.info("process_document_skip_failed", upload_id=upload_id)
+                    return {
+                        "tenant_id": tenant_id,
+                        "gcs_key": gcs_key,
+                        "upload_id": upload_id,
+                        "status": "skipped",
+                        "reason": "upload already marked failed",
+                    }
+        except Exception as exc:
+            logger.warning("process_document_status_check_failed", upload_id=upload_id, error=str(exc))
+
     bucket = _get_bucket()
     data = _download_blob(bucket, gcs_key)
     if data is None:
@@ -606,6 +622,14 @@ def _mark_upload(upload_id: str | None, status: DbUploadStatus, error: str | Non
             except ValueError:
                 return
             if row is None:
+                return
+            # Prevent overwriting COMPLETED status with FAILED
+            if row.status == DbUploadStatus.COMPLETED and status == DbUploadStatus.FAILED:
+                logger.warning(
+                    "upload_mark_skip_already_completed",
+                    upload_id=upload_id,
+                    requested_status=status.value,
+                )
                 return
             row.status = status
             row.error = error
