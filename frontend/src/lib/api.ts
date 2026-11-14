@@ -23,6 +23,8 @@ import {
   InvoiceReviewCommitResponse,
   AskAIResponse,
   RAGSearchResponse,
+  APAuditKPIs,
+  ReconciliationItem,
 } from '@/types';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || '/api';
@@ -382,6 +384,54 @@ export function useApi() {
           return request<void>(`/v1/uploads/${uploadId}`, { method: 'DELETE', headers });
         })();
       },
+    },
+    compliance: {
+      getKpis: (tenantId?: string) => {
+        const query = tenantId ? `?tenant_id=${encodeURIComponent(tenantId)}` : '';
+        return request<APAuditKPIs>(`/v1/compliance/kpis${query}`);
+      },
+      listExceptions: (params?: {
+        rule_type?: string;
+        status?: string;
+        severity?: string;
+        search?: string;
+        page?: number;
+        page_size?: number;
+      }) => {
+        const searchParams = new URLSearchParams();
+        if (params) {
+          Object.entries(params).forEach(([k, v]) => {
+            if (v !== undefined && v !== null && v !== '') {
+              searchParams.set(k, String(v));
+            }
+          });
+        }
+        const query = searchParams.toString();
+        return request<{
+          items: ReconciliationItem[];
+          total: number;
+          page: number;
+          page_size: number;
+        }>(`/v1/compliance/exceptions${query ? `?${query}` : ''}`);
+      },
+      updateStatus: (exceptionId: string, status: string) =>
+        request<{ status: string; exception_id: string; new_status: string }>(
+          `/v1/compliance/exceptions/${exceptionId}/status`,
+          {
+            method: 'PATCH',
+            body: JSON.stringify({ status }),
+          }
+        ),
+      triggerReconcile: (invoiceId: string, force = true) =>
+        request<{
+          tenant_id: string;
+          invoice_id: string;
+          status: string;
+          exception_count: number;
+          total_discrepancy_amount: number;
+        }>(`/v1/compliance/invoices/${invoiceId}/reconcile?force=${force}`, {
+          method: 'POST',
+        }),
     },
   }), [request, upload, getValidAccessToken]);
 }

@@ -208,6 +208,16 @@ async def _append_contract_version(
     session.add(version)
     await session.flush()
 
+    # Synchronize the latest operative agreement values on the contract header
+    contract.end_date = end_date
+    contract.renewal_date = renewal_date
+    contract.notice_period_days = notice_period_days
+    contract.auto_renew = auto_renew
+    if termination_clause is not None:
+        contract.termination_clause = termination_clause
+    if title is not None:
+        contract.title = title
+
     parent_terms: list[ContractTermsVersionRow] = []
     if latest is not None:
         if latest.effective_from < version_start:
@@ -2429,11 +2439,17 @@ async def commit_invoice_review(
         )
     except Exception as exc:
         logger.warning(
-            "invoice_reconciliation_enqueue_failed",
+            "invoice_reconciliation_enqueue_failed_running_synchronously",
             tenant_id=upload.tenant_id,
             invoice_id=str(invoice.id),
             error_class=type(exc).__name__,
         )
+        try:
+            from zellovest_workers.tasks.ap_audit import reconcile_invoice
+
+            reconcile_invoice(upload.tenant_id, str(invoice.id))
+        except Exception as sync_exc:
+            logger.error("invoice_sync_reconciliation_failed", error=str(sync_exc))
     return InvoiceReviewCommitResponse(
         document_id=document_id,
         invoice_id=invoice.id,

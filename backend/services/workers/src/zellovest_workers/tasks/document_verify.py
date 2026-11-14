@@ -1423,11 +1423,15 @@ def verify_and_upsert(
                 )
             except Exception as enqueue_error:
                 logger.warning(
-                    "invoice_reconciliation_enqueue_failed",
+                    "invoice_reconciliation_enqueue_failed_running_synchronously",
                     tenant_id=tenant_id,
                     invoice_id=str(entity_id),
                     error_class=type(enqueue_error).__name__,
                 )
+                try:
+                    reconcile_invoice(tenant_id, str(entity_id))
+                except Exception as sync_exc:
+                    logger.error("invoice_sync_reconciliation_failed", error=str(sync_exc))
 
         logger.info(
             "document_upserted",

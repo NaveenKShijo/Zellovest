@@ -278,9 +278,6 @@ class ContractLine(Base):
 
     __tablename__ = "contract_lines"
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id", "contract_id", "legacy_line_no", name="uq_contract_lines_legacy_no"
-        ),
         Index("ix_contract_lines_contract", "tenant_id", "contract_id"),
         Index("ix_contract_lines_tenant", "tenant_id"),
     )
@@ -290,7 +287,6 @@ class ContractLine(Base):
     contract_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("contracts.id"), nullable=False
     )
-    legacy_line_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
     initial_document_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("documents.id"), nullable=True
     )

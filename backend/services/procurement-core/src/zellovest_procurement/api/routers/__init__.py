@@ -2,6 +2,7 @@
 
 from zellovest_procurement.api.routers import (
     analytics,
+    compliance,
     contracts,
     invoices,
     purchase_orders,
@@ -10,4 +11,13 @@ from zellovest_procurement.api.routers import (
     workflows,
 )
 
-__all__ = ["tenants", "vendors", "invoices", "purchase_orders", "analytics", "workflows", "contracts"]
+__all__ = [
+    "analytics",
+    "compliance",
+    "contracts",
+    "invoices",
+    "purchase_orders",
+    "tenants",
+    "vendors",
+    "workflows",
+]

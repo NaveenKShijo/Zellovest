@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from zellovest_procurement.api.routers import (
     analytics,
     auth,
+    compliance,
     contracts,
     invoices,
     purchase_orders,
@@ -83,6 +84,7 @@ def create_app(settings=None) -> FastAPI:
     app.include_router(invoices.router, prefix=prefix, tags=["invoices"])
     app.include_router(purchase_orders.router, prefix=prefix, tags=["purchase_orders"])
     app.include_router(analytics.router, prefix=prefix, tags=["analytics"])
+    app.include_router(compliance.router, prefix=prefix, tags=["compliance"])
     app.include_router(workflows.router, prefix=prefix, tags=["workflows"])
 
     @app.get("/healthz", tags=["ops"])

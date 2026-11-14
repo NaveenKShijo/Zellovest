@@ -1,14 +1,19 @@
-"""Deterministic invoice-to-contract reconciliation tasks."""
+"""Deterministic invoice-to-contract reconciliation engine.
+
+Performs point-in-time commercial term compliance checks comparing invoice
+line items and headers against versioned contract schedules in PostgreSQL.
+Financial math is strictly deterministic using Python Decimal (zero LLM math).
+"""
 
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from zellovest_shared.db.models import (
@@ -21,6 +26,7 @@ from zellovest_shared.db.models import (
     ExtractionArtifact,
     Invoice as InvoiceRow,
     InvoiceLineItem as InvoiceLineRow,
+    PurchaseOrder as PurchaseOrderRow,
     ReconciliationException,
 )
 from zellovest_shared.db.session import get_sync_engine
@@ -28,9 +34,28 @@ from zellovest_shared.logging_conf import get_logger
 from zellovest_workers.celery_app import QUEUE_ANALYTICS, celery_app
 
 logger = get_logger(__name__)
+
 _PRICE_TOLERANCE = Decimal("0.01")
 _NET_DAYS = re.compile(r"\bnet\s+(\d{1,3})\b", re.IGNORECASE)
 _PERCENT_RATE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+_FREIGHT_KEYWORDS = (
+    "freight",
+    "shipping",
+    "delivery",
+    "postage",
+    "carrier",
+    "handling fee",
+    "transportation",
+)
+_FREIGHT_INCLUDED_TERMS = (
+    "fob destination",
+    "included",
+    "prepaid",
+    "free shipping",
+    "zero",
+    "exempt",
+    "no charge",
+)
 
 
 def compare_line_item(contract_price: Decimal, invoice_price: Decimal) -> dict[str, Any]:
@@ -99,6 +124,40 @@ def _tax_rate(value: str | None) -> Decimal | None:
     return rate if Decimal("0") <= rate <= Decimal("1") else None
 
 
+def _compute_escalated_price(
+    base_price: Decimal,
+    escalation_pct: Decimal | None,
+    start_date: date,
+    invoice_date: date,
+) -> Decimal:
+    """Calculate annual escalation cap ceiling using exact Decimal math.
+
+    Permits compounding at escalation_pct per elapsed 365-day contract year.
+    """
+    if not escalation_pct or escalation_pct <= Decimal("0"):
+        return base_price
+    days_elapsed = (invoice_date - start_date).days
+    years_elapsed = max(0, days_elapsed // 365)
+    if years_elapsed == 0:
+        return base_price
+    # base_price * (1 + escalation_pct/100) ^ years_elapsed
+    multiplier = (Decimal("1") + (escalation_pct / Decimal("100"))) ** years_elapsed
+    return (base_price * multiplier).quantize(Decimal("0.01"))
+
+
+def _is_freight_line(line: InvoiceLineRow) -> bool:
+    """Detect if an invoice line is a freight or delivery charge."""
+    desc = _text(line.description)
+    code = _text(line.product_code)
+    return any(kw in desc or kw in code for kw in _FREIGHT_KEYWORDS)
+
+
+def _is_freight_included(freight_terms: str | None) -> bool:
+    """Check if contractual terms state that freight is included/FOB Destination."""
+    norm = _text(freight_terms)
+    return any(kw in norm for kw in _FREIGHT_INCLUDED_TERMS)
+
+
 def _review_invoice(
     session: Session,
     *,
@@ -145,7 +204,7 @@ def _review_invoice(
 def _make_exception(
     *,
     invoice: InvoiceRow,
-    invoice_line: InvoiceLineRow,
+    invoice_line: InvoiceLineRow | None,
     contract: ContractRow,
     version: ContractVersionRow,
     term: ContractTermRow,
@@ -154,17 +213,23 @@ def _make_exception(
     billed: Decimal | None,
     variance_amount: Decimal | None = None,
     variance_pct: float | None = None,
+    po_id: UUID | None = None,
+    severity_override: str | None = None,
 ) -> ReconciliationException:
     """Build an immutable exception tied to its exact contract version and term."""
-    magnitude = abs(variance_pct or 0)
-    severity = "high" if magnitude >= 10 else "medium" if magnitude >= 2 else "low"
+    if severity_override:
+        severity = severity_override
+    else:
+        magnitude = abs(variance_pct or 0)
+        severity = "high" if magnitude >= 10 else "medium" if magnitude >= 2 else "low"
     return ReconciliationException(
         tenant_id=invoice.tenant_id,
         invoice_id=invoice.id,
-        invoice_line_id=invoice_line.id,
+        invoice_line_id=invoice_line.id if invoice_line else None,
         contract_id=contract.id,
         contract_version_id=version.id,
         contract_term_id=term.id,
+        po_id=po_id or invoice.po_id,
         rule_type=rule,
         expected_value=float(expected) if expected is not None else None,
         billed_value=float(billed) if billed is not None else None,
@@ -180,9 +245,13 @@ def _make_exception(
     queue=QUEUE_ANALYTICS,
     max_retries=3,
 )
-def reconcile_invoice(tenant_id: str, invoice_id: str) -> dict[str, Any]:
-    """Compare invoice lines with the effective vendor contract terms."""
-    logger.info("reconcile_started", tenant_id=tenant_id, invoice_id=invoice_id)
+def reconcile_invoice(
+    tenant_id: str,
+    invoice_id: str,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Compare invoice lines and header with effective vendor contract terms."""
+    logger.info("reconcile_started", tenant_id=tenant_id, invoice_id=invoice_id, force=force)
     engine = get_sync_engine()
     with Session(engine) as session:
         invoice = session.execute(
@@ -198,13 +267,23 @@ def reconcile_invoice(tenant_id: str, invoice_id: str) -> dict[str, Any]:
             return {"tenant_id": tenant_id, "invoice_id": invoice_id, "status": "not_found"}
 
         metadata = dict(invoice.extra or {})
-        if metadata.get("commercial_reconciled_at"):
+        if metadata.get("commercial_reconciled_at") and not force:
             logger.info("reconcile_invoice_idempotent", tenant_id=tenant_id, invoice_id=invoice_id)
             return {
                 "tenant_id": tenant_id,
                 "invoice_id": invoice_id,
                 "status": "already_reconciled",
             }
+
+        # Clear existing exceptions on force re-reconciliation
+        if force:
+            session.execute(
+                delete(ReconciliationException).where(
+                    ReconciliationException.tenant_id == tenant_id,
+                    ReconciliationException.invoice_id == invoice.id,
+                )
+            )
+
         if invoice.vendor_id is None:
             document = session.get(DocumentRow, invoice.document_id) if invoice.document_id else None
             artifact = (
@@ -252,6 +331,7 @@ def reconcile_invoice(tenant_id: str, invoice_id: str) -> dict[str, Any]:
                 reason="Invoice has no line items to match against commercial terms.",
             )
 
+        # Query all contracts and versioned terms for this vendor
         joined = session.execute(
             select(ContractTermRow, ContractVersionRow, ContractRow)
             .join(
@@ -265,12 +345,189 @@ def reconcile_invoice(tenant_id: str, invoice_id: str) -> dict[str, Any]:
                 ContractRow.vendor_id == invoice.vendor_id,
             )
         ).all()
+
+        vendor_contracts = session.execute(
+            select(ContractRow).where(
+                ContractRow.tenant_id == tenant_id,
+                ContractRow.vendor_id == invoice.vendor_id,
+            )
+        ).scalars().all()
+
+        if not vendor_contracts or not joined:
+            document = session.get(DocumentRow, invoice.document_id) if invoice.document_id else None
+            artifact = (
+                session.execute(
+                    select(ExtractionArtifact).where(
+                        ExtractionArtifact.upload_id == document.upload_id
+                    )
+                ).scalar_one_or_none()
+                if document is not None and document.upload_id is not None
+                else None
+            )
+            return _review_invoice(
+                session,
+                invoice=invoice,
+                document=document,
+                artifact=artifact,
+                reason="No active commercial contract found in the ledger for this vendor.",
+            )
+
         exceptions: list[ReconciliationException] = []
         matched_contract_ids: set[UUID] = set()
         matched_terms: list[tuple[InvoiceLineRow, ContractRow, ContractVersionRow, ContractTermRow]] = []
         review_reason: str | None = None
 
+        # ---------------------------------------------------------------------
+        # Rule 8: Premature and Post-Expiration Date Boundaries
+        # ---------------------------------------------------------------------
+        all_starts = [t.effective_from for t, _, _ in joined if t.effective_from is not None] or [
+            c.start_date for c in vendor_contracts if c.start_date is not None
+        ]
+        earliest_start = min(all_starts) if all_starts else None
+
+        has_open_ended = any(t.effective_to is None for t, _, _ in joined) or any(
+            c.end_date is None for c in vendor_contracts
+        )
+        all_ends = [t.effective_to for t, _, _ in joined if t.effective_to is not None] or [
+            c.end_date for c in vendor_contracts if c.end_date is not None
+        ]
+        latest_end = max(all_ends) if (all_ends and not has_open_ended) else None
+
+        # Premature billing check
+        if earliest_start and invoice_date < earliest_start:
+            default_term, default_version, default_contract = joined[0]
+            exceptions.append(
+                _make_exception(
+                    invoice=invoice,
+                    invoice_line=lines[0] if lines else None,
+                    contract=default_contract,
+                    version=default_version,
+                    term=default_term,
+                    rule=ExceptionRule.DATE,
+                    expected=Decimal("0.00"),
+                    billed=_decimal(invoice.total_amount),
+                    variance_amount=_decimal(invoice.total_amount),
+                    variance_pct=100.0,
+                    severity_override="high",
+                )
+            )
+
+        # Post-expiration billing check
+        if latest_end and invoice_date > latest_end:
+            default_term, default_version, default_contract = joined[0]
+            exceptions.append(
+                _make_exception(
+                    invoice=invoice,
+                    invoice_line=lines[0] if lines else None,
+                    contract=default_contract,
+                    version=default_version,
+                    term=default_term,
+                    rule=ExceptionRule.DATE,
+                    expected=Decimal("0.00"),
+                    billed=_decimal(invoice.total_amount),
+                    variance_amount=_decimal(invoice.total_amount),
+                    variance_pct=100.0,
+                    severity_override="high",
+                )
+            )
+
+        # ---------------------------------------------------------------------
+        # Rule 9: Purchase Order Linkage & Ceiling Check
+        # ---------------------------------------------------------------------
+        po_row: PurchaseOrderRow | None = None
+        if invoice.po_id is not None:
+            po_row = session.get(PurchaseOrderRow, invoice.po_id)
+            if po_row is not None:
+                if po_row.vendor_id != invoice.vendor_id:
+                    default_term, default_version, default_contract = joined[0]
+                    exceptions.append(
+                        _make_exception(
+                            invoice=invoice,
+                            invoice_line=lines[0] if lines else None,
+                            contract=default_contract,
+                            version=default_version,
+                            term=default_term,
+                            rule=ExceptionRule.MISSING_PO,
+                            expected=Decimal("0.00"),
+                            billed=_decimal(invoice.total_amount),
+                            variance_amount=_decimal(invoice.total_amount),
+                            variance_pct=100.0,
+                            po_id=po_row.id,
+                            severity_override="high",
+                        )
+                    )
+                elif _decimal(invoice.total_amount) > _decimal(po_row.total_amount) + _PRICE_TOLERANCE:
+                    default_term, default_version, default_contract = joined[0]
+                    po_variance = _decimal(invoice.total_amount) - _decimal(po_row.total_amount)
+                    po_pct = (
+                        float((po_variance / _decimal(po_row.total_amount)) * Decimal("100"))
+                        if po_row.total_amount
+                        else 100.0
+                    )
+                    exceptions.append(
+                        _make_exception(
+                            invoice=invoice,
+                            invoice_line=lines[0] if lines else None,
+                            contract=default_contract,
+                            version=default_version,
+                            term=default_term,
+                            rule=ExceptionRule.MISSING_PO,
+                            expected=_decimal(po_row.total_amount),
+                            billed=_decimal(invoice.total_amount),
+                            variance_amount=po_variance,
+                            variance_pct=po_pct,
+                            po_id=po_row.id,
+                            severity_override="high" if po_pct >= 10 else "medium",
+                        )
+                    )
+        elif _decimal(invoice.total_amount) >= Decimal("5000.00"):
+            # Standard enterprise threshold requiring an authorized purchase order
+            default_term, default_version, default_contract = joined[0]
+            exceptions.append(
+                _make_exception(
+                    invoice=invoice,
+                    invoice_line=lines[0] if lines else None,
+                    contract=default_contract,
+                    version=default_version,
+                    term=default_term,
+                    rule=ExceptionRule.MISSING_PO,
+                    expected=Decimal("0.00"),
+                    billed=_decimal(invoice.total_amount),
+                    variance_amount=_decimal(invoice.total_amount),
+                    variance_pct=100.0,
+                    severity_override="high" if _decimal(invoice.total_amount) >= Decimal("25000") else "medium",
+                )
+            )
+
+        # ---------------------------------------------------------------------
+        # Rules 1-4, 7: Line Item Rate, Escalation, Quantity & Freight Checks
+        # ---------------------------------------------------------------------
         for invoice_line in lines:
+            # Check for freight lines against contract freight terms
+            if _is_freight_line(invoice_line):
+                # Search if contract provides freight included / FOB Destination
+                freight_terms_list = [term.freight_terms for term, _, _ in joined if term.freight_terms]
+                if any(_is_freight_included(f) for f in freight_terms_list):
+                    billed_freight = _decimal(invoice_line.total)
+                    if billed_freight > _PRICE_TOLERANCE:
+                        default_term, default_version, default_contract = joined[0]
+                        exceptions.append(
+                            _make_exception(
+                                invoice=invoice,
+                                invoice_line=invoice_line,
+                                contract=default_contract,
+                                version=default_version,
+                                term=default_term,
+                                rule=ExceptionRule.FREIGHT,
+                                expected=Decimal("0.00"),
+                                billed=billed_freight,
+                                variance_amount=billed_freight,
+                                variance_pct=100.0,
+                                severity_override="medium",
+                            )
+                        )
+                        continue
+
             product_rows = [
                 (term, version, contract)
                 for term, version, contract in joined
@@ -283,6 +540,26 @@ def reconcile_invoice(tenant_id: str, invoice_id: str) -> dict[str, Any]:
                 and (term.effective_to is None or term.effective_to >= invoice_date)
             ]
             if not active_rows:
+                # Check if product was active in past or future (Date window mismatch)
+                if product_rows:
+                    past_or_future_term, version, contract = product_rows[0]
+                    exceptions.append(
+                        _make_exception(
+                            invoice=invoice,
+                            invoice_line=invoice_line,
+                            contract=contract,
+                            version=version,
+                            term=past_or_future_term,
+                            rule=ExceptionRule.DATE,
+                            expected=Decimal("0.00"),
+                            billed=_decimal(invoice_line.total),
+                            variance_amount=_decimal(invoice_line.total),
+                            variance_pct=100.0,
+                            severity_override="high",
+                        )
+                    )
+                    continue
+
                 review_reason = (
                     f"No effective contract term matches invoice line {invoice_line.line_no} "
                     f"on {invoice_date.isoformat()}."
@@ -341,10 +618,26 @@ def reconcile_invoice(tenant_id: str, invoice_id: str) -> dict[str, Any]:
                 break
 
             matched_terms.append((invoice_line, contract, version, term))
-            base_price = _decimal(term.unit_price)
+
+            # Base Price & Annual Escalation Cap
+            contract_start = (
+                version.contract_start_date
+                or contract.start_date
+                or term.effective_from
+            )
+            escalation_pct = _decimal(term.escalation_pct) if term.escalation_pct is not None else None
+            base_price = _compute_escalated_price(
+                _decimal(term.unit_price),
+                escalation_pct,
+                contract_start,
+                invoice_date,
+            )
+
+            # Contractual Discount
             discount_pct = _decimal(term.discount_pct) if term.discount_pct is not None else Decimal("0")
             expected_price = base_price * (Decimal("100") - discount_pct) / Decimal("100")
             billed_price = _decimal(invoice_line.unit_price)
+
             comparison = compare_line_item(expected_price, billed_price)
             if comparison["exception"]:
                 rule = (
@@ -388,6 +681,9 @@ def reconcile_invoice(tenant_id: str, invoice_id: str) -> dict[str, Any]:
                 reason=review_reason,
             )
 
+        # ---------------------------------------------------------------------
+        # Rule 6: Payment Terms & Net Days Verification
+        # ---------------------------------------------------------------------
         if invoice.due_date is not None and matched_terms:
             payment_periods = [
                 _payment_days(term.payment_terms)
@@ -431,6 +727,9 @@ def reconcile_invoice(tenant_id: str, invoice_id: str) -> dict[str, Any]:
                         )
                     )
 
+        # ---------------------------------------------------------------------
+        # Rule 5: Tax Exemption & Rate Verification
+        # ---------------------------------------------------------------------
         if matched_terms:
             tax_rates = [_tax_rate(term.tax_rule) for _, _, _, term in matched_terms]
             if all(rate is not None for rate in tax_rates):
@@ -448,7 +747,7 @@ def reconcile_invoice(tenant_id: str, invoice_id: str) -> dict[str, Any]:
                     tax_variance_pct = (
                         float((billed_tax - expected_tax) / expected_tax * Decimal("100"))
                         if expected_tax != 0
-                        else None
+                        else 100.0
                     )
                     exceptions.append(
                         _make_exception(
@@ -469,10 +768,13 @@ def reconcile_invoice(tenant_id: str, invoice_id: str) -> dict[str, Any]:
             invoice.contract_id = next(iter(matched_contract_ids))
         for exception in exceptions:
             session.add(exception)
-        if exceptions:
-            invoice.status = "flagged"
+
+        # Update invoice status and metadata
+        invoice.status = "flagged" if exceptions else "matched"
+        total_discrepancy = sum(abs(e.variance_amount or 0) for e in exceptions)
         metadata["commercial_reconciled_at"] = datetime.now(UTC).isoformat()
         metadata["commercial_exception_count"] = len(exceptions)
+        metadata["total_discrepancy_amount"] = float(total_discrepancy)
         invoice.extra = metadata
         session.commit()
 
@@ -482,6 +784,7 @@ def reconcile_invoice(tenant_id: str, invoice_id: str) -> dict[str, Any]:
             invoice_id=invoice_id,
             contract_id=str(invoice.contract_id) if invoice.contract_id else None,
             exception_count=len(exceptions),
+            total_discrepancy=float(total_discrepancy),
         )
         return {
             "tenant_id": tenant_id,
@@ -489,6 +792,7 @@ def reconcile_invoice(tenant_id: str, invoice_id: str) -> dict[str, Any]:
             "status": "flagged" if exceptions else "matched",
             "contract_id": str(invoice.contract_id) if invoice.contract_id else None,
             "exception_count": len(exceptions),
+            "total_discrepancy_amount": float(total_discrepancy),
         }
 
 

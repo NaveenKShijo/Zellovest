@@ -709,3 +709,7 @@ export interface DocumentProvenance {
   extractionMethod: 'python_parser' | 'document_ai' | 'llm' | 'ocr';
   extractedAt: string;
 }
+
+// Re-export Procurement Intelligence & Optimization types
+export * from './procurementIntelligence';
+

@@ -1,35 +1,239 @@
 'use client';
 
-import React from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
+import {
+  ExceptionRuleType,
+  AuditExceptionStatus,
+  ReconciliationItem,
+  APAuditKPIs,
+} from '@/types';
+import { APAuditKPIsBar } from '@/components/compliance/APAuditKPIsBar';
+import { AuditFilters } from '@/components/compliance/AuditFilters';
+import { ReconciliationTable } from '@/components/compliance/ReconciliationTable';
+import { LineItemComparisonModal } from '@/components/compliance/LineItemComparisonModal';
+import { useToast } from '@/contexts/ToastContext';
+import { useApi } from '@/lib/api';
+
+const EMPTY_KPIS: APAuditKPIs = {
+  totalInvoicedAmount: 0,
+  flaggedDiscrepancyAmount: 0,
+  totalInvoicesCount: 0,
+  cleanInvoicesCount: 0,
+  exceptionInvoicesCount: 0,
+  unreconciledInvoicesCount: 0,
+  cleanRatePct: 0,
+};
 
 export default function CompliancePage() {
+  const router = useRouter();
+  const api = useApi();
+  const { notify } = useToast();
+
+  const [kpis, setKpis] = useState<APAuditKPIs>(EMPTY_KPIS);
+  const [items, setItems] = useState<ReconciliationItem[]>([]);
+  const [selectedItem, setSelectedItem] = useState<ReconciliationItem | null>(null);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+
+  // Filters state
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedRule, setSelectedRule] = useState<ExceptionRuleType | 'all'>('all');
+  const [selectedStatus, setSelectedStatus] = useState<AuditExceptionStatus | 'all'>('all');
+
+  // Load real data from FastAPI backend
+  const fetchData = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const statusParam = selectedStatus !== 'all' ? selectedStatus : 'all';
+      const [kpiRes, excRes] = await Promise.allSettled([
+        api.compliance.getKpis(),
+        api.compliance.listExceptions({
+          status: statusParam,
+        }),
+      ]);
+
+      if (kpiRes.status === 'fulfilled' && kpiRes.value) {
+        const raw = kpiRes.value as any;
+        setKpis({
+          totalInvoicedAmount: Number(raw.total_invoiced_amount ?? raw.totalInvoicedAmount ?? 0),
+          flaggedDiscrepancyAmount: Number(raw.flagged_discrepancy_amount ?? raw.flaggedDiscrepancyAmount ?? 0),
+          totalInvoicesCount: Number(raw.total_invoices_count ?? raw.totalInvoicesCount ?? 0),
+          cleanInvoicesCount: Number(raw.clean_invoices_count ?? raw.cleanInvoicesCount ?? 0),
+          exceptionInvoicesCount: Number(raw.exception_invoices_count ?? raw.exceptionInvoicesCount ?? 0),
+          unreconciledInvoicesCount: Number(raw.unreconciled_invoices_count ?? raw.unreconciledInvoicesCount ?? 0),
+          cleanRatePct: Number(raw.clean_rate_pct ?? raw.cleanRatePct ?? 0),
+        });
+      } else {
+        setKpis(EMPTY_KPIS);
+      }
+
+      if (excRes.status === 'fulfilled' && excRes.value) {
+        const rawList = Array.isArray(excRes.value.items) ? excRes.value.items : [];
+        const mappedItems: ReconciliationItem[] = rawList.map((raw: any) => ({
+          id: String(raw.id),
+          invoiceId: String(raw.invoice_id ?? raw.invoiceId),
+          invoiceNumber: raw.invoice_number ?? raw.invoiceNumber ?? 'INV-UNKNOWN',
+          vendorId: String(raw.vendor_id ?? raw.vendorId),
+          vendorName: raw.vendor_name ?? raw.vendorName ?? 'Unknown Vendor',
+          invoiceDate: raw.invoice_date ?? raw.invoiceDate,
+          dueDate: raw.due_date ?? raw.dueDate ?? '',
+          totalAmount: Number(raw.total_amount ?? raw.totalAmount ?? 0),
+          currency: raw.currency ?? 'USD',
+          discrepancyAmount: Math.abs(Number(raw.discrepancy_amount ?? raw.discrepancyAmount ?? 0)),
+          primaryRule: raw.primary_rule ?? raw.primaryRule ?? 'price',
+          ruleLabel: raw.rule_label ?? raw.ruleLabel ?? 'Price Discrepancy',
+          severity: raw.severity ?? 'medium',
+          status: raw.status ?? 'open',
+          contractId: String(raw.contract_id ?? raw.contractId),
+          contractNumber: raw.contract_number ?? raw.contractNumber ?? 'MSA-CONTRACT',
+          contractTitle: raw.contract_title ?? raw.contractTitle ?? 'Master Agreement',
+          poNumber: raw.po_number ?? raw.poNumber ?? null,
+          detectedAt: raw.detected_at ?? raw.detectedAt ?? new Date().toISOString(),
+          investigationReason: raw.investigation_reason ?? raw.investigationReason ?? 'Audit exception flagged.',
+          lineItemsComparison: (raw.line_items_comparison ?? raw.lineItemsComparison ?? []).map((li: any) => ({
+            id: String(li.id),
+            lineNumber: Number(li.line_number ?? li.lineNumber ?? 1),
+            productCode: li.product_code ?? li.productCode ?? '',
+            description: li.description ?? '',
+            billedUnitPrice: Number(li.billed_unit_price ?? li.billedUnitPrice ?? 0),
+            contractedUnitPrice: Number(li.contracted_unit_price ?? li.contractedUnitPrice ?? 0),
+            billedQuantity: Number(li.billed_quantity ?? li.billedQuantity ?? 1),
+            tierMinQuantity: li.tier_min_quantity ?? li.tierMinQuantity ?? null,
+            tierMaxQuantity: li.tier_max_quantity ?? li.tierMaxQuantity ?? null,
+            varianceAmount: Number(li.variance_amount ?? li.varianceAmount ?? 0),
+            extendedVarianceAmount: li.extended_variance_amount != null ? Number(li.extended_variance_amount) : (li.extendedVarianceAmount != null ? Number(li.extendedVarianceAmount) : undefined),
+            variancePct: Number(li.variance_pct ?? li.variancePct ?? 0),
+            rule: li.rule ?? 'price',
+            explanation: li.explanation ?? 'Line item discrepancy.',
+          })),
+        }));
+        setItems(mappedItems);
+      } else {
+        setItems([]);
+      }
+    } catch {
+      setKpis(EMPTY_KPIS);
+      setItems([]);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [api, selectedStatus]);
+
+  useEffect(() => {
+    fetchData();
+
+    // Refetch when the user refocuses the window (e.g. after uploading or deleting documents)
+    const handleFocus = () => {
+      fetchData();
+    };
+    window.addEventListener('focus', handleFocus);
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, [fetchData]);
+
+  // Filtered items
+  const filteredItems = useMemo(() => {
+    return items.filter((item) => {
+      // Search matching
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase();
+        const matchesInv = item.invoiceNumber.toLowerCase().includes(q);
+        const matchesVendor = item.vendorName.toLowerCase().includes(q);
+        const matchesContract = item.contractNumber.toLowerCase().includes(q);
+        if (!matchesInv && !matchesVendor && !matchesContract) {
+          return false;
+        }
+      }
+
+      // Rule matching
+      if (selectedRule !== 'all' && item.primaryRule !== selectedRule) {
+        return false;
+      }
+
+      // Status matching
+      if (selectedStatus !== 'all' && item.status !== selectedStatus) {
+        return false;
+      }
+
+      return true;
+    });
+  }, [items, searchQuery, selectedRule, selectedStatus]);
+
+  const handleRowClick = (item: ReconciliationItem) => {
+    setSelectedItem(item);
+    setIsModalOpen(true);
+  };
+
+  const handleLaunchInvestigation = (item: ReconciliationItem) => {
+    notify.info(
+      'Investigation Agent Dispatched',
+      `Analyzing variance root cause for ${item.vendorName} (${item.invoiceNumber}) against ${item.contractNumber}.`
+    );
+    const prompt = encodeURIComponent(
+      `Investigate AP audit discrepancy on invoice ${item.invoiceNumber} from vendor ${item.vendorName}. Rule: ${item.ruleLabel}, Discrepancy Amount: $${item.discrepancyAmount}. Context: ${item.investigationReason}`
+    );
+    router.push(`/assistant?prompt=${prompt}`);
+  };
+
+  const handleAcknowledge = async (itemId: string) => {
+    try {
+      await api.compliance.updateStatus(itemId, 'acknowledged');
+    } catch {
+      // Handled gracefully
+    }
+
+    setItems((prev) =>
+      prev.map((it) => (it.id === itemId ? { ...it, status: 'acknowledged' as const } : it))
+    );
+    if (selectedItem?.id === itemId) {
+      setSelectedItem((prev) => (prev ? { ...prev, status: 'acknowledged' } : null));
+    }
+    notify.success('Invoice Discrepancy Acknowledged', 'Status updated to Acknowledged in audit log.');
+  };
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '22px' }}>
+      {/* Header */}
       <div>
         <h1 style={{ fontSize: '24px', fontWeight: 700, color: 'var(--text-primary)', letterSpacing: '-0.4px' }}>
-          AP Audit & Contract Compliance
+          AP Audit & Reconciliation Dashboard
         </h1>
         <p style={{ color: 'var(--text-secondary)', fontSize: '13.5px', marginTop: '3px' }}>
-          Deterministic reconciliation comparing invoice unit rates against structured contractual terms.
+          Deterministic reconciliation engine checking invoice line items against locked contractual schedules and PO rules.
         </p>
       </div>
 
-      <div
-        style={{
-          backgroundColor: 'var(--bg-surface)',
-          borderRadius: 'var(--radius-lg)',
-          border: '1px solid var(--border-subtle)',
-          padding: '24px',
-          boxShadow: 'var(--shadow-sm)',
-        }}
-      >
-        <h2 style={{ fontSize: '16px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '12px' }}>
-          Audit Exception Feed
-        </h2>
-        <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-          The deterministic audit engine flags discrepancies between signed enterprise agreements and AP invoice line items. High-variance invoices are queued for human review or sent to the Procurement Investigation Agent.
-        </p>
-      </div>
+      {/* 1. Overview KPIs (Always real values) */}
+      <APAuditKPIsBar kpis={kpis} />
+
+      {/* 2. Filters Bar */}
+      <AuditFilters
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
+        selectedRule={selectedRule}
+        onRuleChange={setSelectedRule}
+        selectedStatus={selectedStatus}
+        onStatusChange={setSelectedStatus}
+      />
+
+      {/* 3. Reconciliation Table (Only real discrepancies listed; empty if none) */}
+      <ReconciliationTable
+        items={filteredItems}
+        totalInvoicesCount={kpis.totalInvoicesCount}
+        onSelectRow={handleRowClick}
+        onLaunchInvestigation={handleLaunchInvestigation}
+      />
+
+      {/* 4. Line-Item Comparison Modal */}
+      <LineItemComparisonModal
+        item={selectedItem}
+        isOpen={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
+        onLaunchInvestigation={handleLaunchInvestigation}
+        onAcknowledge={handleAcknowledge}
+      />
     </div>
   );
 }

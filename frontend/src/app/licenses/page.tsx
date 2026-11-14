@@ -1,35 +1,40 @@
 'use client';
 
-import React from 'react';
+import React, { useState } from 'react';
+import { SaaSUtilizationItem } from '@/types';
+import { MOCK_UTILIZATION_ITEMS } from '@/lib/mockData';
+import { UtilizationTable } from '@/components/forecasting/UtilizationTable';
+import { WasteCalculatorWidget } from '@/components/forecasting/WasteCalculatorWidget';
+import { SeatForecastWidget } from '@/components/forecasting/SeatForecastWidget';
 
 export default function LicensesPage() {
+  const [items] = useState<SaaSUtilizationItem[]>(MOCK_UTILIZATION_ITEMS);
+  const [selectedApp, setSelectedApp] = useState<SaaSUtilizationItem>(MOCK_UTILIZATION_ITEMS[0]);
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '22px' }}>
+      {/* Page Title & Intro */}
       <div>
         <h1 style={{ fontSize: '24px', fontWeight: 700, color: 'var(--text-primary)', letterSpacing: '-0.4px' }}>
-          Predictive Liscence Seat Forecasting
+          SaaS Utilization & Predictive Seat Forecasting
         </h1>
         <p style={{ color: 'var(--text-secondary)', fontSize: '13.5px', marginTop: '3px' }}>
-          Okta activity analysis identifying provisioned SaaS seats that have been inactive for &gt;60 days.
+          ML-driven churn survival curves and penalty-aware optimization engines determine exact seat commitments for upcoming renewals, cutting shelfware without incurring true-up risk.
         </p>
       </div>
 
-      <div
-        style={{
-          backgroundColor: 'var(--bg-surface)',
-          borderRadius: 'var(--radius-lg)',
-          border: '1px solid var(--border-subtle)',
-          padding: '24px',
-          boxShadow: 'var(--shadow-sm)',
-        }}
-      >
-        <h2 style={{ fontSize: '16px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '8px' }}>
-          License Reclamation Dashboard
-        </h2>
-        <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-          Identified 109 inactive seats across Salesforce, Figma, and Zoom representing $38,400 in recoverable annual software spending.
-        </p>
-      </div>
+      {/* 1. SaaS Utilization Table (Purchased vs Active, 30/60/90d Inactivity) */}
+      <UtilizationTable
+        items={items}
+        selectedAppId={selectedApp.id}
+        onSelectApp={(app) => setSelectedApp(app)}
+      />
+
+      {/* 2. Interactive Waste Calculator Widget */}
+      <WasteCalculatorWidget selectedApp={selectedApp} />
+
+      {/* 3. NEW ML Forecast Widget (Recommended Commitment, Scenarios, Confidence Intervals, Retention Curves) */}
+      <SeatForecastWidget forecast={selectedApp.forecast} />
     </div>
   );
 }

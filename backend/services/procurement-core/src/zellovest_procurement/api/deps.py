@@ -47,3 +47,21 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token."
         )
     return user
+
+
+async def get_optional_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    session: AsyncSession = Depends(get_db_session),
+) -> User | None:
+    """Resolve Bearer JWT if present, returning None if unauthenticated."""
+    if credentials is None or not credentials.credentials:
+        return None
+    try:
+        payload = decode_token(credentials.credentials)
+        user_id = (payload.user_id or payload.sub) if payload else None
+        if not user_id or payload.token_type == "refresh":
+            return None
+        user = await get_user_by_id(session, user_id)
+        return user if (user and user.is_active) else None
+    except Exception:
+        return None
