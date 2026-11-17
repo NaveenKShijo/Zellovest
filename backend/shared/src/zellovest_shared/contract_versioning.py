@@ -56,7 +56,16 @@ def match_contract_line(
     """
     explicit_id = incoming.get("contract_line_id")
     if explicit_id:
-        matches = [line for line in existing_lines if str(line.id) == str(explicit_id)]
+        target_id = str(explicit_id)
+
+        def _matches(line: Any) -> bool:
+            if isinstance(line, Mapping):
+                candidates = (line.get("contract_line_id"), line.get("id"))
+            else:
+                candidates = (getattr(line, "contract_line_id", None), getattr(line, "id", None))
+            return any(c is not None and str(c) == target_id for c in candidates)
+
+        matches = [line for line in existing_lines if _matches(line)]
         if not matches:
             raise AmbiguousContractLineError("Selected product line is not part of the parent contract.")
         return matches[0]

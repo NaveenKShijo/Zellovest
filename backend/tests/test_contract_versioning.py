@@ -59,6 +59,48 @@ class ContractVersioningTests(unittest.TestCase):
                 lines,
             )
 
+    def test_explicit_contract_line_id_matches_parent_line(self) -> None:
+        """A reviewer explicitly choosing a parent line matches by contract_line_id or id."""
+        target_contract_line_id = uuid.uuid4()
+        lines = [
+            SimpleNamespace(
+                id=uuid.uuid4(), contract_line_id=uuid.uuid4(), product_code="SKU-1",
+                description="Seat license", uom="seat", qty_min=1, qty_max=10,
+            ),
+            SimpleNamespace(
+                id=uuid.uuid4(), contract_line_id=target_contract_line_id, product_code="SKU-1",
+                description="Seat license", uom="seat", qty_min=11, qty_max=100,
+            ),
+        ]
+        matched = match_contract_line(
+            {
+                "contract_line_id": str(target_contract_line_id),
+                "product_code": "SKU-1",
+                "description": "Amended tier",
+                "uom": "seat",
+            },
+            lines,
+        )
+        self.assertIs(matched, lines[1])
+
+    def test_explicit_contract_line_id_rejects_unrelated_id(self) -> None:
+        """An explicit contract line ID not belonging to the parent raises an error."""
+        lines = [
+            SimpleNamespace(
+                id=uuid.uuid4(), contract_line_id=uuid.uuid4(), product_code="SKU-1",
+                description="Seat license", uom="seat", qty_min=1, qty_max=10,
+            ),
+        ]
+        with self.assertRaises(AmbiguousContractLineError) as ctx:
+            match_contract_line(
+                {
+                    "contract_line_id": str(uuid.uuid4()),
+                    "product_code": "SKU-1",
+                },
+                lines,
+            )
+        self.assertIn("Selected product line is not part of the parent contract.", str(ctx.exception))
+
     def test_price_comparison_uses_deterministic_decimal_math(self) -> None:
         """Invoice price variance is computed without floating-point math."""
         comparison = compare_line_item(Decimal("10.00"), Decimal("10.02"))

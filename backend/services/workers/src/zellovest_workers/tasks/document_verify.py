@@ -963,6 +963,7 @@ def _upsert_contract(
     if latest is not None:
         latest.effective_to = version_start - timedelta(days=1)
 
+    carried_terms: list[TermsRow] = []
     for old in parent_terms:
         if old.effective_to is not None and old.effective_to < version_start:
             continue
@@ -982,7 +983,7 @@ def _upsert_contract(
         old_end = old.effective_to
         if changed is None:
             old.effective_to = min(old_end or version_start - timedelta(days=1), version_start - timedelta(days=1))
-            session.add(
+            carried_terms.append(
                 TermsRow(
                     id=uuid.uuid4(),
                     tenant_id=tenant_id,
@@ -1015,11 +1016,11 @@ def _upsert_contract(
             raise ContractReviewRequired(
                 "A changed product line cannot take effect before its current line."
             )
-        old.effective_to = min(old_end or changed_from - timedelta(days=1), changed_from - timedelta(days=1))
         if changed_from > version_start:
+            old.effective_to = min(old_end or version_start - timedelta(days=1), version_start - timedelta(days=1))
             carry_end = min(old_end or changed_from - timedelta(days=1), changed_from - timedelta(days=1))
             if old.effective_from <= carry_end:
-                session.add(
+                carried_terms.append(
                     TermsRow(
                         id=uuid.uuid4(),
                         tenant_id=tenant_id,
@@ -1046,6 +1047,14 @@ def _upsert_contract(
                     )
                 )
                 next_line_no += 1
+        else:
+            old.effective_to = min(old_end or changed_from - timedelta(days=1), changed_from - timedelta(days=1))
+
+    # Flush updated parent term effective_to dates before inserting new rows
+    session.flush()
+
+    for carry_row in carried_terms:
+        session.add(carry_row)
 
     for term, old, line_id in assignments:
         term_id = uuid.uuid4()

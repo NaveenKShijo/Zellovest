@@ -272,7 +272,6 @@ async def _append_contract_version(
                 id=uuid.uuid4(),
                 tenant_id=tenant_id,
                 contract_id=contract.id,
-                legacy_line_no=None,
                 initial_document_id=document.id,
             )
             session.add(line)
@@ -280,6 +279,7 @@ async def _append_contract_version(
             line_id = line.id
         assignments.append((term, match, line_id))
 
+    carried_terms: list[ContractTermsVersionRow] = []
     next_line_no = max((old.line_no for old in parent_terms), default=0) + 1
     for old in parent_terms:
         old_line_id = str(old.contract_line_id)
@@ -308,7 +308,7 @@ async def _append_contract_version(
         if changed_term is None:
             close_date = version_start - timedelta(days=1)
             old.effective_to = min(old.effective_to or close_date, close_date)
-            session.add(
+            carried_terms.append(
                 ContractTermsVersionRow(
                     id=uuid.uuid4(),
                     tenant_id=tenant_id,
@@ -331,13 +331,13 @@ async def _append_contract_version(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="A changed product line cannot take effect before its existing line; review or rebase this amendment.",
             )
-        close_date = line_effective_from - timedelta(days=1)
-        old.effective_to = min(old.effective_to or close_date, close_date)
         if line_effective_from > version_start:
+            close_date = version_start - timedelta(days=1)
+            old.effective_to = min(old.effective_to or close_date, close_date)
             carry_to = line_effective_from - timedelta(days=1)
             carry_end = min(old_effective_to or carry_to, carry_to)
             if old.effective_from <= carry_end:
-                session.add(
+                carried_terms.append(
                     ContractTermsVersionRow(
                         id=uuid.uuid4(),
                         tenant_id=tenant_id,
@@ -353,6 +353,16 @@ async def _append_contract_version(
                     )
                 )
                 next_line_no += 1
+        else:
+            close_date = line_effective_from - timedelta(days=1)
+            old.effective_to = min(old.effective_to or close_date, close_date)
+
+    # Flush updated parent term effective_to dates before inserting new rows to prevent
+    # PostgreSQL exclusion constraint violations (no_overlap_contract_terms).
+    await session.flush()
+
+    for carry_row in carried_terms:
+        session.add(carry_row)
 
     new_term_ids: list[uuid.UUID] = []
     for term, old, line_id in assignments:
@@ -2099,15 +2109,18 @@ async def commit_contract_review(
     artifact.review_data = review_receipt
     document.status = "extracted"
 
+    upload_tenant_id = upload.tenant_id
+    document_id_str = str(document.id)
+    contract_number_str = body.contract_number
     try:
         await session.commit()
     except IntegrityError as exc:
         await session.rollback()
         logger.warning(
             "contract_review_commit_conflict",
-            tenant_id=upload.tenant_id,
-            document_id=str(document.id),
-            contract_number=body.contract_number,
+            tenant_id=upload_tenant_id,
+            document_id=document_id_str,
+            contract_number=contract_number_str,
         )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

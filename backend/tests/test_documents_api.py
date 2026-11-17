@@ -3,7 +3,7 @@
 import json
 import os
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
@@ -572,6 +572,87 @@ def test_review_commit_persists_verified_terms() -> None:
     # Contract + version + line + term + nine header provenance + ten term
     # provenance rows.
     assert len(session.added) == 1 + 1 + 1 + 1 + 9 + 10
+
+
+def test_review_commit_amendment_with_explicit_contract_line_id() -> None:
+    """A reviewer mapping an amendment term to an existing parent line by contract_line_id succeeds."""
+    lease = _lease(document_type="amendment")
+    artifact = _artifact(
+        upload_id=lease.id,
+        review_status="pending",
+        review_data={"status": "pending"},
+    )
+    document = _review_document("amendment")
+    document.upload_id = lease.id
+    vendor = SimpleNamespace(id=uuid.uuid4(), name="Adobe Inc.")
+    parent_contract_id = uuid.uuid4()
+    parent_contract = SimpleNamespace(
+        id=parent_contract_id,
+        tenant_id="default-org",
+        vendor_id=vendor.id,
+        contract_number="MSA-2026-014",
+        title="Enterprise agreement",
+        start_date=date(2026, 1, 1),
+        end_date=date(2026, 12, 31),
+        renewal_date=date(2026, 11, 1),
+        notice_period_days=30,
+        auto_renew=True,
+        termination_clause="30 days",
+    )
+    existing_contract_line_id = uuid.uuid4()
+    parent_version = SimpleNamespace(
+        id=uuid.uuid4(),
+        contract_id=parent_contract_id,
+        version_no=1,
+        title="Enterprise agreement",
+        effective_from=date(2026, 1, 1),
+        effective_to=None,
+    )
+    parent_term = SimpleNamespace(
+        id=uuid.uuid4(),
+        contract_line_id=existing_contract_line_id,
+        line_no=1,
+        product_code="CC-ALL",
+        description="Creative Cloud all apps",
+        unit_price=Decimal("120.00"),
+        currency="USD",
+        uom="seat",
+        qty_min=Decimal("10"),
+        qty_max=Decimal("50"),
+        discount_pct=Decimal("5"),
+        effective_from=date(2026, 1, 1),
+        effective_to=None,
+        escalation_pct=Decimal("3"),
+        payment_terms="Net 30",
+        freight_terms="N/A",
+        tax_rule="Exclusive of tax",
+    )
+    session = _FakeSession(
+        upload_row=lease,
+        execute_results=[
+            _OptionalResult(artifact),          # artifact
+            _OptionalResult(document),          # document
+            _OptionalResult(vendor),            # vendor
+            _RowsResult([parent_contract]),     # tenant_contracts scalars()
+            _RowsResult([parent_term]),         # parent_terms scalars()
+        ],
+        scalar_results=[parent_version],        # latest contract version
+    )
+    client = _make_client(session=session)
+
+    payload = _review_payload()
+    payload["parent_contract_id"] = str(parent_contract_id)
+    payload["change_type"] = "amendment"
+    payload["start_date"] = "2026-06-01"
+    payload["terms"][0]["contract_line_id"] = str(existing_contract_line_id)
+    payload["terms"][0]["effective_from"] = "2026-06-01"
+
+    response = client.post(f"/api/v1/documents/{lease.id}/review/commit", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["document_id"] == str(lease.id)
+    assert body["review_status"] == "committed"
 
 
 def test_review_commit_rejects_missing_pending_review() -> None:
