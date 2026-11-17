@@ -46,3 +46,17 @@ async def test_compliance_exceptions_default_filter() -> None:
         assert "items" in data
         assert "total" in data
         assert isinstance(data["items"], list)
+
+
+@pytest.mark.asyncio
+async def test_compliance_purge_orphans() -> None:
+    """Verify orphan purge endpoint runs and reports purged metrics."""
+    app = create_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/api/v1/compliance/purge-orphans?tenant_id=default-org")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "ok"
+        assert "purged" in data
+        assert "invoices" in data["purged"]
+        assert "contracts" in data["purged"]

@@ -193,16 +193,54 @@ export default function CompliancePage() {
     notify.success('Invoice Discrepancy Acknowledged', 'Status updated to Acknowledged in audit log.');
   };
 
+  const handlePurgeOrphans = async () => {
+    try {
+      const res = await api.compliance.purgeOrphans();
+      const count = Object.values(res.purged).reduce((a, b) => a + b, 0);
+      notify.success('Orphan Records Purged', `Cleaned up ${count} stale ledger records not tied to active documents.`);
+      fetchData();
+    } catch (err) {
+      notify.error('Purge Failed', 'Could not purge orphaned records.');
+    }
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '22px' }}>
       {/* Header */}
-      <div>
-        <h1 style={{ fontSize: '24px', fontWeight: 700, color: 'var(--text-primary)', letterSpacing: '-0.4px' }}>
-          AP Audit & Reconciliation Dashboard
-        </h1>
-        <p style={{ color: 'var(--text-secondary)', fontSize: '13.5px', marginTop: '3px' }}>
-          Deterministic reconciliation engine checking invoice line items against locked contractual schedules and PO rules.
-        </p>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
+        <div>
+          <h1 style={{ fontSize: '24px', fontWeight: 700, color: 'var(--text-primary)', letterSpacing: '-0.4px' }}>
+            AP Audit & Reconciliation Dashboard
+          </h1>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '13.5px', marginTop: '3px' }}>
+            Deterministic reconciliation engine checking invoice line items against locked contractual schedules and PO rules.
+          </p>
+        </div>
+        {kpis.unreconciledInvoicesCount > 0 && (
+          <button
+            onClick={handlePurgeOrphans}
+            style={{
+              padding: '8px 14px',
+              fontSize: '12.5px',
+              fontWeight: 600,
+              borderRadius: 'var(--radius-sm)',
+              border: '1px solid var(--border-subtle)',
+              backgroundColor: '#FFFFFF',
+              color: 'var(--text-secondary)',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+            }}
+            title="Clean out invoices and ledger records not attached to an active document"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="3 6 5 6 21 6" />
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+            </svg>
+            Purge Stale/Orphan Records
+          </button>
+        )}
       </div>
 
       {/* 1. Overview KPIs (Always real values) */}

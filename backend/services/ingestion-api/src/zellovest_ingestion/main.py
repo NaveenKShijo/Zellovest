@@ -20,12 +20,25 @@ import redis
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-
-from zellovest_ingestion.api.routers import auth, documents, integrations, integrations_drive, integrations_okta, sync, uploads, vendors, webhooks
-from zellovest_ingestion.api.routers.integrations_okta import alias_router as integrations_okta_alias_router
 from zellovest_procurement.api.routers.compliance import router as compliance_router
-from zellovest_ingestion.config import get_ingestion_api_settings
+from zellovest_procurement.api.routers.maverick import router as maverick_router
 from zellovest_shared.logging_conf import configure_logging, get_logger
+
+from zellovest_ingestion.api.routers import (
+    auth,
+    documents,
+    integrations,
+    integrations_drive,
+    integrations_okta,
+    sync,
+    uploads,
+    vendors,
+    webhooks,
+)
+from zellovest_ingestion.api.routers.integrations_okta import (
+    alias_router as integrations_okta_alias_router,
+)
+from zellovest_ingestion.config import get_ingestion_api_settings
 
 configure_logging()
 logger = get_logger(__name__)
@@ -88,6 +101,10 @@ def create_app(settings=None) -> FastAPI:
     app.include_router(documents.router, prefix=prefix, tags=["documents"])
     app.include_router(vendors.router, prefix=prefix, tags=["vendors"])
     app.include_router(compliance_router, prefix=prefix, tags=["compliance"])
+    # The frontend proxies every ``/api/v1/*`` call to this service, so the
+    # procurement-core maverick-spend router is mounted here too (same pattern
+    # as ``compliance``). Without it ``POST /maverick-spend/trigger`` 404s.
+    app.include_router(maverick_router, prefix=prefix, tags=["maverick-spend"])
     app.include_router(sync.router, prefix=prefix, tags=["sync"])
 
     @app.get("/healthz", tags=["ops"])

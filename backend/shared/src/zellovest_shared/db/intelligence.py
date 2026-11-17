@@ -321,12 +321,13 @@ class ReconciliationException(Base):
 
 
 class MaverickAlert(Base):
-    """Flagged unmanaged SaaS subscription (Jev 3-stage pipeline output)."""
+    """Flagged unmanaged SaaS subscription (Jev 5-stage pipeline output)."""
 
     __tablename__ = "maverick_alerts"
     __table_args__ = (
         Index("ix_mav_tenant_status", "tenant_id", "status"),
         Index("ix_mav_tenant_emp", "tenant_id", "employee_id"),
+        Index("ix_mav_tenant_txn", "tenant_id", "transaction_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -352,6 +353,8 @@ class MaverickAlert(Base):
     )
     overlap_score: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
     recommended_action: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decision_evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    assessment_outcome: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

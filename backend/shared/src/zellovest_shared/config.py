@@ -95,6 +95,9 @@ class Settings(BaseSettings):
     qdrant_collection: str = Field(
         default="zellovest_documents", alias="QDRANT_COLLECTION"
     )
+    qdrant_software_catalog_collection: str = Field(
+        default="software_capabilities", alias="QDRANT_SOFTWARE_CATALOG_COLLECTION"
+    )
     qdrant_api_key: str = Field(default="", alias="QDRANT_API_KEY")
     voyage_api_key: str = Field(default="", alias="VOYAGE_API_KEY")
     voyage_model: str = Field(default="voyage-3-large", alias="VOYAGE_MODEL")

@@ -292,3 +292,31 @@ class SoftwareCatalog(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+
+
+class MerchantProfile(Base):
+    """Cached merchant & product understanding resolved by Groq."""
+
+    __tablename__ = "merchant_profiles"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "merchant_name", name="uq_merchant_profiles_tenant_name"),
+        Index("ix_merch_prof_tenant", "tenant_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    merchant_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    canonical_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    domain: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    product_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    category: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    capabilities: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    use_cases: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    is_saas: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    raw_response: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )

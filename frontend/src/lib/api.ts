@@ -25,6 +25,8 @@ import {
   RAGSearchResponse,
   APAuditKPIs,
   ReconciliationItem,
+  MaverickAlertItem,
+  MaverickSpendKPIs,
 } from '@/types';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || '/api';
@@ -431,6 +433,64 @@ export function useApi() {
           total_discrepancy_amount: number;
         }>(`/v1/compliance/invoices/${invoiceId}/reconcile?force=${force}`, {
           method: 'POST',
+        }),
+      purgeOrphans: (tenantId?: string) => {
+        const query = tenantId ? `?tenant_id=${encodeURIComponent(tenantId)}` : '';
+        return request<{
+          status: string;
+          tenant_id: string;
+          purged: Record<string, number>;
+        }>(`/v1/compliance/purge-orphans${query}`, {
+          method: 'POST',
+        });
+      },
+    },
+    maverick: {
+      getFeed: (params?: { department?: string; status?: string; min_overlap?: number; tenant_id?: string }) => {
+        const queryParams = new URLSearchParams();
+        queryParams.set('tenant_id', params?.tenant_id || 'default-org');
+        if (params?.department && params.department !== 'all') queryParams.set('department', params.department);
+        if (params?.status && params.status !== 'all') queryParams.set('status', params.status);
+        if (params?.min_overlap) queryParams.set('min_overlap', String(params.min_overlap));
+        const qs = queryParams.toString();
+        return request<{
+          alerts: MaverickAlertItem[];
+          kpis: MaverickSpendKPIs;
+        }>(`/v1/maverick-spend?${qs}`);
+      },
+      updateStatus: (alertId: string, status: string, tenantId = 'default-org') => {
+        const query = `?tenant_id=${encodeURIComponent(tenantId)}`;
+        return request<{ id: string; status: string; updated: boolean }>(
+          `/v1/maverick-spend/${alertId}/status${query}`,
+          {
+            method: 'PATCH',
+            body: JSON.stringify({ status }),
+          }
+        );
+      },
+      triggerDetection: (
+        lookbackDays = 90,
+        tenantId = 'default-org',
+        options?: { gcsKey?: string; syncId?: string; source?: 'gcs' | 'db'; runInline?: boolean }
+      ) =>
+        request<{
+          status: string;
+          task_id: string;
+          tenant_id: string;
+          lookback_days: number;
+          mode?: string;
+          gcs_key?: string | null;
+          sync_id?: string | null;
+        }>('/v1/maverick-spend/trigger', {
+          method: 'POST',
+          body: JSON.stringify({
+            tenant_id: tenantId,
+            lookback_days: lookbackDays,
+            source: options?.source ?? 'gcs',
+            gcs_key: options?.gcsKey,
+            sync_id: options?.syncId,
+            run_inline: options?.runInline,
+          }),
         }),
     },
   }), [request, upload, getValidAccessToken]);

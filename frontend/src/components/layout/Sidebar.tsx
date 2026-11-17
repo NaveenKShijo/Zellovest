@@ -55,11 +55,9 @@ const NAVIGATION_SECTIONS: NavSection[] = [
     items: [
       {
         id: 'maverick-spend',
-        label: 'Unauthorized Spend',
+        label: 'Decentralized Spend',
         href: '/maverick-spend',
         iconName: 'credit-card',
-        badge: '$14k',
-        badgeVariant: 'warning',
       },
       {
         id: 'licenses',
