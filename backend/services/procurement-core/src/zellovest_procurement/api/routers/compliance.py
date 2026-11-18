@@ -8,13 +8,14 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from zellovest_procurement.api.deps import get_db_session, get_optional_user
 from zellovest_procurement.schemas.compliance import (
     APAuditKPIsResponse,
     LineItemComparisonItem,
+    PurgeOrphansResponse,
     ReconciliationExceptionItem,
     ReconciliationExceptionListResponse,
     ReconcileInvoiceResponse,
@@ -22,11 +23,15 @@ from zellovest_procurement.schemas.compliance import (
 )
 from zellovest_shared.db.models import (
     Contract as ContractRow,
+    ContractLine as ContractLineRow,
     ContractTermsVersion as ContractTermRow,
+    ContractVersion as ContractVersionRow,
+    Document as DocumentRow,
     ExceptionRule,
     ExceptionStatus,
     Invoice as InvoiceRow,
     InvoiceLineItem as InvoiceLineRow,
+    POLineItem as POLineItemRow,
     PurchaseOrder as PurchaseOrderRow,
     ReconciliationException as ExceptionRow,
     User,
@@ -416,3 +421,170 @@ async def trigger_invoice_reconcile(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Reconciliation failed: {exc}",
         ) from exc
+
+
+@router.post("/purge-orphans", response_model=PurgeOrphansResponse)
+async def purge_orphans(
+    tenant_id: str | None = Query(default=None),
+    user: User | None = Depends(get_optional_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> PurgeOrphansResponse:
+    """Purge orphaned invoices, purchase orders, contracts, and exceptions not bound to an active document."""
+    active_tenant = (user.tenant_id if user else None) or tenant_id or "default-org"
+
+    valid_doc_ids_query = select(DocumentRow.id).where(DocumentRow.tenant_id == active_tenant)
+
+    # 1. Find orphaned invoices
+    orphan_invoices_stmt = select(InvoiceRow.id).where(
+        InvoiceRow.tenant_id == active_tenant,
+        or_(
+            InvoiceRow.document_id.is_(None),
+            InvoiceRow.document_id.not_in(valid_doc_ids_query),
+        ),
+    )
+    orphan_invoice_ids = list((await session.execute(orphan_invoices_stmt)).scalars().all())
+
+    # 2. Find orphaned POs
+    orphan_pos_stmt = select(PurchaseOrderRow.id).where(
+        PurchaseOrderRow.tenant_id == active_tenant,
+        or_(
+            PurchaseOrderRow.source_document_id.is_(None),
+            PurchaseOrderRow.source_document_id.not_in(valid_doc_ids_query),
+        ),
+    )
+    orphan_po_ids = list((await session.execute(orphan_pos_stmt)).scalars().all())
+
+    # 3. Find orphaned contract versions
+    orphan_versions_stmt = select(ContractVersionRow.id).where(
+        ContractVersionRow.tenant_id == active_tenant,
+        or_(
+            ContractVersionRow.source_document_id.is_(None),
+            ContractVersionRow.source_document_id.not_in(valid_doc_ids_query),
+        ),
+    )
+    orphan_version_ids = list((await session.execute(orphan_versions_stmt)).scalars().all())
+
+    # 4. Find surviving versions
+    surviving_versions_query = select(ContractVersionRow.contract_id).where(
+        ContractVersionRow.tenant_id == active_tenant,
+        ContractVersionRow.source_document_id.in_(valid_doc_ids_query),
+    )
+
+    # 5. Find orphaned contracts
+    orphan_contracts_stmt = select(ContractRow.id).where(
+        ContractRow.tenant_id == active_tenant,
+        or_(
+            ContractRow.document_id.is_(None),
+            ContractRow.document_id.not_in(valid_doc_ids_query),
+        ),
+        ContractRow.id.not_in(surviving_versions_query),
+    )
+    orphan_contract_ids = list((await session.execute(orphan_contracts_stmt)).scalars().all())
+
+    purged_counts: dict[str, int] = {}
+
+    # Delete exceptions referencing orphan invoices, contracts, or missing parents
+    exc_del_conditions = []
+    if orphan_invoice_ids:
+        exc_del_conditions.append(ExceptionRow.invoice_id.in_(orphan_invoice_ids))
+    if orphan_contract_ids:
+        exc_del_conditions.append(ExceptionRow.contract_id.in_(orphan_contract_ids))
+    if orphan_po_ids:
+        exc_del_conditions.append(ExceptionRow.po_id.in_(orphan_po_ids))
+
+    all_invs_query = select(InvoiceRow.id).where(InvoiceRow.tenant_id == active_tenant)
+    all_cnts_query = select(ContractRow.id).where(ContractRow.tenant_id == active_tenant)
+    exc_del_conditions.append(ExceptionRow.invoice_id.not_in(all_invs_query))
+    exc_del_conditions.append(ExceptionRow.contract_id.not_in(all_cnts_query))
+
+    del_exc_res = await session.execute(
+        delete(ExceptionRow).where(
+            ExceptionRow.tenant_id == active_tenant,
+            or_(*exc_del_conditions),
+        )
+    )
+    purged_counts["reconciliation_exceptions"] = del_exc_res.rowcount or 0
+
+    # Delete invoice line items & invoices
+    if orphan_invoice_ids:
+        del_lines_res = await session.execute(
+            delete(InvoiceLineRow).where(
+                InvoiceLineRow.tenant_id == active_tenant,
+                InvoiceLineRow.invoice_id.in_(orphan_invoice_ids),
+            )
+        )
+        purged_counts["invoice_line_items"] = del_lines_res.rowcount or 0
+        del_inv_res = await session.execute(
+            delete(InvoiceRow).where(
+                InvoiceRow.tenant_id == active_tenant,
+                InvoiceRow.id.in_(orphan_invoice_ids),
+            )
+        )
+        purged_counts["invoices"] = del_inv_res.rowcount or 0
+    else:
+        purged_counts["invoice_line_items"] = 0
+        purged_counts["invoices"] = 0
+
+    # Delete PO line items & POs
+    if orphan_po_ids:
+        del_po_lines_res = await session.execute(
+            delete(POLineItemRow).where(
+                POLineItemRow.tenant_id == active_tenant,
+                POLineItemRow.po_id.in_(orphan_po_ids),
+            )
+        )
+        purged_counts["po_line_items"] = del_po_lines_res.rowcount or 0
+        del_po_res = await session.execute(
+            delete(PurchaseOrderRow).where(
+                PurchaseOrderRow.tenant_id == active_tenant,
+                PurchaseOrderRow.id.in_(orphan_po_ids),
+            )
+        )
+        purged_counts["purchase_orders"] = del_po_res.rowcount or 0
+    else:
+        purged_counts["po_line_items"] = 0
+        purged_counts["purchase_orders"] = 0
+
+    # Delete contract terms & versions
+    if orphan_version_ids:
+        del_terms_res = await session.execute(
+            delete(ContractTermRow).where(
+                ContractTermRow.tenant_id == active_tenant,
+                ContractTermRow.contract_version_id.in_(orphan_version_ids),
+            )
+        )
+        purged_counts["contract_terms"] = del_terms_res.rowcount or 0
+        del_vers_res = await session.execute(
+            delete(ContractVersionRow).where(
+                ContractVersionRow.tenant_id == active_tenant,
+                ContractVersionRow.id.in_(orphan_version_ids),
+            )
+        )
+        purged_counts["contract_versions"] = del_vers_res.rowcount or 0
+    else:
+        purged_counts["contract_terms"] = 0
+        purged_counts["contract_versions"] = 0
+
+    # Delete orphan contracts & contract lines
+    if orphan_contract_ids:
+        del_clines_res = await session.execute(
+            delete(ContractLineRow).where(
+                ContractLineRow.tenant_id == active_tenant,
+                ContractLineRow.contract_id.in_(orphan_contract_ids),
+            )
+        )
+        purged_counts["contract_lines"] = del_clines_res.rowcount or 0
+        del_cnt_res = await session.execute(
+            delete(ContractRow).where(
+                ContractRow.tenant_id == active_tenant,
+                ContractRow.id.in_(orphan_contract_ids),
+            )
+        )
+        purged_counts["contracts"] = del_cnt_res.rowcount or 0
+    else:
+        purged_counts["contract_lines"] = 0
+        purged_counts["contracts"] = 0
+
+    await session.commit()
+    logger.info("orphan_records_purged", tenant_id=active_tenant, purged=purged_counts)
+    return PurgeOrphansResponse(status="ok", tenant_id=active_tenant, purged=purged_counts)

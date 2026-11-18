@@ -362,6 +362,49 @@ async def call_tool(
             provenance={"tenant_id": tenant_id, "source": "database"},
         )
 
+    # 4. get_maverick_spend tool
+    if body.tool_name == "get_maverick_spend":
+        started = time.perf_counter()
+        try:
+            from sqlalchemy import select
+            from zellovest_shared.db.intelligence import MaverickAlert
+
+            stmt = (
+                select(MaverickAlert)
+                .where(MaverickAlert.tenant_id == tenant_id)
+                .order_by(MaverickAlert.created_at.desc())
+            )
+            alerts = (await session.execute(stmt)).scalars().all()
+            detections = [
+                {
+                    "id": str(a.id),
+                    "merchant_name": a.merchant_name,
+                    "jev_is_saas_score": float(a.jev_is_saas_score or 0.0),
+                    "jev_review_score": float(a.jev_review_score or 0.0),
+                    "status": a.status.value if hasattr(a.status, "value") else str(a.status),
+                    "recommended_action": a.recommended_action,
+                    "overlap_score": float(a.overlap_score or 0.0),
+                    "capability_text": a.capability_text,
+                }
+                for a in alerts
+            ]
+            return ToolCallResponse(
+                tool_name=body.tool_name,
+                success=True,
+                result={"detections": detections},
+                execution_time_ms=int((time.perf_counter() - started) * 1000),
+                provenance={"tenant_id": tenant_id, "source": "postgres"},
+            )
+        except Exception as exc:
+            logger.error("get_maverick_spend_tool_failed", error=str(exc))
+            return ToolCallResponse(
+                tool_name=body.tool_name,
+                success=False,
+                error=f"maverick spend query failed: {exc}",
+                execution_time_ms=int((time.perf_counter() - started) * 1000),
+            )
+
+    # Remaining tools are metadata-only until their domain handlers are wired.
     return ToolCallResponse(
         tool_name=body.tool_name,
         success=False,

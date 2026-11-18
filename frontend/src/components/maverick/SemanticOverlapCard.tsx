@@ -5,16 +5,14 @@ import { MaverickAlertItem } from '@/types';
 
 interface SemanticOverlapCardProps {
   alert: MaverickAlertItem;
-  onNotifyEmployee: (alertId: string) => void;
+  onNotifyEmployee?: (alertId: string) => void;
   onDismiss: (alertId: string) => void;
   onViewContract: (contractId: string) => void;
 }
 
 export function SemanticOverlapCard({
   alert,
-  onNotifyEmployee,
   onDismiss,
-  onViewContract,
 }: SemanticOverlapCardProps) {
   const { overlap, jevScores } = alert;
   const isHighMatch = overlap.cosineSimilarity >= 0.85;
@@ -238,7 +236,7 @@ export function SemanticOverlapCard({
             </button>
           )}
 
-          {alert.status === 'notified' ? (
+          {alert.status === 'notified' && (
             <span
               style={{
                 padding: '7px 14px',
@@ -256,7 +254,9 @@ export function SemanticOverlapCard({
               <span>📨</span>
               Employee Notified via Slack (MCP-3)
             </span>
-          ) : alert.status === 'migrated' ? (
+          )}
+
+          {alert.status === 'migrated' && (
             <span
               style={{
                 padding: '7px 14px',
@@ -274,26 +274,6 @@ export function SemanticOverlapCard({
               <span>✓</span>
               Migrated to Enterprise Seat
             </span>
-          ) : (
-            <button
-              onClick={() => onNotifyEmployee(alert.id)}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                padding: '7px 16px',
-                borderRadius: 'var(--radius-sm)',
-                backgroundColor: 'var(--color-brand)',
-                color: '#FFFFFF',
-                fontSize: '12.5px',
-                fontWeight: 600,
-                cursor: 'pointer',
-                boxShadow: 'var(--shadow-sm)',
-              }}
-            >
-              <span>📨</span>
-              Notify Employee to Migrate (MCP-3)
-            </button>
           )}
         </div>
       </div>

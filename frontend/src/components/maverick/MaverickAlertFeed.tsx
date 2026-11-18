@@ -6,7 +6,7 @@ import { SemanticOverlapCard } from './SemanticOverlapCard';
 
 interface MaverickAlertFeedProps {
   alerts: MaverickAlertItem[];
-  onNotifyEmployee: (alertId: string) => void;
+  onNotifyEmployee?: (alertId: string) => void;
   onDismiss: (alertId: string) => void;
   onViewContract: (contractId: string) => void;
 }

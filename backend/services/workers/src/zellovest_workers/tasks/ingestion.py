@@ -14,8 +14,9 @@ from typing import Any
 
 import httpx
 from celery import Task
-from sqlalchemy import select
+from sqlalchemy import func, select
 from zellovest_shared.config import get_settings
+from zellovest_shared.db.core import Department, Employee, RampCard
 from zellovest_shared.db.models import (
     ConnectionStatus,
     EntityType,
@@ -36,6 +37,7 @@ from zellovest_shared.db.repository import (
     upsert_integration_sync,
 )
 from zellovest_shared.db.session import get_session_factory
+from zellovest_shared.db.transact import CardTransaction
 from zellovest_shared.logging_conf import get_logger
 from zellovest_shared.schemas.webhooks import OktaSignal
 from zellovest_shared.security.crypto import decrypt_token, encrypt_token, generate_nonce
@@ -47,7 +49,12 @@ from zellovest_shared.workers.drive_client import (
     GoogleDriveError,
     refresh_drive_access_token,
 )
-from zellovest_shared.workers.gcs_writer import ENTITY_FOLDERS, write_bytes, write_records_gz
+from zellovest_shared.workers.gcs_writer import (
+    ENTITY_FOLDERS,
+    read_records_gz,
+    write_bytes,
+    write_records_gz,
+)
 from zellovest_shared.workers.okta_client import (
     OktaClient,
     PermanentOktaError,
@@ -1320,6 +1327,15 @@ def _poll_entity(
         logger.info(
             "poll_complete", tenant_id=tenant_id, entity=entity, pages=pages, records=total_records
         )
+        if entity == EntityType.CARD_TRANSACTIONS.value and keys:
+            try:
+                promote_ramp_card_transactions.delay(tenant_id=tenant_id, keys=keys)
+            except Exception as dispatch_exc:
+                logger.warning(
+                    "failed_to_dispatch_promote_card_txns",
+                    tenant_id=tenant_id,
+                    error=str(dispatch_exc),
+                )
         return {"sync_id": sync_id, "pages": pages, "records": total_records, "keys": keys}
     except (TransientRampError, RateLimitError, httpx.TimeoutException, httpx.ConnectError):
         raise
@@ -1396,8 +1412,325 @@ def sync_ramp_card_transactions(
         entity=EntityType.CARD_TRANSACTIONS.value,
         cursor=cursor,
         sync_id=sync_id,
-        date_from = date_from, date_to=date_to
+        date_from=date_from,
+        date_to=date_to,
     )
+
+
+def _parse_iso_datetime(val: Any) -> datetime | None:
+    """Safely parse ISO datetime string or return datetime object."""
+    if not val:
+        return None
+    if isinstance(val, datetime):
+        return val if val.tzinfo is not None else val.replace(tzinfo=UTC)
+    try:
+        s = str(val).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+        return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+    except Exception:
+        return None
+
+
+def _extract_amount(rec: dict[str, Any]) -> float:
+    """Extract a decimal-dollar amount from a Ramp transaction payload.
+
+    Ramp returns ``amount`` in major units for the list endpoint, but nested
+    ``entity_amount``/``merchant_amount`` objects carry minor units
+    (``value`` + ``minor_unit_conversion_rate``). Both shapes are supported.
+    """
+    raw = rec.get("amount")
+    if raw is not None:
+        return float(raw)
+
+    for field in ("entity_amount", "merchant_amount", "original_transaction_amount"):
+        nested = rec.get(field)
+        if isinstance(nested, dict):
+            value = nested.get("value", nested.get("amount"))
+            if value is None:
+                continue
+            rate = nested.get("minor_unit_conversion_rate") or 100
+            try:
+                return float(value) / float(rate)
+            except (TypeError, ValueError, ZeroDivisionError):
+                continue
+    return 0.0
+
+
+def _extract_currency(rec: dict[str, Any]) -> str:
+    """Resolve the ISO currency code from flat or nested Ramp fields."""
+    currency = rec.get("currency") or rec.get("currency_code")
+    if currency:
+        return str(currency).upper()[:3]
+    for field in ("entity_amount", "merchant_amount", "original_transaction_amount"):
+        nested = rec.get(field)
+        if isinstance(nested, dict):
+            nested_currency = nested.get("currency") or nested.get("currency_code")
+            if nested_currency:
+                return str(nested_currency).upper()[:3]
+    return "USD"
+
+
+def _extract_cardholder(rec: dict[str, Any]) -> dict[str, str]:
+    """Resolve cardholder identity fields from the nested Ramp ``card_holder``."""
+    holder = rec.get("card_holder")
+    if not isinstance(holder, dict):
+        holder = {}
+    first = str(holder.get("first_name") or "").strip()
+    last = str(holder.get("last_name") or "").strip()
+    full_name = f"{first} {last}".strip()
+    return {
+        "user_id": str(holder.get("user_id") or rec.get("user_id") or "").strip(),
+        "email": str(holder.get("email") or rec.get("user_email") or "").strip(),
+        "name": full_name or str(rec.get("cardholder_name") or "").strip(),
+        "department_ramp_id": str(holder.get("department_id") or "").strip(),
+        "department_name": str(holder.get("department_name") or "").strip(),
+    }
+
+
+def _promote_card_transaction_records(
+    session: Any,
+    tenant_id: str,
+    key: str,
+    records: list[dict[str, Any]],
+) -> tuple[int, list[str]]:
+    """Upsert one GCS batch of Ramp transactions into ``card_transactions``.
+
+    Args:
+        session: Sync SQLAlchemy session (caller commits).
+        tenant_id: Tenant owning the rows.
+        key: GCS object key the records came from (stored for lineage).
+        records: Raw Ramp transaction payloads.
+
+    Returns:
+        Tuple of ``(promoted_count, cleared_transaction_ids)`` where the ids
+        are string UUIDs eligible for maverick-spend detection.
+    """
+    promoted_count = 0
+    cleared_candidates: list[str] = []
+
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        ext_id = str(rec.get("id") or "").strip()
+        if not ext_id:
+            continue
+
+        amount = _extract_amount(rec)
+        currency = _extract_currency(rec)
+        holder = _extract_cardholder(rec)
+        merchant = rec.get("merchant")
+        merchant_name = str(
+            rec.get("merchant_name")
+            or (merchant.get("name") if isinstance(merchant, dict) else None)
+            or rec.get("merchant_descriptor")
+            or "Unknown Merchant"
+        )
+        txn_date = (
+            _parse_iso_datetime(rec.get("user_transaction_time"))
+            or _parse_iso_datetime(rec.get("transaction_time"))
+            or _parse_iso_datetime(rec.get("created_at"))
+            or _parse_iso_datetime(rec.get("accounting_date"))
+            or datetime.now(UTC)
+        )
+        cleared_at = (
+            _parse_iso_datetime(rec.get("cleared_at"))
+            or _parse_iso_datetime(rec.get("settlement_date"))
+            or _parse_iso_datetime(rec.get("accounting_date"))
+        )
+        state = str(rec.get("state") or "CLEARED").upper()
+        mcc = str(rec.get("merchant_category_code") or rec.get("mcc") or "")
+        memo = rec.get("memo")
+        sk_category_id = rec.get("sk_category_id")
+        sk_category_name = rec.get("sk_category_name")
+        approved_flag = rec.get("all_requirements_met_and_approved")
+        approved_value = bool(approved_flag) if approved_flag is not None else None
+
+        # Resolve employee (Ramp user id first, then email).
+        employee_id = None
+        department_id = None
+        if holder["user_id"] or holder["email"]:
+            emp_stmt = select(Employee).where(
+                Employee.tenant_id == tenant_id,
+                (Employee.ramp_user_id == holder["user_id"])
+                | (Employee.email == holder["email"]),
+            )
+            emp = session.execute(emp_stmt).scalars().first()
+            if emp:
+                employee_id = emp.id
+                department_id = emp.department_id
+
+        # Resolve department by Ramp department id or display name.
+        if not department_id and (holder["department_ramp_id"] or holder["department_name"]):
+            dept_conditions = []
+            if holder["department_ramp_id"]:
+                dept_conditions.append(
+                    Department.ramp_department_id == holder["department_ramp_id"]
+                )
+            if holder["department_name"]:
+                dept_conditions.append(
+                    func.lower(Department.name) == holder["department_name"].lower()
+                )
+            dept_stmt = select(Department).where(
+                Department.tenant_id == tenant_id,
+                *dept_conditions,
+            )
+            dept = session.execute(dept_stmt).scalars().first()
+            if dept:
+                department_id = dept.id
+
+        # Resolve the physical card by Ramp card id.
+        card_id_raw = str(rec.get("card_id") or "")
+        card_fk = None
+        card_last4 = str(rec.get("card_last4") or rec.get("last_four") or "")
+        if card_id_raw:
+            card_stmt = select(RampCard).where(
+                RampCard.tenant_id == tenant_id,
+                RampCard.ramp_card_id == card_id_raw,
+            )
+            rcard = session.execute(card_stmt).scalars().first()
+            if rcard:
+                card_fk = rcard.id
+                card_last4 = card_last4 or (rcard.last_four or "")
+
+        # Upsert CardTransaction.
+        existing_stmt = select(CardTransaction).where(
+            CardTransaction.tenant_id == tenant_id,
+            CardTransaction.external_id == ext_id,
+        )
+        existing = session.execute(existing_stmt).scalars().first()
+
+        values: dict[str, Any] = {
+            "amount": amount,
+            "currency": currency,
+            "merchant_name": merchant_name,
+            "merchant_domain": rec.get("merchant_domain"),
+            "txn_date": txn_date,
+            "cleared_at": cleared_at,
+            "state": state,
+            "sk_category_id": int(sk_category_id) if sk_category_id is not None else None,
+            "sk_category_name": str(sk_category_name) if sk_category_name else None,
+            "mcc": mcc,
+            "card_last4": card_last4,
+            "cardholder_name_raw": holder["name"] or None,
+            "memo": memo,
+            "has_been_approved": approved_value,
+            "requirements_met": approved_value,
+            "sync_status": rec.get("sync_status"),
+            "raw_gcs_key": key,
+        }
+
+        if existing:
+            for field, value in values.items():
+                setattr(existing, field, value)
+            if employee_id:
+                existing.employee_id = employee_id
+            if department_id:
+                existing.department_id = department_id
+            if card_fk:
+                existing.card_id = card_fk
+            txn_id = existing.id
+        else:
+            new_txn = CardTransaction(
+                tenant_id=tenant_id,
+                external_id=ext_id,
+                employee_id=employee_id,
+                department_id=department_id,
+                card_id=card_fk,
+                receipts=rec.get("receipts") or None,
+                accounting_selections=rec.get("accounting_field_selections") or None,
+                **values,
+            )
+            session.add(new_txn)
+            session.flush()
+            txn_id = new_txn.id
+
+        promoted_count += 1
+        if state == "CLEARED" and amount > 0:
+            cleared_candidates.append(str(txn_id))
+
+    return promoted_count, cleared_candidates
+
+
+@celery_app.task(
+    name="zellovest.workers.tasks.ingestion.promote_ramp_card_transactions",
+    bind=True,
+    queue=QUEUE_INGESTION,
+    **_RETRY_KWARGS,
+)
+def promote_ramp_card_transactions(
+    self: Task, tenant_id: str, keys: list[str]
+) -> dict[str, Any]:
+    """Promote raw Ramp card transaction batches from GCS bronze lake into PostgreSQL.
+
+    Each object is read from the bronze lake, normalized into the silver
+    ``card_transactions`` table, and cleared rows are dispatched to the
+    maverick-spend detection analytics queue.
+    """
+    del self
+    settings = _settings()
+    bucket = _raw_bucket(settings)
+    project = _gcp_project(settings)
+    factory = get_session_factory()
+    session = factory()
+
+    promoted_count = 0
+    failed_keys: list[str] = []
+    cleared_candidates: list[str] = []
+
+    try:
+        for key in keys:
+            try:
+                records = read_records_gz(bucket=bucket, key=key, project=project)
+            except Exception as gcs_err:
+                logger.warning("gcs_batch_read_failed", key=key, error=str(gcs_err))
+                failed_keys.append(key)
+                continue
+
+            promoted, cleared = _promote_card_transaction_records(
+                session, tenant_id, key, records
+            )
+            promoted_count += promoted
+            cleared_candidates.extend(cleared)
+
+        session.commit()
+        logger.info(
+            "ramp_card_transactions_promoted",
+            tenant_id=tenant_id,
+            promoted_count=promoted_count,
+            cleared_count=len(cleared_candidates),
+            failed_keys=len(failed_keys),
+        )
+
+        from zellovest_workers.tasks.maverick_spend import detect_maverick_spend_for_transaction
+
+        dispatched = 0
+        for cid in cleared_candidates:
+            try:
+                detect_maverick_spend_for_transaction.delay(
+                    tenant_id=tenant_id,
+                    transaction_id=cid,
+                )
+                dispatched += 1
+            except Exception as d_exc:
+                logger.warning(
+                    "maverick_spend_dispatch_failed",
+                    transaction_id=cid,
+                    error=str(d_exc),
+                )
+
+        return {
+            "tenant_id": tenant_id,
+            "promoted": promoted_count,
+            "cleared_candidates": len(cleared_candidates),
+            "dispatched": dispatched,
+            "failed_keys": failed_keys,
+        }
+    except Exception as exc:
+        session.rollback()
+        logger.error("promote_ramp_card_transactions_failed", tenant_id=tenant_id, error=str(exc))
+        raise
+    finally:
+        session.close()
 
 
 @celery_app.task(

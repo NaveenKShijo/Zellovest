@@ -89,3 +89,11 @@ class ReconcileInvoiceResponse(BaseModel):
     contract_id: str | None = None
     exception_count: int = 0
     total_discrepancy_amount: float = 0.0
+
+
+class PurgeOrphansResponse(BaseModel):
+    """Response returned upon purging orphaned ledger records."""
+
+    status: str
+    tenant_id: str
+    purged: dict[str, int]

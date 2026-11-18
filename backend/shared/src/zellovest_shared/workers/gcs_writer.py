@@ -190,3 +190,120 @@ def write_records_gz(
 
     logger.info("gcs_write_ok", bucket=bucket, key=key, records=len(records))
     return key
+
+
+def list_object_keys(
+    *,
+    bucket: str,
+    prefix: str,
+    project: str | None = None,
+    modified_since: Any = None,
+    max_results: int = 500,
+) -> list[str]:
+    """List GCS object keys under a prefix, newest first.
+
+    Args:
+        bucket: GCS bucket name.
+        prefix: Object key prefix (e.g. ``raw/ramp_card_transactions/sync=.../``).
+        project: GCP project id (uses default credentials when None).
+        modified_since: Optional timezone-aware datetime; only objects updated
+            at or after this instant are returned.
+        max_results: Safety cap on the number of keys returned.
+
+    Returns:
+        Object keys sorted by last-modified time (descending).
+
+    Raises:
+        ValueError: When bucket or prefix is missing.
+        RuntimeError: When listing GCS fails or the dependency is missing.
+    """
+    if not bucket:
+        raise ValueError("bucket is required")
+    if not prefix:
+        raise ValueError("prefix is required")
+
+    if importlib.util.find_spec("google.cloud.storage") is None:
+        raise RuntimeError(
+            "google-cloud-storage is not installed; add it to shared dependencies"
+        )
+
+    try:
+        client = make_storage_client(project)
+        blobs = []
+        for blob in client.list_blobs(bucket, prefix=prefix):
+            updated = getattr(blob, "updated", None)
+            if modified_since is not None and updated is not None and updated < modified_since:
+                continue
+            blobs.append((blob.name, updated))
+    except Exception as exc:
+        logger.error(
+            "gcs_list_failed",
+            bucket=bucket,
+            prefix=prefix,
+            error_class=type(exc).__name__,
+        )
+        raise RuntimeError(f"failed to list GCS prefix {prefix!r}") from exc
+
+    blobs.sort(
+        key=lambda item: (
+            item[1] is not None,
+            item[1].timestamp() if item[1] is not None else 0.0,
+        ),
+        reverse=True,
+    )
+    keys = [name for name, _ in blobs[:max_results]]
+    logger.info("gcs_list_ok", bucket=bucket, prefix=prefix, count=len(keys))
+    return keys
+
+
+def read_records_gz(
+    *,
+    bucket: str,
+    key: str,
+    project: str | None = None,
+) -> list[dict[str, Any]]:
+    """Read a gzipped JSONL batch from GCS.
+
+    Args:
+        bucket: GCS bucket name.
+        key: GCS object key.
+        project: GCP project id (uses default credentials when None).
+
+    Returns:
+        List of deserialized record dictionaries.
+
+    Raises:
+        ValueError: When bucket or key is missing.
+        RuntimeError: When reading from GCS fails.
+    """
+    if not bucket:
+        raise ValueError("bucket is required")
+    if not key:
+        raise ValueError("key is required")
+
+    if importlib.util.find_spec("google.cloud.storage") is None:
+        raise RuntimeError(
+            "google-cloud-storage is not installed; add it to shared dependencies"
+        )
+
+    try:
+        client = make_storage_client(project)
+        blob = client.bucket(bucket).blob(key)
+        data = blob.download_as_bytes()
+        decompressed = gzip.decompress(data).decode("utf-8")
+        records: list[dict[str, Any]] = []
+        for line in decompressed.splitlines():
+            line = line.strip()
+            if line:
+                records.append(json.loads(line))
+        logger.info("gcs_read_ok", bucket=bucket, key=key, records=len(records))
+        return records
+    except Exception as exc:
+        logger.error(
+            "gcs_read_failed",
+            bucket=bucket,
+            key=key,
+            error_class=type(exc).__name__,
+        )
+        raise RuntimeError(f"failed to read GCS object {key!r}") from exc
+
