@@ -204,7 +204,7 @@ export function useApi() {
         const raw = await request<RawUpcomingRenewalResponse[]>(
           `/agentic/negotiation/upcoming-renewals${query ? `?${query}` : ''}`
         );
-        return (raw || []).map((r) => ({\
+        return (raw || []).map((r) => ({
           id: r.id,
           contractId: r.contract_id,
           contractNumber: r.contract_number,
