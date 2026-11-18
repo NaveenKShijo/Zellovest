@@ -43,6 +43,7 @@ def make_celery(broker_url: str = "redis://localhost:6379/0") -> Celery:
             "zellovest.workers.tasks.ap_audit.*": {"queue": QUEUE_ANALYTICS},
             "zellovest.workers.tasks.maverick_spend.*": {"queue": QUEUE_ANALYTICS},
             "zellovest.workers.tasks.zombie_license.*": {"queue": QUEUE_ANALYTICS},
+            "zellovest.workers.tasks.renewal_reminders.*": {"queue": QUEUE_ANALYTICS},
             "zellovest.workers.tasks.maintenance.*": {"queue": QUEUE_INGESTION},
         },
         task_default_queue=QUEUE_INGESTION,
@@ -56,6 +57,11 @@ def make_celery(broker_url: str = "redis://localhost:6379/0") -> Celery:
                 "task": "zellovest.workers.tasks.maintenance.purge_expired_uploads",
                 "schedule": 900.0,
                 "options": {"queue": QUEUE_INGESTION},
+            },
+            "scan-renewal-notice-deadlines": {
+                "task": "zellovest.workers.tasks.renewal_reminders.scan_renewal_notice_deadlines",
+                "schedule": 86400.0,  # daily scan
+                "options": {"queue": QUEUE_ANALYTICS},
             },
         },
     )

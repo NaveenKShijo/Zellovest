@@ -1,0 +1,101 @@
+user_id,tenant_id,email,first_name,last_name,department,hire_date,termination_date,status,employment_type
+9758d5ef-32f2-47d2-95b8-0ac2764aefd4,tenant_001,jessica.davis.1@tenant_001.com,Jessica,Davis,Sales,2023-01-10,,ACTIVE,FTE
+a1fe3208-700a-4114-81c5-93fd7ca5bb4d,tenant_001,paul.williams.2@tenant_001.com,Paul,Williams,HR & Legal,2023-03-30,,ACTIVE,FTE
+208c2b2c-0298-4926-9d21-b92613707f59,tenant_001,joseph.taylor.3@tenant_001.com,Joseph,Taylor,Marketing,2023-01-17,2025-07-26,DEPROVISIONED,FTE
+520cb047-ace7-45f8-a278-3398e9815318,tenant_001,paul.wilson.4@tenant_001.com,Paul,Wilson,Sales,2024-07-12,2026-10-11,DEPROVISIONED,FTE
+f5c03770-194c-4472-a89c-9c65c77b9857,tenant_001,james.garcia.5@tenant_001.com,James,Garcia,Engineering,2024-08-10,,ACTIVE,FTE
+81d0dae6-348c-4cdd-a08e-74502fa67591,tenant_001,susan.hernandez.6@tenant_001.com,Susan,Hernandez,Engineering,2023-11-29,,ACTIVE,FTE
+7c5f599a-91a3-4793-bae5-5457f523cb5d,tenant_001,joshua.rodriguez.7@tenant_001.com,Joshua,Rodriguez,Engineering,2024-01-09,2025-12-02,DEPROVISIONED,FTE
+48b501da-24b2-4a6c-8223-dead99f23c88,tenant_001,jennifer.moore.8@tenant_001.com,Jennifer,Moore,Customer Support,2024-03-30,2026-01-06,DEPROVISIONED,FTE
+96bda269-333f-41b0-8ce7-27a2474b12ae,tenant_001,lisa.jackson.9@tenant_001.com,Lisa,Jackson,Marketing,2024-09-19,,ACTIVE,FTE
+803af7e1-deba-45e7-8c27-8732fd0704d2,tenant_001,charles.williams.10@tenant_001.com,Charles,Williams,Marketing,2023-02-25,2025-08-05,DEPROVISIONED,FTE
+7add0eec-e191-4d85-b373-b80940a00296,tenant_001,sandra.lee.11@tenant_001.com,Sandra,Lee,Engineering,2023-03-29,,ACTIVE,FTE
+f658ee57-a20f-41f6-a613-70b5207b21d6,tenant_001,susan.perez.12@tenant_001.com,Susan,Perez,HR & Legal,2023-05-31,,ACTIVE,FTE
+3d0baaa3-efc6-4f2f-b170-d22e08f99582,tenant_001,joshua.lee.13@tenant_001.com,Joshua,Lee,Finance,2024-11-14,,ACTIVE,FTE
+4f778a41-2718-41bd-93ba-8947d19f3615,tenant_001,sarah.lee.14@tenant_001.com,Sarah,Lee,Engineering,2023-08-23,2026-01-07,DEPROVISIONED,FTE
+82092194-ecc2-4be8-9608-aacb09dd188f,tenant_001,patricia.davis.15@tenant_001.com,Patricia,Davis,Engineering,2023-07-28,,ACTIVE,FTE
+7a29bd47-be4c-49b9-9afc-1b50c9043809,tenant_001,robert.miller.16@tenant_001.com,Robert,Miller,Engineering,2023-11-04,,ACTIVE,FTE
+c14e7304-ef17-42f1-96c8-bb7f9e8f2575,tenant_001,christopher.miller.17@tenant_001.com,Christopher,Miller,Engineering,2024-07-18,,ACTIVE,FTE
+d6ebaf76-6b84-4bed-971d-a0c302b0d269,tenant_001,sandra.jones.18@tenant_001.com,Sandra,Jones,Sales,2024-01-25,,ACTIVE,FTE
+bcf05586-dfd6-4ee6-9af0-93226a62d3d7,tenant_001,paul.rodriguez.19@tenant_001.com,Paul,Rodriguez,Sales,2023-08-25,,ACTIVE,FTE
+8ff0993c-983d-43ac-8b11-9712ff296ed2,tenant_001,betty.lopez.20@tenant_001.com,Betty,Lopez,Engineering,2024-02-27,,ACTIVE,FTE
+c9fa21f6-9e19-4363-8bd9-06bbe1b26d94,tenant_001,jennifer.johnson.21@tenant_001.com,Jennifer,Johnson,Marketing,2023-05-06,,ACTIVE,FTE
+72ca5538-1f62-4ef0-b6e5-0f2589aba1c2,tenant_001,margaret.martin.22@tenant_001.com,Margaret,Martin,Engineering,2023-05-21,,ACTIVE,CONTRACTOR
+5dfbdfc0-0ef5-43a8-982e-1ac0608945d3,tenant_001,sandra.taylor.23@tenant_001.com,Sandra,Taylor,Engineering,2024-01-10,,ACTIVE,FTE
+953ed78b-7ca8-4877-a5c3-0c6416e6a9c1,tenant_001,james.perez.24@tenant_001.com,James,Perez,Sales,2024-07-04,,ACTIVE,FTE
+3ea2bd2e-d5eb-43af-a1aa-938e5d186d8a,tenant_001,sarah.lee.25@tenant_001.com,Sarah,Lee,Sales,2024-11-13,,ACTIVE,FTE
+2ee3e95c-2f84-44e9-92e5-f6a1800d2a30,tenant_001,sandra.smith.26@tenant_001.com,Sandra,Smith,Finance,2023-10-12,,ACTIVE,FTE
+47a204fd-8f81-4555-8f9b-d4bc592c1b09,tenant_001,barbara.taylor.27@tenant_001.com,Barbara,Taylor,Engineering,2023-09-11,,ACTIVE,FTE
+d566f22c-4ea7-46fb-86f0-bead87ec20e0,tenant_001,steven.martin.28@tenant_001.com,Steven,Martin,Sales,2024-09-16,2026-09-30,DEPROVISIONED,FTE
+546cf32b-e2f5-4811-bf7b-460c7c0212ac,tenant_001,paul.taylor.29@tenant_001.com,Paul,Taylor,Sales,2024-01-02,,ACTIVE,FTE
+e664b58f-6dac-4d38-ad6a-53f0ae5ba756,tenant_001,mary.brown.30@tenant_001.com,Mary,Brown,Engineering,2024-08-20,,ACTIVE,FTE
+36eded38-e336-49b8-84f6-beac8264e78c,tenant_001,andrew.williams.31@tenant_001.com,Andrew,Williams,Marketing,2023-10-26,2025-08-18,DEPROVISIONED,FTE
+0e9aaba2-e98f-4d47-ba67-e40d7d0798f9,tenant_001,paul.jones.32@tenant_001.com,Paul,Jones,Engineering,2024-04-26,,ACTIVE,FTE
+f3f84ec5-8c07-4af6-8b0f-484c28a7b14f,tenant_001,david.rodriguez.33@tenant_001.com,David,Rodriguez,Engineering,2024-04-15,,ACTIVE,FTE
+16f6e49f-63f0-4988-bde8-07498da20a05,tenant_001,paul.thompson.34@tenant_001.com,Paul,Thompson,Customer Support,2024-08-28,2025-07-19,DEPROVISIONED,FTE
+bdd0ad74-8c1b-4f46-b760-116b62a6b30b,tenant_001,lisa.anderson.35@tenant_001.com,Lisa,Anderson,HR & Legal,2023-10-31,,ACTIVE,FTE
+0ec72e7d-fab9-4ef4-af1d-678c16129562,tenant_001,robert.hernandez.36@tenant_001.com,Robert,Hernandez,Finance,2024-03-22,2025-08-02,DEPROVISIONED,CONTRACTOR
+326977f7-8f9f-4e5e-a463-84a46147392c,tenant_001,joseph.smith.37@tenant_001.com,Joseph,Smith,Engineering,2024-07-05,,ACTIVE,CONTRACTOR
+2a6d9126-2df3-41f7-b3fb-0beae96675bd,tenant_001,john.hernandez.38@tenant_001.com,John,Hernandez,Engineering,2024-09-22,2025-02-22,DEPROVISIONED,CONTRACTOR
+e1ed80e6-12ad-4054-961c-ff54f828ab76,tenant_001,susan.moore.39@tenant_001.com,Susan,Moore,Marketing,2023-08-16,2026-04-26,DEPROVISIONED,FTE
+c6813227-466b-4eb4-9ac4-23b22e0306a4,tenant_001,donald.wilson.40@tenant_001.com,Donald,Wilson,Sales,2024-07-22,2025-08-20,DEPROVISIONED,FTE
+627abe5e-17d4-46cb-b802-2eb3f7e06f3d,tenant_001,daniel.wilson.41@tenant_001.com,Daniel,Wilson,Engineering,2023-03-25,,ACTIVE,FTE
+2c9b3ad3-c6b5-4ccf-928e-0adf90f3fcff,tenant_001,michael.johnson.42@tenant_001.com,Michael,Johnson,Sales,2023-02-09,2026-10-07,DEPROVISIONED,FTE
+934e8eaf-b101-4155-8427-c7ac27eec9e1,tenant_001,michael.davis.43@tenant_001.com,Michael,Davis,Engineering,2023-11-28,,ACTIVE,FTE
+c6f49364-7bcd-4420-957b-9b433230f039,tenant_001,barbara.rodriguez.44@tenant_001.com,Barbara,Rodriguez,Customer Support,2024-06-17,2026-02-20,DEPROVISIONED,FTE
+3d613229-db9b-4167-be7f-8a49f7a2b7e3,tenant_001,emily.brown.45@tenant_001.com,Emily,Brown,Engineering,2023-03-03,,ACTIVE,CONTRACTOR
+69dbffbd-abf2-4f7a-b06f-989c8f7b5aeb,tenant_001,jennifer.davis.46@tenant_001.com,Jennifer,Davis,Marketing,2024-06-21,,ACTIVE,FTE
+03dc6772-effb-4333-a2a7-4cfae6f19b5e,tenant_001,betty.johnson.47@tenant_001.com,Betty,Johnson,Engineering,2024-04-26,,ACTIVE,FTE
+69be12bd-abd9-40dd-9aad-07c54c039011,tenant_001,thomas.anderson.48@tenant_001.com,Thomas,Anderson,Sales,2022-12-18,,ACTIVE,FTE
+d0f36fc1-e4d9-403a-a61f-c591007905c3,tenant_001,elizabeth.miller.49@tenant_001.com,Elizabeth,Miller,Sales,2024-07-07,2026-04-27,DEPROVISIONED,FTE
+8b2f4c24-ab1f-467f-a8e8-40537285ca64,tenant_001,paul.johnson.50@tenant_001.com,Paul,Johnson,Engineering,2023-02-13,,ACTIVE,FTE
+c7c295fc-fbbe-4ef3-9b0e-d00d6310b34f,tenant_001,steven.taylor.51@tenant_001.com,Steven,Taylor,HR & Legal,2023-02-12,2026-04-17,DEPROVISIONED,FTE
+ccebf605-222c-4704-8b61-8036c4bbf21d,tenant_001,robert.martin.52@tenant_001.com,Robert,Martin,Finance,2024-05-19,2025-06-23,DEPROVISIONED,CONTRACTOR
+dda4c64a-f735-4fa9-bd64-c9d5c892bf99,tenant_001,jessica.jackson.53@tenant_001.com,Jessica,Jackson,Customer Support,2023-08-13,2026-07-21,DEPROVISIONED,FTE
+7b3e24c1-aca4-4e0c-89be-55da30a45d8b,tenant_001,donna.jackson.54@tenant_001.com,Donna,Jackson,Customer Support,2024-09-10,2026-10-19,DEPROVISIONED,FTE
+9263a4df-c34d-4d92-a793-4ad3beef1656,tenant_001,jessica.rodriguez.55@tenant_001.com,Jessica,Rodriguez,Sales,2023-09-09,2025-11-01,DEPROVISIONED,FTE
+e2449eee-9edb-4d5d-81a4-b785eb02493f,tenant_001,sandra.hernandez.56@tenant_001.com,Sandra,Hernandez,Customer Support,2024-11-02,,ACTIVE,FTE
+9597b296-cf63-4b1b-93e4-78e4d8cef645,tenant_001,andrew.brown.57@tenant_001.com,Andrew,Brown,Engineering,2023-02-28,2026-09-12,DEPROVISIONED,CONTRACTOR
+c0fffb1a-9b5d-4f4f-bafb-954008bbe118,tenant_001,william.lopez.58@tenant_001.com,William,Lopez,Engineering,2023-07-22,,ACTIVE,FTE
+d8a64ace-1a3c-44f7-aa39-346b80d81e7f,tenant_001,david.anderson.59@tenant_001.com,David,Anderson,Engineering,2023-08-23,,ACTIVE,FTE
+dba54f31-f7f4-4d98-8aac-5255f05f2a44,tenant_001,kimberly.smith.60@tenant_001.com,Kimberly,Smith,Engineering,2023-10-21,,ACTIVE,FTE
+3c675414-e288-4de2-8711-e3b6da3d13d0,tenant_001,michael.jones.61@tenant_001.com,Michael,Jones,Sales,2024-07-05,2026-10-25,DEPROVISIONED,FTE
+5210ef84-efab-4ee7-bd1a-3bc6913f5389,tenant_001,elizabeth.rodriguez.62@tenant_001.com,Elizabeth,Rodriguez,Engineering,2023-04-04,,ACTIVE,FTE
+cc96c6ae-f06a-4f50-bd71-5276c2208e09,tenant_001,susan.perez.63@tenant_001.com,Susan,Perez,Finance,2023-07-19,,ACTIVE,FTE
+912bf5e7-7a35-4ae2-97e9-0d762410e9bd,tenant_001,patricia.williams.64@tenant_001.com,Patricia,Williams,Sales,2023-09-12,2025-08-29,DEPROVISIONED,FTE
+35e719fc-d4a8-4455-94b4-d248e843d388,tenant_001,william.lee.65@tenant_001.com,William,Lee,Engineering,2023-09-25,2025-11-21,DEPROVISIONED,FTE
+e062aec8-1c15-4e1f-a305-369e2bf31372,tenant_001,emily.thompson.66@tenant_001.com,Emily,Thompson,Sales,2023-05-30,,ACTIVE,FTE
+9e5d47dd-e482-4994-9c57-1d3a1c6741be,tenant_001,paul.johnson.67@tenant_001.com,Paul,Johnson,Engineering,2022-12-25,2025-05-16,DEPROVISIONED,FTE
+7f35a19f-1057-4f1a-bb42-3184a74f2de0,tenant_001,margaret.jones.68@tenant_001.com,Margaret,Jones,Finance,2024-08-03,,ACTIVE,CONTRACTOR
+5cd3c347-2c84-4b3e-8db4-0bb1c24f397c,tenant_001,john.lopez.69@tenant_001.com,John,Lopez,Engineering,2023-12-24,,ACTIVE,FTE
+6c522e08-54bf-4a60-baa8-76f5a6b5848f,tenant_001,daniel.moore.70@tenant_001.com,Daniel,Moore,HR & Legal,2023-08-28,,ACTIVE,FTE
+e88d79a5-6c55-4a72-a353-cf754b5e9057,tenant_001,elizabeth.davis.71@tenant_001.com,Elizabeth,Davis,Finance,2024-02-05,,ACTIVE,FTE
+850e9dfe-e86d-4ed7-8a39-7eeec6a14ccf,tenant_001,mary.garcia.72@tenant_001.com,Mary,Garcia,Engineering,2023-06-15,,ACTIVE,FTE
+897d4bbc-222a-4ed7-ae15-4399810e1c82,tenant_001,anthony.perez.73@tenant_001.com,Anthony,Perez,Engineering,2023-11-21,,ACTIVE,FTE
+315ec534-a060-42d1-bb4a-6a3fc3a80020,tenant_001,michael.gonzalez.74@tenant_001.com,Michael,Gonzalez,Finance,2023-08-27,,ACTIVE,FTE
+c65bc5d7-aa24-4986-9d52-e9666e776e5c,tenant_001,daniel.martinez.75@tenant_001.com,Daniel,Martinez,Marketing,2024-04-10,2026-03-31,DEPROVISIONED,FTE
+d72df9f7-09bb-415a-abcf-6ed21640e1ea,tenant_001,richard.gonzalez.76@tenant_001.com,Richard,Gonzalez,Marketing,2023-08-06,2026-10-21,DEPROVISIONED,FTE
+996d6a83-b7ea-4261-a2af-eb8681f38e16,tenant_001,sarah.lopez.77@tenant_001.com,Sarah,Lopez,Finance,2023-02-25,,ACTIVE,FTE
+bc8d31bd-253f-4f9a-bc4c-1391ddd04fc7,tenant_001,paul.hernandez.78@tenant_001.com,Paul,Hernandez,Engineering,2024-01-29,,ACTIVE,FTE
+2106d41b-e0ca-4f03-a8c8-313d3f0b0b81,tenant_001,thomas.garcia.79@tenant_001.com,Thomas,Garcia,Sales,2023-04-13,,ACTIVE,FTE
+4b185248-a772-4b79-992a-d9be2b83fe53,tenant_001,margaret.lopez.80@tenant_001.com,Margaret,Lopez,Engineering,2023-09-13,2026-08-17,DEPROVISIONED,FTE
+df040ade-f792-4fc1-b90c-82ccb749502a,tenant_001,linda.gonzalez.81@tenant_001.com,Linda,Gonzalez,Customer Support,2023-11-02,2026-05-22,DEPROVISIONED,FTE
+f6cff2ef-0e86-4838-8450-f50fd41da9c0,tenant_001,james.taylor.82@tenant_001.com,James,Taylor,Marketing,2023-06-28,2026-03-06,DEPROVISIONED,FTE
+f8e79484-70a7-480c-bc7e-f2bdcc14616b,tenant_001,richard.lopez.83@tenant_001.com,Richard,Lopez,Engineering,2024-06-19,,ACTIVE,FTE
+c1c9cea4-3e80-4401-b498-6f0a4ff2800d,tenant_001,michelle.hernandez.84@tenant_001.com,Michelle,Hernandez,Engineering,2024-10-26,,ACTIVE,FTE
+4c0cb679-a84b-409e-8906-d6c3bdb93dd5,tenant_001,karen.perez.85@tenant_001.com,Karen,Perez,Engineering,2024-12-13,,ACTIVE,FTE
+514d7711-16a1-460e-9d03-f26759eaa5e1,tenant_001,richard.wilson.86@tenant_001.com,Richard,Wilson,Engineering,2024-12-24,,ACTIVE,FTE
+e0d8f5ab-405e-4946-9ffd-9a7b9f5ff1f4,tenant_001,michelle.jackson.87@tenant_001.com,Michelle,Jackson,Marketing,2025-02-06,,ACTIVE,FTE
+bc6257ac-ec59-4af5-933c-f95f667155d2,tenant_001,karen.martinez.88@tenant_001.com,Karen,Martinez,Marketing,2025-01-31,,ACTIVE,FTE
+632f7d1f-8cf1-4c77-9d2d-cb2a70209578,tenant_001,christopher.anderson.89@tenant_001.com,Christopher,Anderson,Customer Support,2025-02-08,,ACTIVE,FTE
+755b5a64-04e7-45a5-a182-b7283991759d,tenant_001,david.perez.90@tenant_001.com,David,Perez,Sales,2025-02-04,2026-08-02,DEPROVISIONED,FTE
+46c4b89c-933e-4a2d-8a52-58584b510672,tenant_001,jennifer.davis.91@tenant_001.com,Jennifer,Davis,Engineering,2025-03-05,,ACTIVE,FTE
+ed261d7e-3755-4d0e-a627-0194f5a90991,tenant_001,elizabeth.smith.92@tenant_001.com,Elizabeth,Smith,Marketing,2025-02-20,,ACTIVE,CONTRACTOR
+9f200916-8ee7-4089-bcc7-c7870da3ccb2,tenant_001,robert.anderson.93@tenant_001.com,Robert,Anderson,Finance,2025-02-28,,ACTIVE,FTE
+368039b6-3838-4c66-a8a7-daeac034089d,tenant_001,matthew.thomas.94@tenant_001.com,Matthew,Thomas,Sales,2025-03-05,,ACTIVE,FTE
+8f05bee1-3ae4-4208-b479-e2b0f3ed424c,tenant_001,margaret.davis.95@tenant_001.com,Margaret,Davis,Finance,2025-04-06,2025-09-22,DEPROVISIONED,FTE
+1c0c3b5a-0613-4516-9e9d-72cd7b88bf4a,tenant_001,sandra.johnson.96@tenant_001.com,Sandra,Johnson,Sales,2025-04-14,,ACTIVE,FTE
+fa1edd03-f99e-4912-97f2-2bd516558445,tenant_001,sandra.jones.97@tenant_001.com,Sandra,Jones,Sales,2025-04-13,,ACTIVE,FTE
+6bad50bd-59e9-4c6e-b39d-cd63a0d88317,tenant_001,mark.martin.98@tenant_001.com,Mark,Martin,Sales,2025-05-01,,ACTIVE,FTE
+00335b00-9c0e-4b63-b915-b5fb6c095c7b,tenant_001,emily.anderson.99@tenant_001.com,Emily,Anderson,Engineering,2025-05-27,,ACTIVE,FTE
+f9fb4256-35eb-4100-b6db-9fe4ffff1b5f,tenant_001,mark.rodriguez.100@tenant_001.com,Mark,Rodriguez,Engineering,2025-06-06,,ACTIVE,FTE

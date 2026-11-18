@@ -1,0 +1,4 @@
+Model,ROC-AUC,Brier Score (Calibration),Log Loss,F1 Score
+Logistic Regression,0.991,0.0082,0.0356,0.9596
+Random Forest,0.9979,0.0073,0.0287,0.9612
+LightGBM,0.9977,0.0072,0.0287,0.964

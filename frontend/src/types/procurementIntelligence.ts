@@ -191,7 +191,7 @@ export interface SaaSUtilizationItem {
 }
 
 // ==========================================
-// 4. Renewal Timeline Types (prep for Renewal Agent)
+// 4. Renewal Timeline & Negotiation Agent Types
 // ==========================================
 
 export type RenewalBadgeUrgency = '30d' | '60d' | '90d' | '120d' | 'future';
@@ -204,7 +204,7 @@ export interface UpcomingRenewal {
   vendorName: string;
   productName: string;
   annualSpend: number;
-  spendYoYPct: number; // e.g. +14.2% or -5.1%
+  spendYoYPct: number;
   renewalDate: string;
   daysUntilRenewal: number;
   badge: RenewalBadgeUrgency;
@@ -212,9 +212,88 @@ export interface UpcomingRenewal {
   noticePeriodDays: number;
   noticeDeadlineDate: string;
   daysUntilNoticeDeadline: number;
-  isNoticeWindowActive: boolean; // within notice period countdown
+  isNoticeWindowActive: boolean;
   utilizationPct: number;
   assignedOwner: string;
   status: 'unreviewed' | 'investigating' | 'agent_preparing' | 'negotiation_ready' | 'renewed';
   keyLeveragePoints: string[];
+}
+
+export interface RawUpcomingRenewalResponse {
+  id: string;
+  contract_id: string;
+  contract_number: string;
+  vendor_id: string;
+  vendor_name: string;
+  product_name: string;
+  annual_spend: number;
+  spend_yoy_pct: number;
+  renewal_date: string;
+  days_until_renewal: number;
+  badge: RenewalBadgeUrgency;
+  auto_renew: boolean;
+  notice_period_days: number;
+  notice_deadline_date: string;
+  days_until_notice_deadline: number;
+  is_notice_window_active: boolean;
+  utilization_pct: number;
+  assigned_owner: string;
+  status: 'unreviewed' | 'investigating' | 'agent_preparing' | 'negotiation_ready' | 'renewed';
+  key_leverage_points: string[];
+}
+
+export interface ClauseCitation {
+  clause_type: string;
+  summary: string;
+  document_id?: string | null;
+  filename?: string | null;
+  page?: number | null;
+  section?: string | null;
+  verbatim_excerpt?: string | null;
+}
+
+export interface NegotiationBriefResponse {
+  vendor_id: string;
+  vendor_name: string;
+  current_spend: number;
+  contract_terms: Record<string, unknown>;
+  utilization_data: Record<string, unknown>;
+  leverage_points: string[];
+  recommended_actions: string[];
+  talking_points: string[];
+  risk_factors: string[];
+  contractual_clauses: ClauseCitation[];
+  generated_at: string;
+}
+
+export interface RenewalReminderRequest {
+  contract_id: string;
+  vendor_id: string;
+  remind_days_before_notice?: number;
+  notes?: string;
+}
+
+export interface RenewalReminderResponse {
+  reminder_id: string;
+  contract_id: string;
+  vendor_name: string;
+  notice_deadline_date: string;
+  remind_date: string;
+  days_until_notice: number;
+  status: string;
+  message: string;
+}
+
+export interface RenewalReminderItem {
+  id: string;
+  contract_id: string;
+  contract_number: string;
+  vendor_id: string;
+  vendor_name: string;
+  notice_deadline_date: string;
+  remind_date: string;
+  days_until_notice: number;
+  status: string;
+  notes?: string | null;
+  created_at: string;
 }
