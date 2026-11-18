@@ -14,6 +14,7 @@ from zellovest_workers.tasks import (
     ingestion,
     maintenance,
     maverick_spend,
+    renewal_reminders,
     zombie_license,
 )
 
@@ -28,5 +29,6 @@ __all__ = [
     "ingestion",
     "maintenance",
     "maverick_spend",
+    "renewal_reminders",
     "zombie_license",
 ]

@@ -207,11 +207,11 @@ AVAILABLE_TOOLS: dict[str, ToolSchema] = {
     ),
     "create_renewal_reminder": ToolSchema(
         name="create_renewal_reminder",
-        description="Create a renewal reminder",
+        description="Create a renewal notice deadline reminder",
         input_schema={
-            "vendor_id": {"type": "string"},
             "contract_id": {"type": "string"},
-            "remind_before_days": {"type": "integer", "default": 90},
+            "vendor_id": {"type": "string"},
+            "remind_before_days": {"type": "integer", "default": 15},
         },
         output_schema={"reminder_id": {"type": "string"}},
         risk_class="low_risk",
@@ -256,45 +256,112 @@ async def call_tool(
     session: AsyncSession = Depends(get_db_session),
 ) -> ToolCallResponse:
     """Execute a tool call (sandbox for testing)."""
-    del session
     tenant_id = normalize_tenant_id(current_user.tenant_id)
     logger.info("tool_call_requested", tool=body.tool_name, tenant_id=tenant_id)
     if normalize_tenant_id(body.tenant_id) != tenant_id:
         raise HTTPException(status_code=403, detail="tenant context mismatch")
-    
+
     if body.tool_name not in AVAILABLE_TOOLS:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Tool {body.tool_name} not found",
         )
-    
+
+    # 1. Document Knowledge search tools
     if body.tool_name in {"search_documents", "search_contracts"}:
         query = str(body.arguments.get("query", "")).strip()
         if not query:
             raise HTTPException(status_code=422, detail="query is required")
         started = time.perf_counter()
         try:
-            with trace_span("mcp.document_search", {"tenant_id": tenant_id,
-                                                      "tool": body.tool_name}):
+            with trace_span("mcp.document_search", {"tenant_id": tenant_id, "tool": body.tool_name}):
                 chunks = await asyncio.to_thread(
-                    search_documents, tenant_id=tenant_id, query=query,
+                    search_documents,
+                    tenant_id=tenant_id,
+                    query=query,
                     vendor_id=body.arguments.get("vendor_id"),
-                    document_type=("contract" if body.tool_name == "search_contracts"
-                                   else body.arguments.get("document_type")),
+                    document_type=(
+                        "contract" if body.tool_name == "search_contracts" else body.arguments.get("document_type")
+                    ),
                     limit=min(20, int(body.arguments.get("limit", 10))),
                 )
         except Exception as exc:
-            logger.error("document_tool_failed", tenant_id=tenant_id,
-                         tool=body.tool_name, error_class=type(exc).__name__)
-            return ToolCallResponse(tool_name=body.tool_name, success=False,
-                                    error="document search unavailable",
-                                    execution_time_ms=int((time.perf_counter() - started) * 1000))
+            logger.error(
+                "document_tool_failed",
+                tenant_id=tenant_id,
+                tool=body.tool_name,
+                error_class=type(exc).__name__,
+            )
+            return ToolCallResponse(
+                tool_name=body.tool_name,
+                success=False,
+                error="document search unavailable",
+                execution_time_ms=int((time.perf_counter() - started) * 1000),
+            )
         return ToolCallResponse(
-            tool_name=body.tool_name, success=True, result={"chunks": chunks},
+            tool_name=body.tool_name,
+            success=True,
+            result={"chunks": chunks},
             execution_time_ms=int((time.perf_counter() - started) * 1000),
             provenance={"tenant_id": tenant_id, "source": "qdrant"},
         )
-    # Remaining tools are metadata-only until their domain handlers are wired.
+
+    # 2. find_renewals tool
+    if body.tool_name == "find_renewals":
+        started = time.perf_counter()
+        from zellovest_agentic.api.routers.negotiation import list_upcoming_renewals
+
+        days_ahead = int(body.arguments.get("days_ahead", 90))
+        renewals = await list_upcoming_renewals(
+            tenant_id=tenant_id,
+            days_ahead=days_ahead,
+            badge="all",
+            auto_renew_only=bool(body.arguments.get("auto_renew_only", False)),
+            search=body.arguments.get("search"),
+            current_user=current_user,
+            session=session,
+        )
+        return ToolCallResponse(
+            tool_name=body.tool_name,
+            success=True,
+            result={"renewals": [r.model_dump() for r in renewals]},
+            execution_time_ms=int((time.perf_counter() - started) * 1000),
+            provenance={"tenant_id": tenant_id, "source": "database"},
+        )
+
+    # 3. create_renewal_reminder tool
+    if body.tool_name == "create_renewal_reminder":
+        started = time.perf_counter()
+        from zellovest_agentic.api.routers.negotiation import create_renewal_reminder
+        from zellovest_agentic.schemas.negotiation import RenewalReminderRequest
+
+        contract_id = str(body.arguments.get("contract_id", ""))
+        vendor_id = str(body.arguments.get("vendor_id", ""))
+        if not contract_id:
+            raise HTTPException(status_code=422, detail="contract_id is required")
+
+        remind_before_days = int(
+            body.arguments.get("remind_before_days", body.arguments.get("remind_days_before_notice", 15))
+        )
+        reminder_req = RenewalReminderRequest(
+            contract_id=contract_id,
+            vendor_id=vendor_id,
+            remind_days_before_notice=remind_before_days,
+            notes=body.arguments.get("notes"),
+        )
+        rem_res = await create_renewal_reminder(
+            body=reminder_req,
+            current_user=current_user,
+            session=session,
+        )
+        return ToolCallResponse(
+            tool_name=body.tool_name,
+            success=True,
+            result=rem_res.model_dump(),
+            execution_time_ms=int((time.perf_counter() - started) * 1000),
+            provenance={"tenant_id": tenant_id, "source": "database"},
+        )
+
     return ToolCallResponse(
         tool_name=body.tool_name,
         success=False,

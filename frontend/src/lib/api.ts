@@ -25,6 +25,12 @@ import {
   RAGSearchResponse,
   APAuditKPIs,
   ReconciliationItem,
+  UpcomingRenewal,
+  RawUpcomingRenewalResponse,
+  NegotiationBriefResponse,
+  RenewalReminderRequest,
+  RenewalReminderResponse,
+  RenewalReminderItem,
 } from '@/types';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || '/api';
@@ -177,6 +183,64 @@ export function useApi() {
           method: 'POST',
           body: JSON.stringify(params),
         }),
+    },
+    negotiation: {
+      upcomingRenewals: async (params?: {
+        days_ahead?: number;
+        badge?: string;
+        auto_renew_only?: boolean;
+        search?: string;
+      }): Promise<UpcomingRenewal[]> => {
+        const searchParams = new URLSearchParams();
+        if (params) {
+          if (params.days_ahead) searchParams.set('days_ahead', String(params.days_ahead));
+          if (params.badge && params.badge !== 'all') searchParams.set('badge', params.badge);
+          if (params.auto_renew_only) searchParams.set('auto_renew_only', 'true');
+          if (params.search) searchParams.set('search', params.search);
+        }
+        const query = searchParams.toString();
+        const raw = await request<RawUpcomingRenewalResponse[]>(
+          `/agentic/negotiation/upcoming-renewals${query ? `?${query}` : ''}`
+        );
+        return (raw || []).map((r) => ({
+          id: r.id,
+          contractId: r.contract_id,
+          contractNumber: r.contract_number,
+          vendorId: r.vendor_id,
+          vendorName: r.vendor_name,
+          productName: r.product_name,
+          annualSpend: r.annual_spend,
+          spendYoYPct: r.spend_yoy_pct,
+          renewalDate: r.renewal_date,
+          daysUntilRenewal: r.days_until_renewal,
+          badge: r.badge,
+          autoRenew: r.auto_renew,
+          noticePeriodDays: r.notice_period_days,
+          noticeDeadlineDate: r.notice_deadline_date,
+          daysUntilNoticeDeadline: r.days_until_notice_deadline,
+          isNoticeWindowActive: r.is_notice_window_active,
+          utilizationPct: r.utilization_pct,
+          assignedOwner: r.assigned_owner,
+          status: r.status,
+          keyLeveragePoints: r.key_leverage_points || [],
+        }));
+      },
+      prepareBrief: (data: {
+        vendor_id: string;
+        contract_id?: string;
+        objectives?: string[];
+      }) =>
+        request<NegotiationBriefResponse>('/agentic/negotiation/brief', {
+          method: 'POST',
+          body: JSON.stringify(data),
+        }),
+      createReminder: (data: RenewalReminderRequest) =>
+        request<RenewalReminderResponse>('/agentic/negotiation/remind', {
+          method: 'POST',
+          body: JSON.stringify(data),
+        }),
+      listReminders: () =>
+        request<RenewalReminderItem[]>('/agentic/negotiation/reminders'),
     },
     vendors: {
       list: (params?: VendorListParams) => {

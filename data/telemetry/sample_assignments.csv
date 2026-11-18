@@ -1,0 +1,101 @@
+assignment_id,tenant_id,user_id,app_id,app_name,department,assigned_at,unassigned_at,status,persona,zombie_cutoff,license_tier
+553af245-39a7-4a52-a157-883929d76913,tenant_001,13d4d03b-1e66-4b3c-978b-47805f2a7138,app_salesforce_tenant_001,salesforce,Sales,2026-03-17,,ACTIVE,occasional,,Standard
+a3f15879-0d58-4424-b345-4b8bcd149f65,tenant_001,69dbffbd-abf2-4f7a-b06f-989c8f7b5aeb,app_salesforce_tenant_001,salesforce,Marketing,2024-11-15,,ACTIVE,occasional,,Standard
+f80ea14e-3d34-4976-a0a9-91818707e3fb,tenant_001,1b3b3664-e50c-46d0-a917-0b32b76aee35,app_salesforce_tenant_001,salesforce,Sales,2026-03-17,,ACTIVE,occasional,,Standard
+88278e42-077a-4072-9fa1-6ccac3129324,tenant_001,755b5a64-04e7-45a5-a182-b7283991759d,app_salesforce_tenant_001,salesforce,Sales,2025-02-04,2026-08-02,INACTIVE,occasional,,Standard
+d5318b16-c0ed-4ebb-8348-afc0ee08f665,tenant_001,912bf5e7-7a35-4ae2-97e9-0d762410e9bd,app_salesforce_tenant_001,salesforce,Sales,2024-11-15,2025-08-29,INACTIVE,power,,Standard
+a8ce19c7-ddd1-4ec0-bc1a-b96c88e3fc0b,tenant_001,0d076267-02d2-4937-aa9a-35aee3fcff69,app_salesforce_tenant_001,salesforce,Marketing,2026-09-21,2026-11-20,INACTIVE,power,,Standard
+fe6cbd70-53ed-43ef-af61-4564a3fdc69f,tenant_001,632f7d1f-8cf1-4c77-9d2d-cb2a70209578,app_salesforce_tenant_001,salesforce,Customer Support,2025-02-08,,ACTIVE,occasional,,Standard
+97cf588e-6962-4d6d-bea1-a1f91274b19f,tenant_001,368039b6-3838-4c66-a8a7-daeac034089d,app_salesforce_tenant_001,salesforce,Sales,2025-03-05,,ACTIVE,occasional,,Standard
+6417ab32-6cc5-44f0-84d2-3cedc2db2ccc,tenant_001,48b501da-24b2-4a6c-8223-dead99f23c88,app_salesforce_tenant_001,salesforce,Customer Support,2024-11-15,2026-01-06,INACTIVE,occasional,,Standard
+54419d01-fba9-4771-a6ba-70d891772e5e,tenant_001,58505d7b-b17e-4b08-8f15-37eae50f1c79,app_salesforce_tenant_001,salesforce,Sales,2026-09-24,,ACTIVE,zombie,2026-10-24,Standard
+c43c1ac7-7e16-4fab-b80f-c1b75ffdf5a0,tenant_001,ed82c068-5b43-43a1-b24b-54931791fa9f,app_salesforce_tenant_001,salesforce,Customer Support,2025-09-13,,ACTIVE,occasional,,Standard
+7f8c37e7-c084-43ea-bb8f-40acea7a4cfb,tenant_001,d6ebaf76-6b84-4bed-971d-a0c302b0d269,app_salesforce_tenant_001,salesforce,Sales,2024-11-15,,ACTIVE,occasional,,Standard
+ab62e94f-5740-4546-b03f-9f7801195a9b,tenant_001,ea22b298-6ff1-4609-9f25-df6b5ddc85e1,app_salesforce_tenant_001,salesforce,Marketing,2025-10-05,,ACTIVE,occasional,,Standard
+fef193a0-3ac1-4f43-a282-de82d9a7c027,tenant_001,36eded38-e336-49b8-84f6-beac8264e78c,app_salesforce_tenant_001,salesforce,Marketing,2024-11-15,2025-08-18,INACTIVE,occasional,,Standard
+c3e1b8ba-60af-4853-b58c-15f52741b684,tenant_001,1c0c3b5a-0613-4516-9e9d-72cd7b88bf4a,app_salesforce_tenant_001,salesforce,Sales,2025-04-14,,ACTIVE,power,,Standard
+6433153b-a12e-4321-a384-261cc25462d4,tenant_001,85a26b38-a042-46fe-b182-3fa5818751d8,app_salesforce_tenant_001,salesforce,Customer Support,2025-12-01,2026-05-21,INACTIVE,power,,Standard
+f4f14ebe-987b-40ca-80c6-abf695d8e91f,tenant_001,c6813227-466b-4eb4-9ac4-23b22e0306a4,app_salesforce_tenant_001,salesforce,Sales,2024-11-15,2025-08-20,INACTIVE,power,,Standard
+a59ba92a-5b56-4e50-a2e5-030e22d4c898,tenant_001,6bad50bd-59e9-4c6e-b39d-cd63a0d88317,app_salesforce_tenant_001,salesforce,Sales,2025-05-01,,ACTIVE,power,,Standard
+672f1af7-93f5-44ec-8fbe-8ae06f503b88,tenant_001,803af7e1-deba-45e7-8c27-8732fd0704d2,app_salesforce_tenant_001,salesforce,Marketing,2024-11-15,2025-08-05,INACTIVE,power,,Standard
+5b7a0c22-7852-42a5-b787-991b3ff5dc68,tenant_001,3ea2bd2e-d5eb-43af-a1aa-938e5d186d8a,app_salesforce_tenant_001,salesforce,Sales,2024-11-15,,ACTIVE,power,,Standard
+12052790-4720-4139-94e7-16900efda2c9,tenant_001,e1ed80e6-12ad-4054-961c-ff54f828ab76,app_salesforce_tenant_001,salesforce,Marketing,2024-11-15,2026-04-26,INACTIVE,power,,Standard
+c60d30e6-a0dc-47a8-9ded-b290af59c7ab,tenant_001,d566f22c-4ea7-46fb-86f0-bead87ec20e0,app_salesforce_tenant_001,salesforce,Sales,2024-11-15,2026-09-30,INACTIVE,occasional,,Standard
+67404d0d-4990-4dc9-bc89-97519296297c,tenant_001,bc6257ac-ec59-4af5-933c-f95f667155d2,app_salesforce_tenant_001,salesforce,Marketing,2025-01-31,,ACTIVE,occasional,,Standard
+453c5be0-213c-4834-8d67-23ca91d1a486,tenant_001,96bda269-333f-41b0-8ce7-27a2474b12ae,app_salesforce_tenant_001,salesforce,Marketing,2024-11-15,,ACTIVE,occasional,,Standard
+d525a755-1d23-43c9-a125-5c9751a46355,tenant_001,cbf3b969-ce87-4a22-afd1-6e5b7c861b87,app_salesforce_tenant_001,salesforce,Sales,2025-07-17,,ACTIVE,occasional,,Standard
+b3dcaae1-660d-4649-90d5-0ca24d754122,tenant_001,9758d5ef-32f2-47d2-95b8-0ac2764aefd4,app_salesforce_tenant_001,salesforce,Sales,2024-11-15,,ACTIVE,zombie,2024-12-19,Standard
+ef9e9673-9dcf-470c-bc09-c58afa6c2e66,tenant_001,3c675414-e288-4de2-8711-e3b6da3d13d0,app_salesforce_tenant_001,salesforce,Sales,2024-11-15,2026-10-25,INACTIVE,occasional,,Standard
+e91ab8ec-78fe-452a-9e72-97dfccdfe479,tenant_001,e062aec8-1c15-4e1f-a305-369e2bf31372,app_salesforce_tenant_001,salesforce,Sales,2024-11-15,,ACTIVE,occasional,,Standard
+c27d1ae6-2249-4e18-90be-09896c1fbf4e,tenant_001,d72df9f7-09bb-415a-abcf-6ed21640e1ea,app_salesforce_tenant_001,salesforce,Marketing,2024-11-15,2026-10-21,INACTIVE,occasional,,Standard
+6682fab3-af93-46bc-8bce-ea8dac89fd53,tenant_001,c6f49364-7bcd-4420-957b-9b433230f039,app_salesforce_tenant_001,salesforce,Customer Support,2024-11-15,2026-02-20,INACTIVE,occasional,,Standard
+83a0ac6f-fc8c-4bb9-a0a8-25a26cc9eef9,tenant_001,520cb047-ace7-45f8-a278-3398e9815318,app_salesforce_tenant_001,salesforce,Sales,2024-11-15,2026-10-11,INACTIVE,occasional,,Standard
+2aeb044d-60db-44fa-bc0e-463e67ff3d2b,tenant_001,16f6e49f-63f0-4988-bde8-07498da20a05,app_salesforce_tenant_001,salesforce,Customer Support,2024-11-15,2025-07-19,INACTIVE,occasional,,Standard
+f3c5404d-f5e2-4878-bd62-81bb53e2110b,tenant_001,e0d8f5ab-405e-4946-9ffd-9a7b9f5ff1f4,app_salesforce_tenant_001,salesforce,Marketing,2025-02-06,,ACTIVE,power,,Standard
+6c56edb2-ef18-45b5-9349-2db85c990e5d,tenant_001,dda4c64a-f735-4fa9-bd64-c9d5c892bf99,app_salesforce_tenant_001,salesforce,Customer Support,2024-11-15,2026-07-21,INACTIVE,zombie,2025-01-22,Standard
+9d845baf-a510-485e-a1c6-8756743bbf4c,tenant_001,953ed78b-7ca8-4877-a5c3-0c6416e6a9c1,app_salesforce_tenant_001,salesforce,Sales,2024-11-15,,ACTIVE,zombie,2025-01-07,Standard
+43afff4f-cb0f-4630-86d0-4450ff499b22,tenant_001,fa1edd03-f99e-4912-97f2-2bd516558445,app_salesforce_tenant_001,salesforce,Sales,2025-04-13,,ACTIVE,occasional,,Standard
+34e7f8b0-0b93-4a20-b3a9-36c9db3b98c6,tenant_001,ec8da224-c383-4f83-9a2f-58c736122e2b,app_salesforce_tenant_001,salesforce,Marketing,2026-07-31,,ACTIVE,occasional,,Standard
+00c21f32-04cf-4831-a6a3-1cefc02e3df8,tenant_001,df040ade-f792-4fc1-b90c-82ccb749502a,app_salesforce_tenant_001,salesforce,Customer Support,2024-11-15,2026-05-22,INACTIVE,zombie,2025-01-11,Standard
+22a532d4-176d-478d-9bb0-62b952c6b01a,tenant_001,f6cff2ef-0e86-4838-8450-f50fd41da9c0,app_salesforce_tenant_001,salesforce,Marketing,2024-11-15,2026-03-06,INACTIVE,power,,Standard
+1aed59e2-2dbf-4ba5-8928-795b887f1e7f,tenant_001,d0f36fc1-e4d9-403a-a61f-c591007905c3,app_salesforce_tenant_001,salesforce,Sales,2024-11-15,2026-04-27,INACTIVE,occasional,,Standard
+9cdef95c-d07d-466e-bd51-14ea1f14573a,tenant_001,bcf05586-dfd6-4ee6-9af0-93226a62d3d7,app_salesforce_tenant_001,salesforce,Sales,2024-11-15,,ACTIVE,occasional,,Standard
+a9660518-74fa-4b74-b7d0-cfd6d8ebf277,tenant_001,c8e92dd9-4c2a-4d4a-934e-1bd5620e325b,app_slack_tenant_001,slack,Finance,2026-01-09,,ACTIVE,power,,Standard
+41550c1e-bd73-4f4e-8be5-68ba3d94cc51,tenant_001,755b5a64-04e7-45a5-a182-b7283991759d,app_slack_tenant_001,slack,Sales,2025-02-04,2026-08-02,INACTIVE,power,,Standard
+d77c586f-5729-4fa6-9546-bcbf894f8312,tenant_001,3504f5f3-9018-4249-978e-1397227b98a0,app_slack_tenant_001,slack,Customer Support,2025-07-30,,ACTIVE,power,,Standard
+8a4c3944-1bc0-4033-a4d6-2ea801f2d94f,tenant_001,514d7711-16a1-460e-9d03-f26759eaa5e1,app_slack_tenant_001,slack,Engineering,2024-12-24,,ACTIVE,occasional,,Standard
+b139b687-f666-45e6-96b5-252faa208469,tenant_001,f8e79484-70a7-480c-bc7e-f2bdcc14616b,app_slack_tenant_001,slack,Engineering,2024-11-15,,ACTIVE,occasional,,Standard
+5cf41386-4401-4b50-bb96-cccc23f0caf5,tenant_001,47a204fd-8f81-4555-8f9b-d4bc592c1b09,app_slack_tenant_001,slack,Engineering,2024-11-15,,ACTIVE,occasional,,Standard
+9645b9fd-daad-4466-b84f-4eab057e63b9,tenant_001,2c9b3ad3-c6b5-4ccf-928e-0adf90f3fcff,app_slack_tenant_001,slack,Sales,2024-11-15,2026-10-07,INACTIVE,occasional,,Standard
+297dab8e-2be5-4e48-9902-584684d1d3f1,tenant_001,4c0cb679-a84b-409e-8906-d6c3bdb93dd5,app_slack_tenant_001,slack,Engineering,2024-12-13,,ACTIVE,occasional,,Standard
+1e975571-1ac2-44f5-991b-49ccb80b45b3,tenant_001,19e5c1c5-cce1-4d87-83da-538b53b30851,app_slack_tenant_001,slack,Engineering,2025-07-25,,ACTIVE,occasional,,Standard
+014086a5-99b9-4e16-825f-90da7a25145b,tenant_001,98899fc6-4bc3-422e-8027-0d315e7ded24,app_slack_tenant_001,slack,Finance,2026-02-19,,ACTIVE,occasional,,Standard
+a8e6e93e-cd96-47bc-af94-eeb9bc6fc034,tenant_001,315ec534-a060-42d1-bb4a-6a3fc3a80020,app_slack_tenant_001,slack,Finance,2024-11-15,,ACTIVE,occasional,,Standard
+18f328a7-d519-4df4-bf59-f9e6fbf118c0,tenant_001,ec6723b4-2fc2-4982-bb1f-8a1405318e23,app_slack_tenant_001,slack,Engineering,2025-07-30,,ACTIVE,power,,Standard
+de1a52c4-5846-4783-bcd2-da7ad7029368,tenant_001,803af7e1-deba-45e7-8c27-8732fd0704d2,app_slack_tenant_001,slack,Marketing,2024-11-15,2025-08-05,INACTIVE,occasional,,Standard
+214c719d-e357-48bb-96bd-37d95dc44d99,tenant_001,7af593d6-268f-4fcc-a973-f1e62331bec6,app_slack_tenant_001,slack,Finance,2025-09-22,,ACTIVE,power,,Standard
+f2d966c8-c96b-4559-83d6-7102f2ef1dfb,tenant_001,5dfbdfc0-0ef5-43a8-982e-1ac0608945d3,app_slack_tenant_001,slack,Engineering,2024-11-15,,ACTIVE,power,,Standard
+26a73cb2-3c3b-4b29-8bdc-98e3126b15c1,tenant_001,df040ade-f792-4fc1-b90c-82ccb749502a,app_slack_tenant_001,slack,Customer Support,2024-11-15,2026-05-22,INACTIVE,power,,Standard
+2afa4967-357a-40e8-8223-781ceb204a6a,tenant_001,35e719fc-d4a8-4455-94b4-d248e843d388,app_slack_tenant_001,slack,Engineering,2024-11-15,2025-11-21,INACTIVE,occasional,,Standard
+0437fef6-688f-4a9c-98c3-d78edd304510,tenant_001,73e44ba9-f4bf-4221-814b-c344daa566f2,app_slack_tenant_001,slack,Engineering,2026-09-16,,ACTIVE,occasional,,Standard
+1c55f23d-4bf0-4482-b490-c420299d93e6,tenant_001,e664b58f-6dac-4d38-ad6a-53f0ae5ba756,app_slack_tenant_001,slack,Engineering,2024-11-15,,ACTIVE,occasional,,Standard
+8cfa6288-87bd-4560-b3fc-382eafe43664,tenant_001,cbf3b969-ce87-4a22-afd1-6e5b7c861b87,app_slack_tenant_001,slack,Sales,2025-07-17,,ACTIVE,power,,Standard
+04a0f257-959f-47ac-a2bf-aae155c70591,tenant_001,9758d5ef-32f2-47d2-95b8-0ac2764aefd4,app_slack_tenant_001,slack,Sales,2024-11-15,,ACTIVE,power,,Standard
+5284869a-93b7-44e3-a02f-cfc3c6468113,tenant_001,85a26b38-a042-46fe-b182-3fa5818751d8,app_slack_tenant_001,slack,Customer Support,2025-12-01,2026-05-21,INACTIVE,power,,Standard
+ed9a420e-18ef-4195-8824-03acaaa26d99,tenant_001,f44b76ee-6a47-4de9-be53-83a568cda6a4,app_slack_tenant_001,slack,Engineering,2026-08-10,,ACTIVE,zombie,2026-09-19,Standard
+2c4bc85a-cf6c-482b-b48a-703618a2697a,tenant_001,7c5f599a-91a3-4793-bae5-5457f523cb5d,app_slack_tenant_001,slack,Engineering,2024-11-15,2025-12-02,INACTIVE,occasional,,Standard
+6a0ca69d-e710-494f-a556-fdb33de1c1ba,tenant_001,3ea2bd2e-d5eb-43af-a1aa-938e5d186d8a,app_slack_tenant_001,slack,Sales,2024-11-15,,ACTIVE,power,,Standard
+ebb7aaa9-bdf6-47a4-8f96-a379864e8613,tenant_001,9e5d47dd-e482-4994-9c57-1d3a1c6741be,app_slack_tenant_001,slack,Engineering,2024-11-15,2025-05-16,INACTIVE,power,,Standard
+04aeea3f-e253-41ba-b6da-5b23bdd66a76,tenant_001,03dc6772-effb-4333-a2a7-4cfae6f19b5e,app_slack_tenant_001,slack,Engineering,2024-11-15,,ACTIVE,power,,Standard
+3a5d725e-9a0f-4a93-81a2-2c9e3af92d75,tenant_001,4b185248-a772-4b79-992a-d9be2b83fe53,app_slack_tenant_001,slack,Engineering,2024-11-15,2026-08-17,INACTIVE,occasional,,Standard
+d210b867-9604-4434-bb07-176de0c2092b,tenant_001,fa1edd03-f99e-4912-97f2-2bd516558445,app_slack_tenant_001,slack,Sales,2025-04-13,,ACTIVE,occasional,,Standard
+571d7df7-6880-4a32-b087-75ff7f18ed42,tenant_001,912bf5e7-7a35-4ae2-97e9-0d762410e9bd,app_slack_tenant_001,slack,Sales,2024-11-15,2025-08-29,INACTIVE,occasional,,Standard
+f8795dfe-74f0-45d0-9272-bf851d87205e,tenant_001,f4e51259-97dd-413d-9280-f6a478aac943,app_slack_tenant_001,slack,Customer Support,2026-06-02,,ACTIVE,power,,Standard
+b7b8740b-f086-4745-a648-722630c38e1a,tenant_001,9597b296-cf63-4b1b-93e4-78e4d8cef645,app_slack_tenant_001,slack,Engineering,2024-11-15,2026-09-12,INACTIVE,power,,Standard
+35f5de92-deaf-44c6-8d32-3ecef2a8802b,tenant_001,6bad50bd-59e9-4c6e-b39d-cd63a0d88317,app_slack_tenant_001,slack,Sales,2025-05-01,,ACTIVE,occasional,,Standard
+b4fa94de-c6ee-491d-8373-d468127f9664,tenant_001,2e73ab92-8ecc-48b7-93a6-f5f29e103867,app_slack_tenant_001,slack,HR & Legal,2026-08-30,,ACTIVE,occasional,,Standard
+3d8236f1-f9b8-4172-bea8-0a33dd7c638e,tenant_001,3506001c-0c8d-4433-adee-a8be5938f008,app_slack_tenant_001,slack,Engineering,2026-10-03,2026-12-02,INACTIVE,power,,Standard
+0139f90e-f8e9-475b-9286-0871a0009229,tenant_001,bdd0ad74-8c1b-4f46-b760-116b62a6b30b,app_slack_tenant_001,slack,HR & Legal,2024-11-15,,ACTIVE,occasional,,Standard
+47b41331-e98e-4762-9946-d05b868feceb,tenant_001,e88d79a5-6c55-4a72-a353-cf754b5e9057,app_slack_tenant_001,slack,Finance,2024-11-15,,ACTIVE,power,,Standard
+d14b8c76-e55c-40fb-909c-84c59c01ac58,tenant_001,c14e7304-ef17-42f1-96c8-bb7f9e8f2575,app_slack_tenant_001,slack,Engineering,2024-11-15,,ACTIVE,occasional,,Standard
+00add316-6dc0-4564-a171-1e3dc687f5db,tenant_001,326977f7-8f9f-4e5e-a463-84a46147392c,app_slack_tenant_001,slack,Engineering,2024-11-15,,ACTIVE,power,,Standard
+35b05006-8efd-443b-871e-d72399f0bb12,tenant_001,4fae6e26-8452-4054-a7c5-5b8a93d631bd,app_slack_tenant_001,slack,Engineering,2026-03-25,,ACTIVE,power,,Standard
+9f81dfbe-b9ec-4bd6-a460-06a0ab802bd2,tenant_001,94055ed0-c489-4075-aca8-54bd369c9c70,app_slack_tenant_001,slack,Engineering,2026-10-15,,ACTIVE,zombie,2026-12-25,Standard
+a97c2972-1933-4155-b46f-048b16e0bc50,tenant_001,cc96c6ae-f06a-4f50-bd71-5276c2208e09,app_slack_tenant_001,slack,Finance,2024-11-15,,ACTIVE,occasional,,Standard
+04c83bf1-e6db-4f0e-b068-d3effc20824f,tenant_001,7a29bd47-be4c-49b9-9afc-1b50c9043809,app_slack_tenant_001,slack,Engineering,2024-11-15,,ACTIVE,power,,Standard
+9364550a-782e-4003-b0a9-be1acd00045c,tenant_001,520cb047-ace7-45f8-a278-3398e9815318,app_slack_tenant_001,slack,Sales,2024-11-15,2026-10-11,INACTIVE,occasional,,Standard
+22196f41-0642-45f3-b970-52809fa9ee5b,tenant_001,c3f353b9-5a7b-4080-bd3a-64546a2451dd,app_slack_tenant_001,slack,Sales,2025-12-29,,ACTIVE,power,,Standard
+12963e64-2248-4f5a-b595-ff1eb8b1a477,tenant_001,bc8d31bd-253f-4f9a-bc4c-1391ddd04fc7,app_slack_tenant_001,slack,Engineering,2024-11-15,,ACTIVE,occasional,,Standard
+62c1f935-8438-42cf-ba5e-0be4135379db,tenant_001,7bdefa9f-db4a-492b-9a88-1e00be85a59b,app_slack_tenant_001,slack,Sales,2026-07-17,2026-09-22,INACTIVE,occasional,,Standard
+babfde62-a344-40db-a3d0-83fc0a48e862,tenant_001,36eded38-e336-49b8-84f6-beac8264e78c,app_slack_tenant_001,slack,Marketing,2024-11-15,2025-08-18,INACTIVE,power,,Standard
+71b6e149-9d44-4b9a-af85-1bd9ee6b0777,tenant_001,46c4b89c-933e-4a2d-8a52-58584b510672,app_slack_tenant_001,slack,Engineering,2025-03-05,,ACTIVE,occasional,,Standard
+e05f9563-b993-415a-9053-bf2a71c1997f,tenant_001,c9fa21f6-9e19-4363-8bd9-06bbe1b26d94,app_slack_tenant_001,slack,Marketing,2024-11-15,,ACTIVE,occasional,,Standard
+8078acad-552b-4e20-a39d-337319879075,tenant_001,c6813227-466b-4eb4-9ac4-23b22e0306a4,app_slack_tenant_001,slack,Sales,2024-11-15,2025-08-20,INACTIVE,occasional,,Standard
+eb07a2e7-7ae0-447e-b197-9df031f09858,tenant_001,f0047644-2927-4dd6-8192-2aa84a56477e,app_slack_tenant_001,slack,Finance,2025-09-19,,ACTIVE,power,,Standard
+d060f0a9-fb91-4327-8c3a-a90a61edf8e3,tenant_001,a1fe3208-700a-4114-81c5-93fd7ca5bb4d,app_slack_tenant_001,slack,HR & Legal,2024-11-15,,ACTIVE,occasional,,Standard
+23113de3-6e72-4672-8278-cd272f7df32b,tenant_001,00335b00-9c0e-4b63-b915-b5fb6c095c7b,app_slack_tenant_001,slack,Engineering,2025-05-27,,ACTIVE,occasional,,Standard
+0923cf70-15de-4988-8d28-c4602b5ef3fe,tenant_001,dda4c64a-f735-4fa9-bd64-c9d5c892bf99,app_slack_tenant_001,slack,Customer Support,2024-11-15,2026-07-21,INACTIVE,power,,Standard
+e5bebb6f-817e-46ea-888f-ef304535dd0d,tenant_001,f658ee57-a20f-41f6-a613-70b5207b21d6,app_slack_tenant_001,slack,HR & Legal,2024-11-15,,ACTIVE,power,,Standard
+8cf86bf9-5f56-44f0-8211-fb49ac814488,tenant_001,546cf32b-e2f5-4811-bf7b-460c7c0212ac,app_slack_tenant_001,slack,Sales,2024-11-15,,ACTIVE,power,,Standard
+56b557a3-dd53-4bd3-bea8-78cf40a9a897,tenant_001,82092194-ecc2-4be8-9608-aacb09dd188f,app_slack_tenant_001,slack,Engineering,2024-11-15,,ACTIVE,power,,Standard
+eefc3dd6-74ce-480d-a6c0-64d38edff9b0,tenant_001,dba54f31-f7f4-4d98-8aac-5255f05f2a44,app_slack_tenant_001,slack,Engineering,2024-11-15,,ACTIVE,occasional,,Standard
