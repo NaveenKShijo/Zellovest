@@ -1,0 +1,107 @@
+name: Backend CI and worker image
+
+on:
+  pull_request:
+    paths:
+      - "backend/**"
+      - "data/telemetry/**"
+      - ".github/workflows/ci.yaml"
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "data/telemetry/**"
+      - ".github/workflows/ci.yaml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Forecasting checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend/services/workers
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/services/workers/uv.lock
+
+      - name: Install locked worker dependencies
+        run: uv sync --locked --extra dev
+
+      - name: Run forecasting tests
+        env:
+          PYTHONPATH: src:../../shared/src
+        run: uv run --locked pytest ../../tests/test_seat_forecasting_worker.py -q
+
+      - name: Lint forecasting code
+        run: >-
+          uv run --locked ruff check
+          src/zellovest_workers/ml
+          src/zellovest_workers/tasks/seat_forecasting.py
+          ../../tests/test_seat_forecasting_worker.py
+          ../../shared/src/zellovest_shared/config.py
+
+      - name: Type check forecasting code
+        env:
+          MYPYPATH: ../../shared/src
+        run: >-
+          uv run --locked mypy --python-version 3.13 --ignore-missing-imports
+          --follow-imports=skip
+          src/zellovest_workers/ml
+          src/zellovest_workers/tasks/seat_forecasting.py
+
+      - name: Verify worker container builds
+        working-directory: backend
+        run: docker build --file services/workers/Dockerfile --tag zellovest-workers:ci .
+
+  publish-worker-image:
+    name: Publish worker image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud with Workload Identity Federation
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_CI_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+
+      - name: Configure Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+
+      - name: Configure Artifact Registry Docker access
+        run: gcloud auth configure-docker "${{ vars.GCP_ARTIFACT_REGISTRY_LOCATION }}-docker.pkg.dev" --quiet
+
+      - name: Build and publish immutable worker image
+        env:
+          IMAGE_URI: ${{ vars.GCP_ARTIFACT_REGISTRY_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GCP_ARTIFACT_REGISTRY_REPOSITORY }}/zellovest-workers:${{ github.sha }}
+        run: |
+          docker build --file backend/services/workers/Dockerfile --tag "$IMAGE_URI" backend
+          docker push "$IMAGE_URI"
+          echo "Published $IMAGE_URI"

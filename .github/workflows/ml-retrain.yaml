@@ -1,0 +1,88 @@
+name: Seat forecasting retraining
+
+on:
+  workflow_dispatch:
+    inputs:
+      tenant_id:
+        description: Zellovest tenant/deployment ID whose features should be refreshed
+        required: true
+        type: string
+      training_image_tag:
+        description: Immutable worker image tag (normally the commit SHA from CI)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: seat-retraining-${{ inputs.tenant_id }}
+  cancel-in-progress: false
+
+jobs:
+  run-feature-pipeline-and-submit-training:
+    name: Refresh BigQuery features and submit Vertex training
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GOOGLE_CLOUD_PROJECT: ${{ vars.GCP_PROJECT_ID }}
+      GCS_RAW_BUCKET: ${{ vars.GCS_RAW_BUCKET }}
+      GCS_ML_BUCKET: ${{ vars.GCS_ML_BUCKET }}
+      BIGQUERY_BRONZE_DATASET: ${{ vars.BIGQUERY_BRONZE_DATASET || 'zellovest_bronze' }}
+      BIGQUERY_SILVER_DATASET: ${{ vars.BIGQUERY_SILVER_DATASET || 'zellovest_silver' }}
+      BIGQUERY_GOLD_DATASET: ${{ vars.BIGQUERY_GOLD_DATASET || 'zellovest_gold' }}
+      BIGQUERY_SEAT_FEATURES_TABLE: ${{ vars.BIGQUERY_SEAT_FEATURES_TABLE || 'gold_seat_features' }}
+      BIGQUERY_LOCATION: ${{ vars.BIGQUERY_LOCATION || 'US' }}
+      VERTEX_AI_REGION: ${{ vars.VERTEX_AI_REGION || 'us-central1' }}
+      VERTEX_TRAINING_MACHINE_TYPE: ${{ vars.VERTEX_TRAINING_MACHINE_TYPE || 'n1-standard-8' }}
+      VERTEX_MODEL_SERVING_IMAGE_URI: ${{ vars.VERTEX_MODEL_SERVING_IMAGE_URI }}
+      TENANT_ID: ${{ inputs.tenant_id }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/services/workers/uv.lock
+
+      - name: Install locked worker dependencies
+        working-directory: backend/services/workers
+        run: uv sync --locked
+
+      - name: Validate tenant and immutable image tag
+        env:
+          TENANT_ID: ${{ inputs.tenant_id }}
+          TRAINING_IMAGE_TAG: ${{ inputs.training_image_tag }}
+        run: |
+          test -n "$TENANT_ID"
+          if [[ ! "$TRAINING_IMAGE_TAG" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "training_image_tag must be the 40-character commit SHA published by CI" >&2
+            exit 1
+          fi
+
+      - name: Authenticate to Google Cloud with Workload Identity Federation
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_ML_ORCHESTRATOR_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+
+      - name: Configure Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+
+      - name: Run ELT and submit Vertex custom training job
+        working-directory: backend/services/workers
+        env:
+          VERTEX_TRAINING_IMAGE_URI: ${{ vars.GCP_ARTIFACT_REGISTRY_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GCP_ARTIFACT_REGISTRY_REPOSITORY }}/zellovest-workers:${{ inputs.training_image_tag }}
+        run: uv run --locked python -m zellovest_workers.ml.pipeline --tenant-id "$TENANT_ID"

@@ -19,9 +19,7 @@ _BACKEND_ENV_FILE = Path(__file__).resolve().parents[3] / ".env"
 class Settings(BaseSettings):
     """Environment-driven configuration for all microservices."""
 
-    model_config = SettingsConfigDict(
-        env_file=(str(_BACKEND_ENV_FILE), ".env"), extra="ignore"
-    )
+    model_config = SettingsConfigDict(env_file=(str(_BACKEND_ENV_FILE), ".env"), extra="ignore")
 
     # Environment
     environment: str = Field(default="local")
@@ -72,13 +70,27 @@ class Settings(BaseSettings):
     # Object storage — GCS raw bucket (bronze lake). GCP-only: all
     # cloud storage is Google Cloud Storage.
     gcs_raw_bucket: str = Field(alias="GCS_RAW_BUCKET")
+    gcs_ml_bucket: str = Field(default="", alias="GCS_ML_BUCKET")
     google_cloud_project: str = Field(default="", alias="GOOGLE_CLOUD_PROJECT")
-    gcs_signed_url_expiry_secs: int = Field(
-        default=900, alias="GCS_SIGNED_URL_EXPIRY_SECS"
+    bigquery_bronze_dataset: str = Field(
+        default="zellovest_bronze", alias="BIGQUERY_BRONZE_DATASET"
     )
-    gcs_max_upload_bytes: int = Field(
-        default=52428800, alias="GCS_MAX_UPLOAD_BYTES"
+    bigquery_silver_dataset: str = Field(
+        default="zellovest_silver", alias="BIGQUERY_SILVER_DATASET"
     )
+    bigquery_gold_dataset: str = Field(default="zellovest_gold", alias="BIGQUERY_GOLD_DATASET")
+    bigquery_seat_features_table: str = Field(
+        default="gold_seat_features", alias="BIGQUERY_SEAT_FEATURES_TABLE"
+    )
+    vertex_ai_region: str = Field(default="us-central1", alias="VERTEX_AI_REGION")
+    vertex_training_image_uri: str = Field(default="", alias="VERTEX_TRAINING_IMAGE_URI")
+    vertex_model_serving_image_uri: str = Field(default="", alias="VERTEX_MODEL_SERVING_IMAGE_URI")
+    seat_model_cache_dir: str = Field(default="/tmp/models", alias="SEAT_MODEL_CACHE_DIR")
+    seat_default_trueup_penalty_rate: float = Field(
+        default=0.25, alias="SEAT_DEFAULT_TRUEUP_PENALTY_RATE"
+    )
+    gcs_signed_url_expiry_secs: int = Field(default=900, alias="GCS_SIGNED_URL_EXPIRY_SECS")
+    gcs_max_upload_bytes: int = Field(default=52428800, alias="GCS_MAX_UPLOAD_BYTES")
     google_application_credentials: str | None = Field(
         default=None, alias="GOOGLE_APPLICATION_CREDENTIALS"
     )
@@ -92,9 +104,7 @@ class Settings(BaseSettings):
     vector_db_url: str = Field(default="", alias="VECTOR_DB_URL")
     vector_db_api_key: str = Field(default="", alias="VECTOR_DB_API_KEY")
     qdrant_url: str = Field(default="http://localhost:6333", alias="QDRANT_URL")
-    qdrant_collection: str = Field(
-        default="zellovest_documents", alias="QDRANT_COLLECTION"
-    )
+    qdrant_collection: str = Field(default="zellovest_documents", alias="QDRANT_COLLECTION")
     qdrant_api_key: str = Field(default="", alias="QDRANT_API_KEY")
     voyage_api_key: str = Field(default="", alias="VOYAGE_API_KEY")
     voyage_model: str = Field(default="voyage-3-large", alias="VOYAGE_MODEL")
@@ -110,8 +120,9 @@ class Settings(BaseSettings):
     # Document AI
     document_ai_project_id: str = Field(default="1080160888424")
     document_ai_location: str = Field(default="asia-south1", alias="DOCUMENT_AI_LOCATION")
-    document_ai_processor_id: str = Field(default="e38952ab29fc489b",
-        alias="DOCUMENT_AI_PROCESSOR_ID")
+    document_ai_processor_id: str = Field(
+        default="e38952ab29fc489b", alias="DOCUMENT_AI_PROCESSOR_ID"
+    )
 
     # Jev AI (TypeSafe AI) document classification via OpenRouter Decisions API.
     jev_api_key: str = Field(default="", alias="OPENROUTER_API_KEY")
@@ -126,9 +137,7 @@ class Settings(BaseSettings):
     groq_api_url: str = Field(
         default="https://api.groq.com/openai/v1/chat/completions", alias="GROQ_API_URL"
     )
-    groq_model: str = Field(
-        default="openai/gpt-oss-120b", alias="GROQ_MODEL"
-    )
+    groq_model: str = Field(default="openai/gpt-oss-120b", alias="GROQ_MODEL")
     groq_timeout_seconds: float = Field(default=60.0, alias="GROQ_TIMEOUT_SECONDS")
 
     # Ingestion tuning
@@ -157,6 +166,14 @@ class Settings(BaseSettings):
             raise ValueError("GCS_MAX_UPLOAD_BYTES must be positive")
         return value
 
+    @field_validator("seat_default_trueup_penalty_rate")
+    @classmethod
+    def _validate_trueup_penalty_rate(cls, value: float) -> float:
+        """Ensure the default true-up surcharge is not negative."""
+        if value < 0:
+            raise ValueError("SEAT_DEFAULT_TRUEUP_PENALTY_RATE must be non-negative")
+        return value
+
     @field_validator("credentials_encryption_key")
     @classmethod
     def _validate_key_length(cls, value: str) -> str:
@@ -170,6 +187,41 @@ class Settings(BaseSettings):
         if len(raw) != 32:
             raise ValueError("CREDENTIALS_ENCRYPTION_KEY must decode to 32 bytes")
         return value
+
+
+class MLRuntimeSettings(BaseSettings):
+    """Minimal configuration for standalone ML jobs and CI orchestration."""
+
+    model_config = SettingsConfigDict(
+        env_file=(str(_BACKEND_ENV_FILE), ".env"), extra="ignore"
+    )
+
+    google_cloud_project: str = Field(default="", alias="GOOGLE_CLOUD_PROJECT")
+    google_application_credentials: str | None = Field(
+        default=None, alias="GOOGLE_APPLICATION_CREDENTIALS"
+    )
+    gcs_raw_bucket: str = Field(default="", alias="GCS_RAW_BUCKET")
+    gcs_ml_bucket: str = Field(default="", alias="GCS_ML_BUCKET")
+    bigquery_bronze_dataset: str = Field(
+        default="zellovest_bronze", alias="BIGQUERY_BRONZE_DATASET"
+    )
+    bigquery_silver_dataset: str = Field(
+        default="zellovest_silver", alias="BIGQUERY_SILVER_DATASET"
+    )
+    bigquery_gold_dataset: str = Field(
+        default="zellovest_gold", alias="BIGQUERY_GOLD_DATASET"
+    )
+    bigquery_seat_features_table: str = Field(
+        default="gold_seat_features", alias="BIGQUERY_SEAT_FEATURES_TABLE"
+    )
+    vertex_ai_region: str = Field(default="us-central1", alias="VERTEX_AI_REGION")
+    vertex_training_image_uri: str = Field(default="", alias="VERTEX_TRAINING_IMAGE_URI")
+    vertex_model_serving_image_uri: str = Field(
+        default="", alias="VERTEX_MODEL_SERVING_IMAGE_URI"
+    )
+    seat_default_trueup_penalty_rate: float = Field(
+        default=0.25, alias="SEAT_DEFAULT_TRUEUP_PENALTY_RATE"
+    )
 
 
 @lru_cache

@@ -43,6 +43,7 @@ def make_celery(broker_url: str = "redis://localhost:6379/0") -> Celery:
             "zellovest.workers.tasks.ap_audit.*": {"queue": QUEUE_ANALYTICS},
             "zellovest.workers.tasks.maverick_spend.*": {"queue": QUEUE_ANALYTICS},
             "zellovest.workers.tasks.zombie_license.*": {"queue": QUEUE_ANALYTICS},
+            "zellovest.workers.tasks.forecasting.*": {"queue": QUEUE_ANALYTICS},
             "zellovest.workers.tasks.renewal_reminders.*": {"queue": QUEUE_ANALYTICS},
             "zellovest.workers.tasks.maintenance.*": {"queue": QUEUE_INGESTION},
         },
