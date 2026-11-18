@@ -85,7 +85,7 @@ export default function MaverickSpendPage() {
         const matchesMerchant = alert.merchantName.toLowerCase().includes(q);
         const matchesEmployee = alert.employeeName.toLowerCase().includes(q);
         const matchesEmail = alert.employeeEmail.toLowerCase().includes(q);
-        const matchesApproved = alert.overlap.approvedAlternative.toLowerCase().includes(q);
+        const matchesApproved = alert.overlap?.approvedAlternative.toLowerCase().includes(q);
         if (!matchesMerchant && !matchesEmployee && !matchesEmail && !matchesApproved) {
           return false;
         }
@@ -97,7 +97,10 @@ export default function MaverickSpendPage() {
       }
 
       // Overlap threshold
-      if (minOverlapThreshold > 0 && alert.overlap.cosineSimilarity < minOverlapThreshold) {
+      if (
+        minOverlapThreshold > 0
+        && (alert.overlap?.cosineSimilarity ?? 0) < minOverlapThreshold
+      ) {
         return false;
       }
 
