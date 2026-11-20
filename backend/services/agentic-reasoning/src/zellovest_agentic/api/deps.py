@@ -48,3 +48,25 @@ async def get_current_user(
     if normalize_tenant_id(user.tenant_id) != normalize_tenant_id(claims.tenant_id):
         raise HTTPException(status_code=401, detail="invalid access token")
     return user
+
+
+async def get_optional_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    session: AsyncSession = Depends(get_db_session),
+) -> User | None:
+    """Validate a user access token if provided, returning None if unauthenticated."""
+    if credentials is None or not credentials.credentials:
+        return None
+    try:
+        claims = decode_token(credentials.credentials)
+        if claims is None or claims.token_type != "access" or not claims.user_id:
+            return None
+        user_id = uuid.UUID(claims.user_id)
+        user = await session.scalar(select(User).where(User.id == user_id, User.is_active.is_(True)))
+        if user is None:
+            return None
+        if normalize_tenant_id(user.tenant_id) != normalize_tenant_id(claims.tenant_id):
+            return None
+        return user
+    except Exception:
+        return None

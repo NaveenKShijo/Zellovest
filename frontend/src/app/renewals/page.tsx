@@ -41,69 +41,70 @@ export default function RenewalsPage() {
   const [isLoading, setIsLoading] = useState<boolean>(() => !initialCached);
   const [selectedRenewal, setSelectedRenewal] = useState<UpcomingRenewal | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [retryKey, setRetryKey] = useState(0);
   const requestIdRef = useRef(0);
 
-  const fetchRenewals = useCallback(
-    async (force: boolean = false) => {
+  // Fetch renewals data through SWR cache
+  const loadData = useCallback(
+    (force: boolean = false) => {
       const requestId = ++requestIdRef.current;
       const cached = peekRenewalsList(cacheScopeId, viewKey);
       if (!cached || force) {
         setIsLoading(true);
       }
 
-      try {
-        const data = await readRenewalsList(
-          cacheScopeId,
-          viewKey,
-          () =>
-            api.negotiation.upcomingRenewals({
-              badge: selectedBadge !== 'all' ? selectedBadge : undefined,
-              auto_renew_only: autoRenewOnly || undefined,
-              search: searchQuery.trim() || undefined,
-            }),
-          {
-            force,
-            onRevalidate: (fresh) => {
-              if (requestId !== requestIdRef.current) return;
-              setRenewals(fresh || []);
-              setIsLoading(false);
-            },
-          }
-        );
-
-        if (requestId === requestIdRef.current) {
-          setRenewals(data || []);
+      readRenewalsList(
+        cacheScopeId,
+        viewKey,
+        () =>
+          api.negotiation.upcomingRenewals({
+            badge: selectedBadge !== 'all' ? selectedBadge : undefined,
+            auto_renew_only: autoRenewOnly || undefined,
+            search: searchQuery.trim() || undefined,
+          }),
+        {
+          force,
+          onRevalidate: (fresh) => {
+            if (requestId !== requestIdRef.current) return;
+            setRenewals(fresh || []);
+            setIsLoading(false);
+          },
         }
-      } catch (err: unknown) {
-        if (requestId === requestIdRef.current) {
+      )
+        .then((data) => {
+          if (requestId !== requestIdRef.current) return;
+          setRenewals(data || []);
+          setIsLoading(false);
+        })
+        .catch((err: unknown) => {
+          if (requestId !== requestIdRef.current) return;
           console.error('Failed to load upcoming renewals from database:', err);
           if (!cached) setRenewals([]);
-        }
-      } finally {
-        if (requestId === requestIdRef.current) {
           setIsLoading(false);
-        }
-      }
+        });
     },
-    [api.negotiation, cacheScopeId, viewKey, selectedBadge, autoRenewOnly, searchQuery]
+    // api.negotiation is recreated each render; the query params below are
+    // the authoritative inputs that should trigger a fresh fetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [cacheScopeId, viewKey, selectedBadge, autoRenewOnly, searchQuery]
   );
 
   useEffect(() => {
-    fetchRenewals(false);
-  }, [fetchRenewals]);
+    loadData(false);
+  }, [loadData, retryKey]);
 
   // Invalidation subscriber: automatically refresh when a reminder or contract changes
   useEffect(() => {
     return subscribeRenewals(() => {
-      fetchRenewals(true);
+      setRetryKey((k) => k + 1);
     });
-  }, [fetchRenewals]);
+  }, []);
 
   // Window focus / visibility revalidation (SWR)
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        fetchRenewals(false);
+        loadData(false);
       }
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -112,7 +113,7 @@ export default function RenewalsPage() {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('focus', handleVisibilityChange);
     };
-  }, [fetchRenewals]);
+  }, [loadData]);
 
   const filteredRenewals = useMemo(() => {
     return renewals.filter((r) => {
@@ -170,7 +171,7 @@ export default function RenewalsPage() {
         <button
           onClick={() => {
             invalidateRenewals(cacheScopeId);
-            fetchRenewals(true);
+            loadData(true);
           }}
           disabled={isLoading}
           style={{

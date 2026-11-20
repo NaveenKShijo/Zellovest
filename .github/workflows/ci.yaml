@@ -83,11 +83,21 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
+      - name: Validate Workload Identity Federation settings
+        env:
+          GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER || secrets.GCP_WIF_PROVIDER }}
+          GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT || secrets.GCP_SERVICE_ACCOUNT }}
+        run: |
+          if [[ -z "$GCP_WIF_PROVIDER" || -z "$GCP_SERVICE_ACCOUNT" ]]; then
+            echo "Set GCP_WIF_PROVIDER and GCP_SERVICE_ACCOUNT in repository variables or secrets." >&2
+            exit 1
+          fi
+
       - name: Authenticate to Google Cloud with Workload Identity Federation
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER || secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT || secrets.GCP_SERVICE_ACCOUNT }}
           create_credentials_file: true
 
       - name: Configure Google Cloud CLI

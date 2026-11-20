@@ -17,7 +17,7 @@ Set `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CLOUD_PROJECT`, `GCS_ML_BUCKET`, `
 
 `.github/workflows/ci.yaml` runs the focused forecasting checks on pull requests, verifies the worker container builds, and publishes a commit-SHA image to Artifact Registry after a successful push to `main`. `.github/workflows/ml-train.yaml` is manually dispatched when training data is ready; it refreshes BigQuery features and submits training to Vertex AI. No performance-triggered retraining is configured.
 
-Configure these GitHub repository **variables** before enabling the workflows:
+Configure these GitHub repository **variables** (or secrets) before enabling the workflows. `GCP_WIF_PROVIDER` is an identifier, so a repository variable is the usual choice.
 
 - Both workflows: `GCP_PROJECT_ID`, `GCP_WIF_PROVIDER`, `GCP_ARTIFACT_REGISTRY_LOCATION`, `GCP_ARTIFACT_REGISTRY_REPOSITORY`, and `GCP_SERVICE_ACCOUNT`.
 - Training workflow: `GCS_RAW_BUCKET`, `GCS_ML_BUCKET`; optional `BIGQUERY_BRONZE_DATASET`, `BIGQUERY_SILVER_DATASET`, `BIGQUERY_GOLD_DATASET`, `BIGQUERY_LOCATION`, `VERTEX_AI_REGION`, and `VERTEX_TRAINING_MACHINE_TYPE`.

@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from zellovest_agentic.api.deps import get_current_user, get_db_session, normalize_tenant_id
+from zellovest_agentic.api.deps import get_current_user, get_optional_user, get_db_session, normalize_tenant_id
 from zellovest_agentic.schemas.negotiation import (
     ClauseCitation,
     NegotiationBriefRequest,
@@ -79,7 +79,7 @@ def _calculate_urgency_badge(days_until_notice: int, days_until_renewal: int) ->
 @router.post("/seed-contracts")
 async def seed_contracts(
     tenant_id: str | None = Query(default=None),
-    current_user: User | None = Depends(get_current_user),
+    current_user: User | None = Depends(get_optional_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     """Seed or refresh real commercial enterprise contracts in PostgreSQL."""
@@ -101,7 +101,7 @@ async def list_upcoming_renewals(
     badge: str = Query(default="all"),
     auto_renew_only: bool = Query(default=False),
     search: str | None = Query(default=None),
-    current_user: User | None = Depends(get_current_user),
+    current_user: User | None = Depends(get_optional_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> list[UpcomingRenewalResponse]:
     """List upcoming contract renewals with notice deadlines and urgency rankings."""
@@ -280,7 +280,7 @@ async def list_upcoming_renewals(
 @router.post("/brief", response_model=NegotiationBriefResponse)
 async def prepare_negotiation_brief(
     body: NegotiationBriefRequest,
-    current_user: User | None = Depends(get_current_user),
+    current_user: User | None = Depends(get_optional_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> NegotiationBriefResponse:
     """Prepare an evidence-grounded negotiation brief for an upcoming renewal."""
@@ -477,7 +477,7 @@ async def prepare_negotiation_brief(
 @router.post("/renewal-prep", response_model=RenewalPreparationResponse)
 async def prepare_renewal(
     body: RenewalPreparationRequest,
-    current_user: User | None = Depends(get_current_user),
+    current_user: User | None = Depends(get_optional_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> RenewalPreparationResponse:
     """Prepare high-level commercial indicators for an upcoming contract renewal."""
@@ -547,7 +547,7 @@ async def prepare_renewal(
 @router.post("/remind", response_model=RenewalReminderResponse)
 async def schedule_renewal_reminder(
     body: RenewalReminderRequest,
-    current_user: User | None = Depends(get_current_user),
+    current_user: User | None = Depends(get_optional_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> RenewalReminderResponse:
     """Schedule a renewal notice deadline reminder workflow."""
@@ -646,7 +646,7 @@ async def schedule_renewal_reminder(
 @router.get("/reminders", response_model=list[RenewalReminderItem])
 async def list_renewal_reminders(
     tenant_id: str | None = Query(default=None),
-    current_user: User | None = Depends(get_current_user),
+    current_user: User | None = Depends(get_optional_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> list[RenewalReminderItem]:
     """List all scheduled renewal notice deadline reminders."""

@@ -29,7 +29,7 @@ jobs:
       VERTEX_AI_REGION: ${{ vars.VERTEX_AI_REGION || 'us-central1' }}
       BIGQUERY_LOCATION: ${{ vars.BIGQUERY_LOCATION || 'US' }}
       VERTEX_TRAINING_IMAGE_URI: ${{ vars.GCP_ARTIFACT_REGISTRY_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GCP_ARTIFACT_REGISTRY_REPOSITORY }}/zellovest-workers:${{ inputs.training_image_tag }}
-      GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT || secrets.GCP_SERVICE_ACCOUNT }}
     steps:
       - uses: actions/checkout@v4
 
@@ -51,11 +51,21 @@ jobs:
             exit 1
           fi
 
+      - name: Validate Workload Identity Federation settings
+        env:
+          GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER || secrets.GCP_WIF_PROVIDER }}
+          GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT || secrets.GCP_SERVICE_ACCOUNT }}
+        run: |
+          if [[ -z "$GCP_WIF_PROVIDER" || -z "$GCP_SERVICE_ACCOUNT" ]]; then
+            echo "Set GCP_WIF_PROVIDER and GCP_SERVICE_ACCOUNT in repository variables or secrets." >&2
+            exit 1
+          fi
+
       - name: Authenticate with Workload Identity Federation
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER || secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT || secrets.GCP_SERVICE_ACCOUNT }}
           create_credentials_file: true
 
       - uses: google-github-actions/setup-gcloud@v2

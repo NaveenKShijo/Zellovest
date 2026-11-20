@@ -5,9 +5,9 @@ from __future__ import annotations
 import hashlib
 import re
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
-
 import httpx
 
 from zellovest_shared.logging_conf import get_logger
@@ -288,15 +288,34 @@ def _sparse_query(query: str) -> dict[str, list[Any]]:
 
 def search_documents(
     *, tenant_id: str, query: str, vendor_id: str | None = None,
-    document_type: str | None = None, limit: int = 10,
+    document_type: str | None = None, document_id: str | None = None,
+    document_types: Sequence[str] | None = None, limit: int = 10,
 ) -> list[dict[str, Any]]:
-    """Search Qdrant with dense and sparse retrieval, then fuse ranks with RRF."""
+    """Search Qdrant with dense and sparse retrieval, then fuse ranks with RRF.
+
+    Args:
+        tenant_id: Owning tenant; always applied as a hard Qdrant filter.
+        query: Natural-language search query.
+        vendor_id: Optional vendor filter.
+        document_type: Optional single document-type filter.
+        document_id: Optional structured document id filter.
+        document_types: Optional set of document types (for contract +
+            amendment searches). Ignored when ``document_type`` is set.
+        limit: Maximum number of child passages to return.
+
+    Returns:
+        Payload dictionaries enriched with the fused relevance score.
+    """
     collection = _rag_settings().qdrant_collection
     must: list[dict[str, Any]] = [{"key": "tenant_id", "match": {"value": tenant_id}}]
     if vendor_id:
         must.append({"key": "vendor_id", "match": {"value": vendor_id}})
+    if document_id:
+        must.append({"key": "document_id", "match": {"value": document_id}})
     if document_type:
         must.append({"key": "document_type", "match": {"value": document_type}})
+    elif document_types:
+        must.append({"key": "document_type", "match": {"any": list(document_types)}})
     query_filter = {"must": must}
     dense = _voyage_embeddings([query], input_type="query")[0]
     sparse = _sparse_query(query)
