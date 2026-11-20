@@ -43,6 +43,7 @@ class NegotiationBriefResponse(BaseModel):
     risk_factors: list[str]
     contractual_clauses: list[ClauseCitation] = Field(default_factory=list)
     generated_at: datetime
+    cacheable: bool = True
 
 
 class RenewalPreparationRequest(BaseModel):

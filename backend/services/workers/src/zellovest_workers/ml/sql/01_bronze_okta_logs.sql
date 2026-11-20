@@ -10,8 +10,8 @@ CREATE OR REPLACE EXTERNAL TABLE
 WITH PARTITION COLUMNS (sync STRING)
 OPTIONS (
   format = 'NEWLINE_DELIMITED_JSON',
-  uris = ['gs://{{GCS_RAW_BUCKET}}/raw/okta_logs/*.jsonl.gz'],
-  hive_partition_uri_prefix = 'gs://{{GCS_RAW_BUCKET}}/raw/okta_logs',
+  uris = ['gs://{{GCS_RAW_BUCKET}}/{{RAW_PREFIX}}/okta_logs/*.jsonl.gz'],
+  hive_partition_uri_prefix = 'gs://{{GCS_RAW_BUCKET}}/{{RAW_PREFIX}}/okta_logs',
   ignore_unknown_values = TRUE
 );
 
@@ -23,8 +23,8 @@ CREATE OR REPLACE EXTERNAL TABLE
 WITH PARTITION COLUMNS (sync STRING)
 OPTIONS (
   format = 'NEWLINE_DELIMITED_JSON',
-  uris = ['gs://{{GCS_RAW_BUCKET}}/raw/license_assignments/*.jsonl.gz'],
-  hive_partition_uri_prefix = 'gs://{{GCS_RAW_BUCKET}}/raw/license_assignments',
+  uris = ['gs://{{GCS_RAW_BUCKET}}/{{RAW_PREFIX}}/license_assignments/*.jsonl.gz'],
+  hive_partition_uri_prefix = 'gs://{{GCS_RAW_BUCKET}}/{{RAW_PREFIX}}/license_assignments',
   ignore_unknown_values = TRUE
 );
 
@@ -33,8 +33,8 @@ CREATE OR REPLACE EXTERNAL TABLE
 WITH PARTITION COLUMNS (sync STRING)
 OPTIONS (
   format = 'NEWLINE_DELIMITED_JSON',
-  uris = ['gs://{{GCS_RAW_BUCKET}}/raw/hris_employees/*.jsonl.gz'],
-  hive_partition_uri_prefix = 'gs://{{GCS_RAW_BUCKET}}/raw/hris_employees',
+  uris = ['gs://{{GCS_RAW_BUCKET}}/{{RAW_PREFIX}}/hris_employees/*.jsonl.gz'],
+  hive_partition_uri_prefix = 'gs://{{GCS_RAW_BUCKET}}/{{RAW_PREFIX}}/hris_employees',
   ignore_unknown_values = TRUE
 );
 
@@ -43,7 +43,7 @@ CREATE OR REPLACE EXTERNAL TABLE
 WITH PARTITION COLUMNS (sync STRING)
 OPTIONS (
   format = 'NEWLINE_DELIMITED_JSON',
-  uris = ['gs://{{GCS_RAW_BUCKET}}/raw/license_contracts/*.jsonl.gz'],
-  hive_partition_uri_prefix = 'gs://{{GCS_RAW_BUCKET}}/raw/license_contracts',
+  uris = ['gs://{{GCS_RAW_BUCKET}}/{{RAW_PREFIX}}/license_contracts/*.jsonl.gz'],
+  hive_partition_uri_prefix = 'gs://{{GCS_RAW_BUCKET}}/{{RAW_PREFIX}}/license_contracts',
   ignore_unknown_values = TRUE
 );

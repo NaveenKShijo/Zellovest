@@ -7,7 +7,6 @@ import { RenewalKPIsBar } from '@/components/renewals/RenewalKPIsBar';
 import { RenewalTimelineFilter } from '@/components/renewals/RenewalTimelineFilter';
 import { RenewalTimelineCard } from '@/components/renewals/RenewalTimelineCard';
 import { RenewalLeverageModal } from '@/components/renewals/RenewalLeverageModal';
-import { useToast } from '@/contexts/ToastContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { useApi } from '@/lib/api';
 import {
@@ -19,7 +18,6 @@ import {
 
 export default function RenewalsPage() {
   const router = useRouter();
-  const { notify } = useToast();
   const { user } = useAuth();
   const api = useApi();
   const cacheScopeId = useMemo(() => user?.id ?? 'anonymous', [user]);
@@ -39,6 +37,7 @@ export default function RenewalsPage() {
   const initialCached = peekRenewalsList(cacheScopeId, viewKey);
   const [renewals, setRenewals] = useState<UpcomingRenewal[]>(() => initialCached ?? []);
   const [isLoading, setIsLoading] = useState<boolean>(() => !initialCached);
+  const [loadError, setLoadError] = useState('');
   const [selectedRenewal, setSelectedRenewal] = useState<UpcomingRenewal | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [retryKey, setRetryKey] = useState(0);
@@ -48,6 +47,7 @@ export default function RenewalsPage() {
   const loadData = useCallback(
     (force: boolean = false) => {
       const requestId = ++requestIdRef.current;
+      setLoadError('');
       const cached = peekRenewalsList(cacheScopeId, viewKey);
       if (!cached || force) {
         setIsLoading(true);
@@ -79,6 +79,7 @@ export default function RenewalsPage() {
         .catch((err: unknown) => {
           if (requestId !== requestIdRef.current) return;
           console.error('Failed to load upcoming renewals from database:', err);
+          setLoadError(err instanceof Error ? err.message : 'Unable to load renewals.');
           if (!cached) setRenewals([]);
           setIsLoading(false);
         });
@@ -90,6 +91,8 @@ export default function RenewalsPage() {
   );
 
   useEffect(() => {
+    // The cache-backed loader synchronizes this view with the current filters.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadData(false);
   }, [loadData, retryKey]);
 
@@ -122,7 +125,8 @@ export default function RenewalsPage() {
         const matchesVendor = r.vendorName?.toLowerCase().includes(q);
         const matchesProduct = r.productName?.toLowerCase().includes(q);
         const matchesOwner = r.assignedOwner?.toLowerCase().includes(q);
-        if (!matchesVendor && !matchesProduct && !matchesOwner) {
+        const matchesContract = r.contractNumber?.toLowerCase().includes(q);
+        if (!matchesVendor && !matchesProduct && !matchesOwner && !matchesContract) {
           return false;
         }
       }
@@ -145,15 +149,10 @@ export default function RenewalsPage() {
   };
 
   const handleLaunchRenewalAgent = (renewal: UpcomingRenewal) => {
-    notify.success(
-      'Renewal Negotiation Agent Dispatched',
-      `Autonomous agent researching market benchmarks and compiling commercial leverage dossier for ${renewal.vendorName}.`
-    );
-
     const prompt = encodeURIComponent(
-      `Prepare commercial negotiation strategy and market benchmark leverage dossier for upcoming ${renewal.vendorName} renewal on ${renewal.renewalDate}. Contract: ${renewal.contractNumber}, Spend: $${renewal.annualSpend} (+${renewal.spendYoYPct}% YoY). Auto-renew: ${renewal.autoRenew ? 'Yes (Notice required ' + renewal.noticePeriodDays + 'd prior)' : 'No'}. Key points: ${renewal.keyLeveragePoints.join('; ')}`
+      `Help me prepare for the ${renewal.vendorName} renewal for contract ${renewal.contractNumber}. Review the notice deadline, utilization, invoice discrepancies and contractual price escalation terms, and cite supporting evidence.`
     );
-    router.push(`/assistant?prompt=${prompt}`);
+    router.push(`/assistant?prompt=${prompt}&vendorId=${encodeURIComponent(renewal.vendorId)}`);
   };
 
   return (
@@ -194,6 +193,7 @@ export default function RenewalsPage() {
       </div>
 
       {/* 1. Overview KPIs */}
+      {loadError && <div role="alert" style={{ padding: '14px', background: 'var(--color-danger-subtle)', color: 'var(--color-danger)', borderRadius: 'var(--radius-sm)' }}>Could not refresh renewals: {loadError} <button onClick={() => loadData(true)} style={{ textDecoration: 'underline', color: 'inherit', marginLeft: 8 }}>Try again</button></div>}
       <RenewalKPIsBar renewals={renewals} />
 
       {/* 2. Timeline Filter */}
@@ -255,12 +255,13 @@ export default function RenewalsPage() {
       </div>
 
       {/* 4. Negotiation Leverage Modal */}
-      <RenewalLeverageModal
+      {isModalOpen && selectedRenewal && <RenewalLeverageModal
+        key={selectedRenewal.contractId}
         renewal={selectedRenewal}
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
         onLaunchRenewalAgent={handleLaunchRenewalAgent}
-      />
+      />}
     </div>
   );
 }

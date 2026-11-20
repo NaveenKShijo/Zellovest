@@ -85,6 +85,7 @@ class TrainingConfig:
     region: str
     ml_bucket: str
     feature_table: str
+    tenant_id: str = ""
     brier_score_limit: float = 0.05
     experiment_name: str = "seat-retention-training"
     random_state: int = 47
@@ -122,9 +123,13 @@ def load_training_frame(config: TrainingConfig) -> pd.DataFrame:
         SELECT {columns}
         FROM `{config.feature_table}`
         WHERE {TARGET_COLUMN} IS NOT NULL
+          AND (@tenant_id = '' OR tenant_id = @tenant_id)
     """
     logger.info("seat_training_bigquery_read_started", table=config.feature_table)
-    frame = client.query(query).to_dataframe(
+    job_config = bigquery.QueryJobConfig(query_parameters=[
+        bigquery.ScalarQueryParameter("tenant_id", "STRING", config.tenant_id)
+    ])
+    frame = client.query(query, job_config=job_config).to_dataframe(
         create_bqstorage_client=True,
         progress_bar_type=None,
     )
@@ -409,7 +414,12 @@ def _log_vertex_experiment(
         run.log_params(
             {
                 key: json.dumps(value) if isinstance(value, (list, dict)) else value
-                for key, value in hyperparameters.items()
+                for key, value in {
+                    **hyperparameters,
+                    "feature_table": config.feature_table,
+                    "tenant_id": config.tenant_id,
+                    "artifact_uri": artifact_uri,
+                }.items()
             }
         )
         run.log_metrics(
@@ -507,6 +517,7 @@ def _parse_args() -> argparse.Namespace:
         "--feature-table",
         help="Optional fully-qualified BigQuery Gold feature table override.",
     )
+    parser.add_argument("--tenant-id", default="", help="Tenant whose labeled rows are used.")
     return parser.parse_args()
 
 
@@ -516,6 +527,7 @@ def main() -> None:
     config = TrainingConfig.from_environment()
     if args.feature_table:
         config = TrainingConfig(**{**asdict(config), "feature_table": args.feature_table})
+    config = TrainingConfig(**{**asdict(config), "tenant_id": args.tenant_id})
     train_and_publish(config)
 
 

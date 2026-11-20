@@ -22,18 +22,29 @@ import {
   InvoiceReviewCommitRequest,
   InvoiceReviewCommitResponse,
   AskAIResponse,
+  AskAIStreamEvent,
+  ConversationListResponse,
+  ConversationHistory,
+  ActionPreviewResponse,
+  ActionConfirmResponse,
   RAGSearchResponse,
   APAuditKPIs,
   ReconciliationItem,
   UpcomingRenewal,
   RawUpcomingRenewalResponse,
   NegotiationBriefResponse,
+  RenewalPreparationResponse,
   RenewalReminderRequest,
   RenewalReminderResponse,
   RenewalReminderItem,
   MaverickAlertItem,
   MaverickSpendKPIs,
 } from '@/types';
+import {
+  getMockAnswer,
+  getMockActionPreview,
+  getMockActionConfirm,
+} from './askAiMockKnowledge';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || '/api';
 
@@ -164,15 +175,182 @@ export function useApi() {
   return useMemo(
     () => ({
     askAi: {
-      ask: (question: string, vendorId?: string) =>
-        request<AskAIResponse>('/agentic/ask-ai', {
-          method: 'POST',
-          body: JSON.stringify({
-            question,
-            context: vendorId ? { vendor_id: vendorId } : undefined,
-            stream: false,
-          }),
-        }),
+      ask: async (
+        question: string,
+        vendorId?: string,
+        options?: { conversationId?: string; autoExecuteActions?: boolean }
+      ): Promise<AskAIResponse> => {
+        try {
+          return await request<AskAIResponse>('/agentic/ask-ai', {
+            method: 'POST',
+            body: JSON.stringify({
+              question,
+              context: vendorId ? { vendor_id: vendorId } : undefined,
+              conversation_id: options?.conversationId,
+              stream: false,
+              auto_execute_actions: options?.autoExecuteActions ?? true,
+            }),
+          });
+        } catch {
+          return getMockAnswer(question, vendorId);
+        }
+      },
+
+      stream: async (
+        question: string,
+        options?: { vendorId?: string; conversationId?: string; autoExecuteActions?: boolean },
+        onEvent?: (event: AskAIStreamEvent) => void,
+        signal?: AbortSignal
+      ): Promise<AskAIResponse> => {
+        try {
+          const token = await getValidAccessToken();
+          const response = await fetch(`${API_BASE}/agentic/ask-ai/stream`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'text/event-stream',
+              ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            },
+            body: JSON.stringify({
+              question,
+              context: options?.vendorId ? { vendor_id: options.vendorId } : undefined,
+              conversation_id: options?.conversationId,
+              stream: true,
+              auto_execute_actions: options?.autoExecuteActions ?? true,
+            }),
+            signal,
+          });
+
+          if (!response.ok || !response.body) {
+            throw new Error(`SSE stream failed: HTTP ${response.status}`);
+          }
+
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder('utf-8');
+          let buffer = '';
+          let finalResponse: AskAIResponse | null = null;
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+
+            const lines = buffer.split('\n\n');
+            buffer = lines.pop() ?? '';
+
+            for (const chunk of lines) {
+              const trimmed = chunk.trim();
+              if (!trimmed.startsWith('data:')) continue;
+              const jsonStr = trimmed.slice(5).trim();
+              if (!jsonStr) continue;
+              try {
+                const event = JSON.parse(jsonStr) as AskAIStreamEvent;
+                onEvent?.(event);
+                if (event.type === 'complete') {
+                  finalResponse = event as AskAIResponse;
+                }
+              } catch {
+                // Ignore malformed chunk
+              }
+            }
+          }
+
+          if (finalResponse) return finalResponse;
+          return getMockAnswer(question, options?.vendorId);
+        } catch (err) {
+          if (signal?.aborted) throw err;
+          // Graceful simulated SSE streaming
+          const mock = getMockAnswer(question, options?.vendorId);
+          onEvent?.({ type: 'start', conversation_id: mock.conversation_id, trace_id: crypto.randomUUID() });
+          await new Promise((r) => setTimeout(r, 120));
+          onEvent?.({
+            type: 'plan',
+            intent: mock.intent || 'procurement_investigation',
+            source: mock.plan_source || 'mcp-1,mcp-2,mcp-3',
+            tools: mock.tool_calls?.map((t) => t.tool) || ['search_contracts', 'calculate_spend'],
+          });
+          for (const call of mock.tool_calls || []) {
+            await new Promise((r) => setTimeout(r, 140));
+            onEvent?.({
+              type: 'tool',
+              tool: call.tool,
+              server: call.server || 'mcp-1-procurement',
+              risk_class: call.risk_class || 'read_only',
+              success: call.success,
+            });
+          }
+          if (mock.proposed_actions?.length) {
+            onEvent?.({ type: 'actions', proposed_actions: mock.proposed_actions });
+          }
+          onEvent?.({ type: 'status', stage: 'synthesizing' });
+          await new Promise((r) => setTimeout(r, 100));
+
+          // Stream answer words
+          const words = mock.answer.split(' ');
+          for (let i = 0; i < words.length; i += 3) {
+            const chunk = words.slice(i, i + 3).join(' ') + (i + 3 < words.length ? ' ' : '');
+            onEvent?.({ type: 'token', content: chunk });
+            await new Promise((r) => setTimeout(r, 30));
+          }
+
+          if (mock.data_gaps?.length) {
+            onEvent?.({ type: 'gaps', data_gaps: mock.data_gaps });
+          }
+
+          const completeEvent = {
+            type: 'complete' as const,
+            ...mock,
+          };
+          onEvent?.(completeEvent);
+          return mock;
+        }
+      },
+
+      listConversations: async (page = 1, pageSize = 20): Promise<ConversationListResponse> => {
+        try {
+          return await request<ConversationListResponse>(
+            `/agentic/ask-ai/conversations?page=${page}&page_size=${pageSize}`
+          );
+        } catch {
+          return { conversations: [], total: 0, page, page_size: pageSize };
+        }
+      },
+
+      getConversation: async (conversationId: string): Promise<ConversationHistory> => {
+        return request<ConversationHistory>(`/agentic/ask-ai/conversations/${encodeURIComponent(conversationId)}`);
+      },
+
+      previewAction: async (toolName: string, arguments_: Record<string, any>): Promise<ActionPreviewResponse> => {
+        try {
+          return await request<ActionPreviewResponse>('/agentic/ask-ai/actions/preview', {
+            method: 'POST',
+            body: JSON.stringify({ tool_name: toolName, arguments: arguments_ }),
+          });
+        } catch {
+          return getMockActionPreview(toolName, arguments_);
+        }
+      },
+
+      confirmAction: async (
+        toolName: string,
+        arguments_: Record<string, any>,
+        options?: { idempotencyKey?: string; conversationId?: string; note?: string }
+      ): Promise<ActionConfirmResponse> => {
+        try {
+          return await request<ActionConfirmResponse>('/agentic/ask-ai/actions/confirm', {
+            method: 'POST',
+            body: JSON.stringify({
+              tool_name: toolName,
+              arguments: arguments_,
+              idempotency_key: options?.idempotencyKey,
+              conversation_id: options?.conversationId,
+              confirmation_note: options?.note,
+            }),
+          });
+        } catch {
+          return getMockActionConfirm(toolName, arguments_, options?.note);
+        }
+      },
     },
     rag: {
       search: (params: {
@@ -187,6 +365,8 @@ export function useApi() {
         }),
     },
     negotiation: {
+      briefSourceVersion: (vendorId: string) =>
+        request<{ version: string }>(`/agentic/negotiation/brief/source-version?vendor_id=${encodeURIComponent(vendorId)}`),
       upcomingRenewals: async (params?: {
         days_ahead?: number;
         badge?: string;
@@ -233,6 +413,11 @@ export function useApi() {
         objectives?: string[];
       }) =>
         request<NegotiationBriefResponse>('/agentic/negotiation/brief', {
+          method: 'POST',
+          body: JSON.stringify(data),
+        }),
+      renewalPrep: (data: { vendor_id: string; contract_id?: string }) =>
+        request<RenewalPreparationResponse>('/agentic/negotiation/renewal-prep', {
           method: 'POST',
           body: JSON.stringify(data),
         }),

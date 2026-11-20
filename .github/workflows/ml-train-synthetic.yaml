@@ -1,0 +1,90 @@
+name: Train seat model with synthetic telemetry
+
+on:
+  workflow_dispatch:
+    inputs:
+      tenant_id:
+        description: Synthetic tenant ID (for example tenant_001)
+        required: true
+        default: tenant_001
+        type: string
+      training_image_tag:
+        description: Commit SHA of the worker image published by CI for this workflow revision
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: synthetic-seat-training
+  cancel-in-progress: false
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GOOGLE_CLOUD_PROJECT: ${{ vars.GCP_PROJECT_ID }}
+      GCS_RAW_BUCKET: ${{ vars.SYNTHETIC_GCS_RAW_BUCKET }}
+      GCS_ML_BUCKET: ${{ vars.SYNTHETIC_GCS_ML_BUCKET }}
+      PRODUCTION_ML_BUCKET: ${{ vars.GCS_ML_BUCKET }}
+      TENANT_ID: ${{ inputs.tenant_id }}
+      SEAT_RAW_PREFIX: synthetic/${{ github.run_id }}-${{ github.run_attempt }}/raw
+      SEAT_FEATURE_SNAPSHOT_ID: ${{ github.run_id }}_${{ github.run_attempt }}
+      BIGQUERY_BRONZE_DATASET: zellovest_synthetic_bronze
+      BIGQUERY_SILVER_DATASET: zellovest_synthetic_silver
+      BIGQUERY_GOLD_DATASET: zellovest_synthetic_gold
+      BIGQUERY_LOCATION: ${{ vars.BIGQUERY_LOCATION || 'US' }}
+      VERTEX_AI_REGION: ${{ vars.VERTEX_AI_REGION || 'us-central1' }}
+      VERTEX_TRAINING_IMAGE_URI: ${{ vars.GCP_ARTIFACT_REGISTRY_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GCP_ARTIFACT_REGISTRY_REPOSITORY }}/zellovest-workers:${{ inputs.training_image_tag }}
+      GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT || secrets.GCP_SERVICE_ACCOUNT }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate isolation and image revision
+        env:
+          IMAGE_TAG: ${{ inputs.training_image_tag }}
+        run: |
+          if [[ -z "$GCS_RAW_BUCKET" || -z "$GCS_ML_BUCKET" || -z "$PRODUCTION_ML_BUCKET" ]]; then
+            echo 'Set SYNTHETIC_GCS_RAW_BUCKET, SYNTHETIC_GCS_ML_BUCKET and GCS_ML_BUCKET repository variables.' >&2
+            exit 1
+          fi
+          synthetic_bucket="${GCS_ML_BUCKET#gs://}"
+          production_bucket="${PRODUCTION_ML_BUCKET#gs://}"
+          if [[ "${synthetic_bucket%/}" == "${production_bucket%/}" ]]; then
+            echo 'The synthetic model bucket must differ from the production model bucket.' >&2
+            exit 1
+          fi
+          if [[ "$IMAGE_TAG" != "$GITHUB_SHA" ]]; then
+            echo 'Use the published CI worker image tagged with this workflow revision commit SHA.' >&2
+            exit 1
+          fi
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/services/workers/uv.lock
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER || secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT || secrets.GCP_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+      - name: Install worker dependencies
+        working-directory: backend/services/workers
+        run: uv sync --locked
+      - name: Upload synthetic feeds
+        working-directory: backend/services/workers
+        run: >-
+          uv run --locked python -m zellovest_workers.ml.synthetic_ingest
+          --directory ../../../data/telemetry --tenant-id "$TENANT_ID"
+          --bucket "$GCS_RAW_BUCKET" --prefix "$SEAT_RAW_PREFIX"
+      - name: Refresh features and submit Vertex training job
+        working-directory: backend/services/workers
+        run: uv run --locked python -m zellovest_workers.ml.vertex_training --tenant-id "$TENANT_ID"

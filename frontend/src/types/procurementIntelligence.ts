@@ -169,6 +169,27 @@ export interface NegotiationBriefResponse {
   executive_summary?: string;
   clause_citations?: ClauseCitation[];
   generated_at: string;
+  cacheable?: boolean;
+}
+
+/**
+ * Commercial indicators assembled by the Renewal Agent before a negotiation.
+ * The API intentionally keeps this distinct from the narrative brief so the UI
+ * can display the structured indicators alongside the narrative brief.
+ */
+export interface RenewalPreparationResponse {
+  vendor_id: string;
+  vendor_name: string;
+  current_annual_spend: number;
+  renewal_date: string;
+  notice_period_days: number;
+  auto_renewal: boolean;
+  utilization_rate: number;
+  unused_licenses: number;
+  potential_savings: number;
+  contract_constraints: string[];
+  negotiation_levers: string[];
+  generated_at: string;
 }
 
 export interface RenewalReminderRequest {

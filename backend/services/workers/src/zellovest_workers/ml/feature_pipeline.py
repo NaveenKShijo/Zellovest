@@ -19,6 +19,7 @@ SQL_FILES = (
     "02_silver_user_activity.sql",
     "03_gold_seat_features.sql",
 )
+RAW_FEEDS = ("okta_logs", "license_assignments", "hris_employees", "license_contracts")
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +34,7 @@ class FeaturePipelineConfig:
     gold_dataset: str
     bq_location: str
     default_trueup_penalty_rate: float
+    raw_prefix: str = "raw"
 
     @classmethod
     def from_environment(cls, *, tenant_id: str | None = None) -> FeaturePipelineConfig:
@@ -56,6 +58,7 @@ class FeaturePipelineConfig:
             gold_dataset=settings.bigquery_gold_dataset,
             bq_location=os.getenv("BIGQUERY_LOCATION", "US"),
             default_trueup_penalty_rate=settings.seat_default_trueup_penalty_rate,
+            raw_prefix=os.getenv("SEAT_RAW_PREFIX", "raw").strip("/"),
         )
 
     def template_values(self) -> dict[str, str]:
@@ -64,6 +67,7 @@ class FeaturePipelineConfig:
             "PROJECT_ID": self.project_id,
             "TENANT_ID": self.tenant_id,
             "GCS_RAW_BUCKET": self.gcs_raw_bucket,
+            "RAW_PREFIX": self.raw_prefix,
             "BRONZE_DATASET": self.bronze_dataset,
             "SILVER_DATASET": self.silver_dataset,
             "GOLD_DATASET": self.gold_dataset,
@@ -85,10 +89,32 @@ def render_sql(template: str, values: Mapping[str, str]) -> str:
     return rendered
 
 
+def validate_raw_feeds(config: FeaturePipelineConfig) -> None:
+    """Require at least one Hive-partitioned JSONL object per required feed."""
+    from google.cloud import storage
+
+    client = storage.Client(project=config.project_id)
+    missing = []
+    for feed in RAW_FEEDS:
+        prefix = f"{config.raw_prefix}/{feed}/sync="
+        blobs = client.list_blobs(config.gcs_raw_bucket, prefix=prefix)
+        if not any(
+            blob.name[len(prefix):].partition("/")[0]
+            and "/" in blob.name[len(prefix):]
+            and blob.name.endswith(".jsonl.gz")
+            for blob in blobs
+        ):
+            missing.append(f"gs://{config.gcs_raw_bucket}/{prefix}<id>/<file>.jsonl.gz")
+    if missing:
+        logger.error("seat_feature_raw_feeds_missing", paths=missing, tenant_id=config.tenant_id)
+        raise ValueError("Missing required raw feeds: " + ", ".join(missing))
+
+
 def run_feature_pipeline(config: FeaturePipelineConfig) -> list[str]:
     """Execute ordered BigQuery Bronze-to-Gold transformations."""
     from google.cloud import bigquery
 
+    validate_raw_feeds(config)
     client = bigquery.Client(project=config.project_id, location=config.bq_location)
     completed: list[str] = []
     for filename in SQL_FILES:

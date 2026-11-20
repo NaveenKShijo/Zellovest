@@ -221,20 +221,8 @@ export interface VendorListResponse {
   totalPages: number;
 }
 
-export interface AskAICitation {
-  source_type: string;
-  source_id: string;
-  description: string;
-  excerpt?: string | null;
-}
-
-export interface AskAIResponse {
-  answer: string;
-  conversation_id: string;
-  citations: AskAICitation[];
-  confidence: number;
-  processing_time_ms: number;
-}
+// Ask AI & Evidence-First Conversational Workspace (PRD #23, #24, #25)
+export * from './askAi';
 
 export interface RAGSearchChunk {
   chunk_id: string;
@@ -668,8 +656,6 @@ export interface UploadFile {
   progress: number;
   error?: string;
   documentId?: string;
-  // Backend lease id from POST /uploads/init (set once minted).
-  // Presence means server-side state exists → cancel via DELETE.
   uploadId?: string;
   createdAt: string;
 }
@@ -712,4 +698,3 @@ export interface DocumentProvenance {
 
 // Re-export Procurement Intelligence & Optimization types
 export * from './procurementIntelligence';
-

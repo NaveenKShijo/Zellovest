@@ -15,7 +15,7 @@ const ROUTE_LABELS: Record<string, string> = {
   'maverick-spend': 'Maverick SaaS Spend',
   licenses: 'Zombie Licenses',
   renewals: 'Renewal Intelligence',
-  assistant: 'Investigation Agent',
+  assistant: 'Ask AI',
   integrations: 'Data Ingestion',
   settings: 'Settings',
 };
@@ -29,7 +29,7 @@ export function Breadcrumbs() {
   const breadcrumbs: BreadcrumbItem[] = [
     { label: 'Home', href: '/' },
     ...segments.map((segment, index) => {
-      const href = `/${segments.slice(0, index + 1).join('/')}`;
+      const href = `/${segments.slice(0, index + 1).join('/')}`
       const isCurrent = index === segments.length - 1;
       const label = ROUTE_LABELS[segment] || segment.replace(/-/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase());
 

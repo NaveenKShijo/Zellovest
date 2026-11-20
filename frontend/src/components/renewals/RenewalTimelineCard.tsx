@@ -226,7 +226,7 @@ export function RenewalTimelineCard({
             }}
           >
             <span>🤖</span>
-            Launch Renewal Agent
+            Ask AI about renewal
           </button>
         </div>
       </div>

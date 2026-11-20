@@ -14,6 +14,7 @@ Provides:
 
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+import hashlib
 import json
 import uuid
 from typing import Any
@@ -47,19 +48,133 @@ from zellovest_shared.db.intelligence import (
     WorkflowStatus,
     WorkflowType,
 )
-from zellovest_shared.db.models import User
+from zellovest_shared.db.models import ExtractionArtifact, Upload, User
 from zellovest_shared.db.transact import (
+    CardTransaction,
     Contract,
     ContractStatus,
     ContractTermsVersion,
     ContractVersion,
+    Document,
     Invoice,
+    InvoiceLineItem,
+    POLineItem,
+    PurchaseOrder,
 )
 from zellovest_shared.logging_conf import get_logger
 from zellovest_shared.rag import search_documents
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/negotiation", tags=["negotiation"])
+
+
+@router.get("/brief/source-version")
+async def negotiation_source_version(
+    vendor_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, str]:
+    """Return a fingerprint of vendor records and searchable contract passages.
+
+    Checking the fingerprint does not invoke the language model. A failure is
+    reported rather than treating an incomplete snapshot as a valid version.
+    """
+    tenant_id = normalize_tenant_id(current_user.tenant_id)
+    try:
+        vendor = await session.scalar(
+            select(Vendor).where(Vendor.id == vendor_id, Vendor.tenant_id == tenant_id)
+        )
+        if vendor is None:
+            raise HTTPException(status_code=404, detail="Vendor not found")
+
+        contract_ids = select(Contract.id).where(
+            Contract.tenant_id == tenant_id, Contract.vendor_id == vendor_id
+        )
+        upload_ids = select(Upload.id).where(
+            Upload.tenant_id == tenant_id, Upload.vendor_id == str(vendor_id)
+        )
+        invoice_ids = select(Invoice.id).where(
+            Invoice.tenant_id == tenant_id, Invoice.vendor_id == vendor_id
+        )
+        po_ids = select(PurchaseOrder.id).where(
+            PurchaseOrder.tenant_id == tenant_id, PurchaseOrder.vendor_id == vendor_id
+        )
+        queries = [
+            select(Vendor.__table__).where(Vendor.tenant_id == tenant_id, Vendor.id == vendor_id),
+            select(Contract.__table__).where(
+                Contract.tenant_id == tenant_id, Contract.vendor_id == vendor_id
+            ),
+            select(ContractVersion.__table__).where(
+                ContractVersion.tenant_id == tenant_id,
+                ContractVersion.contract_id.in_(contract_ids),
+            ),
+            select(ContractTermsVersion.__table__).where(
+                ContractTermsVersion.tenant_id == tenant_id,
+                ContractTermsVersion.contract_id.in_(contract_ids),
+            ),
+            select(Invoice.__table__).where(
+                Invoice.tenant_id == tenant_id, Invoice.vendor_id == vendor_id
+            ),
+            select(InvoiceLineItem.__table__).where(
+                InvoiceLineItem.tenant_id == tenant_id, InvoiceLineItem.invoice_id.in_(invoice_ids)
+            ),
+            select(PurchaseOrder.__table__).where(
+                PurchaseOrder.tenant_id == tenant_id, PurchaseOrder.vendor_id == vendor_id
+            ),
+            select(POLineItem.__table__).where(
+                POLineItem.tenant_id == tenant_id, POLineItem.po_id.in_(po_ids)
+            ),
+            select(CardTransaction.__table__).where(
+                CardTransaction.tenant_id == tenant_id, CardTransaction.vendor_id == vendor_id
+            ),
+            select(ReconciliationException.__table__).where(
+                ReconciliationException.tenant_id == tenant_id,
+                ReconciliationException.contract_id.in_(contract_ids),
+            ),
+            select(Document.__table__).where(
+                Document.tenant_id == tenant_id, Document.vendor_id == vendor_id
+            ),
+            select(Upload.__table__).where(
+                Upload.tenant_id == tenant_id, Upload.vendor_id == str(vendor_id)
+            ),
+            select(ExtractionArtifact.__table__).where(
+                ExtractionArtifact.tenant_id == tenant_id,
+                ExtractionArtifact.upload_id.in_(upload_ids),
+            ),
+            select(LicenseAssignment.__table__).where(
+                LicenseAssignment.tenant_id == tenant_id, LicenseAssignment.vendor_id == vendor_id
+            ),
+            select(SeatForecast.__table__).where(
+                SeatForecast.tenant_id == tenant_id, SeatForecast.vendor_id == vendor_id
+            ),
+        ]
+        snapshot = []
+        for query in queries:
+            rows = (await session.execute(query)).mappings().all()
+            snapshot.append(sorted(
+                json.dumps(dict(row), sort_keys=True, default=str) for row in rows
+            ))
+        passages = search_documents(
+            tenant_id=tenant_id,
+            query=f"{vendor.name} renewal termination notice price escalation increase discount",
+            vendor_id=str(vendor_id),
+            document_type="contract",
+            limit=4,
+        )
+        snapshot.append([json.dumps({
+            key: passage.get(key) for key in
+            ("document_id", "filename", "page", "section", "content")
+        }, sort_keys=True, default=str) for passage in passages])
+        version = hashlib.sha256(json.dumps(snapshot, sort_keys=True).encode()).hexdigest()
+        return {"version": version}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning(
+            "negotiation_source_version_failed", tenant_id=tenant_id,
+            vendor_id=str(vendor_id), error=str(exc),
+        )
+        raise HTTPException(status_code=503, detail="Unable to verify vendor data changes") from exc
 
 
 def _calculate_urgency_badge(days_until_notice: int, days_until_renewal: int) -> str:
@@ -471,6 +586,7 @@ async def prepare_negotiation_brief(
         risk_factors=risk_factors,
         contractual_clauses=clauses,
         generated_at=datetime.now(UTC),
+        cacheable=bool(llm_synthesized and isinstance(llm_synthesized, dict)),
     )
 
 

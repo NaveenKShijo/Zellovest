@@ -14,7 +14,7 @@ from zellovest_workers.ml.feature_pipeline import FeaturePipelineConfig, run_fea
 logger = get_logger(__name__)
 
 
-def submit_vertex_training(tenant_id: str) -> str:
+def submit_vertex_training(tenant_id: str, feature_table: str | None = None) -> str:
     """Submit one custom-container training job to Vertex AI."""
     settings = MLRuntimeSettings()
     project_id = settings.google_cloud_project.strip()
@@ -38,7 +38,12 @@ def submit_vertex_training(tenant_id: str) -> str:
         command=["python", "-m", "zellovest_workers.ml.train_vertex"],
     )
     training_job.run(
-        args=["--feature-table", f"{project_id}.{settings.bigquery_gold_dataset}.gold_seat_features"],
+        args=[
+            "--feature-table",
+            feature_table or f"{project_id}.{settings.bigquery_gold_dataset}.gold_seat_features",
+            "--tenant-id",
+            tenant_id,
+        ],
         environment_variables={
             "GOOGLE_CLOUD_PROJECT": project_id,
             "GCS_ML_BUCKET": bucket,
@@ -64,7 +69,30 @@ def run_training(tenant_id: str) -> dict[str, Any]:
     """Refresh BigQuery features and start one Vertex training job."""
     feature_config = FeaturePipelineConfig.from_environment(tenant_id=tenant_id)
     completed = run_feature_pipeline(feature_config)
-    resource_name = submit_vertex_training(tenant_id)
+    feature_table = None
+    snapshot_id = os.getenv("SEAT_FEATURE_SNAPSHOT_ID", "")
+    if snapshot_id:
+        if not snapshot_id.replace("_", "").isalnum():
+            raise ValueError("SEAT_FEATURE_SNAPSHOT_ID must contain only letters, digits and underscores")  # noqa: E501
+        from google.cloud import bigquery
+
+        feature_table = (
+            f"{feature_config.project_id}.{feature_config.gold_dataset}.snapshot_{snapshot_id}"
+        )
+        source = f"{feature_config.project_id}.{feature_config.gold_dataset}.gold_seat_features"
+        client = bigquery.Client(
+            project=feature_config.project_id, location=feature_config.bq_location
+        )
+        job_config = bigquery.QueryJobConfig(query_parameters=[
+            bigquery.ScalarQueryParameter("tenant_id", "STRING", tenant_id)
+        ])
+        client.query(
+            f"CREATE TABLE `{feature_table}` AS "
+            f"SELECT * FROM `{source}` WHERE tenant_id = @tenant_id",
+            job_config=job_config,
+        ).result()
+        logger.info("seat_feature_snapshot_created", table=feature_table, tenant_id=tenant_id)
+    resource_name = submit_vertex_training(tenant_id, feature_table)
     return {"tenant_id": tenant_id, "features_refreshed": completed, "training_job": resource_name}
 
 
