@@ -447,6 +447,7 @@ from zellovest_shared.db.core import (  # noqa: E402,F401
 from zellovest_shared.db.intelligence import (  # noqa: E402,F401
     AlertStatus,
     AuditEvent,
+    ContractProductProfile,
     ExceptionRule,
     ExceptionStatus,
     LicenseAssignment,

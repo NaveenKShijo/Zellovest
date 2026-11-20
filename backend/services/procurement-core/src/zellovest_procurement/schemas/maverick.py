@@ -46,7 +46,7 @@ class MaverickAlertItemSchema(BaseModel):
     transactionDate: str
     jevScores: JevDecisionScoresSchema
     status: Literal["open", "notified", "migrated", "dismissed"]
-    overlap: SoftwareOverlapSchema
+    overlap: SoftwareOverlapSchema | None = None
 
 
 class MaverickSpendKPIsSchema(BaseModel):
@@ -63,6 +63,21 @@ class MaverickSpendFeedResponse(BaseModel):
 
 class UpdateAlertStatusRequest(BaseModel):
     status: Literal["open", "notified", "migrated", "dismissed"]
+
+
+class ContractProductReindexRequest(BaseModel):
+    """Request a tenant-scoped refresh of approved contract-product vectors."""
+
+    tenant_id: str = Field(min_length=1)
+
+
+class ContractProductReindexStatusSchema(BaseModel):
+    """Celery status and summary for an approved-product index refresh."""
+
+    task_id: str
+    status: str
+    summary: dict[str, int] | None = None
+    error: str | None = None
 
 
 class TriggerDetectionRequest(BaseModel):

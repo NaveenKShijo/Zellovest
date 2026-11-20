@@ -34,7 +34,7 @@ def process_transaction_maverick_spend(
     Stages:
         Stage 1: Feature Engineering & Preliminary Jev AI Screening
         Stage 2: Merchant & Product Context Resolution (Groq JSON + Cache)
-        Stage 3: Approved Software Capability Retrieval (Qdrant + License Check)
+        Stage 3: Active Contracted Software Capability Retrieval (Qdrant)
         Stage 4: Final Maverick Spend Assessment (Deterministic Policy + Jev AI)
         Stage 5: Alert Generation & Persistence (MaverickAlert)
     """
@@ -51,14 +51,16 @@ def process_transaction_maverick_spend(
         )
         return {"status": "not_found", "transaction_id": str(transaction_id)}
 
-    # Skip non-positive or declined transactions
-    if float(txn.amount or 0.0) <= 0.0 or str(txn.state or "").upper() == "DECLINED":
+    # Only settled card spend is eligible. Pending, reversed, and declined
+    # authorizations must not create an unmanaged-spend alert.
+    if float(txn.amount or 0.0) <= 0.0 or str(txn.state or "").upper() != "CLEARED":
         logger.info(
-            "maverick_pipeline_skip_non_positive",
+            "maverick_pipeline_skip_ineligible_transaction",
             transaction_id=str(transaction_id),
             amount=float(txn.amount),
+            state=txn.state,
         )
-        return {"status": "skipped_non_positive", "transaction_id": str(transaction_id)}
+        return {"status": "skipped_ineligible", "transaction_id": str(transaction_id)}
 
     # Stage 1: Feature Engineering & Preliminary Screening
     features = calculate_transaction_features(session, txn)
@@ -88,7 +90,8 @@ def process_transaction_maverick_spend(
     category = product_profile.get("category") or "Software"
     capabilities = product_profile.get("capabilities", [])
 
-    # Stage 3: Approved Software Capability Retrieval (Qdrant + License Availability)
+    # Stage 3: Active contracted software retrieval from the dedicated Qdrant collection.
+    retrieval_diagnostics: dict[str, Any] = {}
     alternatives = find_approved_alternatives(
         session=session,
         tenant_id=tenant_id,
@@ -96,10 +99,19 @@ def process_transaction_maverick_spend(
         capabilities=capabilities,
         category=category,
         settings=settings,
+        diagnostics=retrieval_diagnostics,
     )
 
     top_alt = alternatives[0] if alternatives else None
     has_alt = top_alt is not None and top_alt["similarity_score"] >= 0.70
+    logger.info(
+        "maverick_contract_alternatives_resolved",
+        tenant_id=tenant_id,
+        transaction_id=str(transaction_id),
+        match_count=len(alternatives),
+        top_contract_product=top_alt.get("name") if top_alt else None,
+        top_similarity=top_alt.get("similarity_score") if top_alt else None,
+    )
 
     # Stage 4: Final Maverick Spend Assessment (Policy + Jev)
     decision_state = {
@@ -150,14 +162,14 @@ def process_transaction_maverick_spend(
     if top_alt and top_alt.get("license_available"):
         rec_action = (
             f"Notify {employee_name} ({employee_email}) in {department}. "
-            f"The company already maintains enterprise agreement for {top_alt['name']} "
+            f"Procurement already has an active contract for {top_alt['name']} "
             f"with {top_alt['unused_licenses']} unused seats available."
         )
     elif top_alt:
         rec_action = (
             f"Procurement review recommended. Employee {employee_name} purchased "
-            f"{product_name}, which overlaps with approved software {top_alt['name']}, "
-            "but all enterprise seats are currently assigned."
+            f"{product_name}, which overlaps with active contracted software {top_alt['name']}. "
+            "Confirm the product's license availability with procurement."
         )
     else:
         rec_action = (
@@ -171,6 +183,8 @@ def process_transaction_maverick_spend(
         "stage1_screening": stage1,
         "product_profile": product_profile,
         "retrieved_alternatives": alternatives,
+        "retrieval_diagnostics": retrieval_diagnostics,
+        "matched_contract_product": top_alt,
         "stage4_assessment": stage4,
         "has_approved_alternative": has_alt,
         "alternative_licenses_available": top_alt.get("license_available", False)
@@ -185,15 +199,20 @@ def process_transaction_maverick_spend(
     )
     existing_alert = session.execute(alert_stmt).scalars().first()
 
-    catalog_fk = (
-        uuid.UUID(top_alt["catalog_id"]) if (top_alt and top_alt.get("catalog_id")) else None
+    contract_fk = uuid.UUID(top_alt["contract_id"]) if top_alt and top_alt.get("contract_id") else None
+    contract_term_fk = (
+        uuid.UUID(top_alt["contract_term_id"])
+        if top_alt and top_alt.get("contract_term_id")
+        else None
     )
 
     if existing_alert:
         existing_alert.jev_is_saas_score = stage1.get("is_software_score")
         existing_alert.jev_review_score = prob_maverick
         existing_alert.capability_text = f"{product_name} ({category}): {', '.join(capabilities)}"
-        existing_alert.overlap_catalog_id = catalog_fk
+        existing_alert.overlap_catalog_id = None
+        existing_alert.overlap_contract_id = contract_fk
+        existing_alert.overlap_contract_term_id = contract_term_fk
         existing_alert.overlap_score = top_alt["similarity_score"] if top_alt else None
         existing_alert.recommended_action = rec_action
         existing_alert.decision_evidence = decision_evidence
@@ -209,7 +228,9 @@ def process_transaction_maverick_spend(
             jev_review_score=prob_maverick,
             status=AlertStatus.OPEN,
             capability_text=f"{product_name} ({category}): {', '.join(capabilities)}",
-            overlap_catalog_id=catalog_fk,
+            overlap_catalog_id=None,
+            overlap_contract_id=contract_fk,
+            overlap_contract_term_id=contract_term_fk,
             overlap_score=top_alt["similarity_score"] if top_alt else None,
             recommended_action=rec_action,
             decision_evidence=decision_evidence,

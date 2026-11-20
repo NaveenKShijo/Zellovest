@@ -2,10 +2,13 @@
 
 from zellovest_shared.maverick.catalog_matcher import (
     find_approved_alternatives,
-    index_software_catalog_item,
+    sync_active_contract_products,
 )
 from zellovest_shared.maverick.feature_engineering import calculate_transaction_features
-from zellovest_shared.maverick.groq_vendor import resolve_merchant_product
+from zellovest_shared.maverick.groq_vendor import (
+    resolve_contract_product,
+    resolve_merchant_product,
+)
 from zellovest_shared.maverick.jev_client import (
     evaluate_stage1_screening,
     evaluate_stage4_assessment,
@@ -17,7 +20,8 @@ __all__ = [
     "evaluate_stage1_screening",
     "evaluate_stage4_assessment",
     "find_approved_alternatives",
-    "index_software_catalog_item",
+    "sync_active_contract_products",
     "process_transaction_maverick_spend",
+    "resolve_contract_product",
     "resolve_merchant_product",
 ]

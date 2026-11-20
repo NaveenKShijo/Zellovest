@@ -110,6 +110,9 @@ class Settings(BaseSettings):
     qdrant_software_catalog_collection: str = Field(
         default="software_capabilities", alias="QDRANT_SOFTWARE_CATALOG_COLLECTION"
     )
+    qdrant_contract_products_collection: str = Field(
+        default="contract_software_products", alias="QDRANT_CONTRACT_PRODUCTS_COLLECTION"
+    )
     qdrant_api_key: str = Field(default="", alias="QDRANT_API_KEY")
     voyage_api_key: str = Field(default="", alias="VOYAGE_API_KEY")
     voyage_model: str = Field(default="voyage-3-large", alias="VOYAGE_MODEL")

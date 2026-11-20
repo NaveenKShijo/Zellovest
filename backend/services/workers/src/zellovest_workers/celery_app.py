@@ -64,6 +64,11 @@ def make_celery(broker_url: str = "redis://localhost:6379/0") -> Celery:
                 "schedule": 86400.0,  # daily scan
                 "options": {"queue": QUEUE_ANALYTICS},
             },
+            "dispatch-seat-forecasts-biweekly": {
+                "task": "zellovest.workers.tasks.forecasting.dispatch_seat_forecasts",
+                "schedule": 1296000.0,  # every 15 days
+                "options": {"queue": QUEUE_ANALYTICS},
+            },
         },
     )
     return app

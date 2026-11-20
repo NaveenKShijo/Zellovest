@@ -9,14 +9,16 @@ from celery import Celery
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from zellovest_shared.db.core import Department, Employee, SoftwareCatalog, Vendor
+from zellovest_shared.db.core import Department, Employee, Vendor
 from zellovest_shared.db.intelligence import AlertStatus, MaverickAlert
-from zellovest_shared.db.transact import CardTransaction
+from zellovest_shared.db.transact import CardTransaction, Contract, ContractTermsVersion
 from zellovest_shared.logging_conf import get_logger
 
 from zellovest_procurement.api.deps import get_db_session
 from zellovest_procurement.config import get_procurement_core_settings
 from zellovest_procurement.schemas.maverick import (
+    ContractProductReindexRequest,
+    ContractProductReindexStatusSchema,
     JevDecisionScoresSchema,
     MaverickAlertItemSchema,
     MaverickSpendFeedResponse,
@@ -45,14 +47,19 @@ async def get_maverick_spend_feed(
             CardTransaction,
             Employee,
             Department,
-            SoftwareCatalog,
+            Contract,
+            ContractTermsVersion,
             Vendor,
         )
         .join(CardTransaction, MaverickAlert.transaction_id == CardTransaction.id)
         .outerjoin(Employee, MaverickAlert.employee_id == Employee.id)
         .outerjoin(Department, Employee.department_id == Department.id)
-        .outerjoin(SoftwareCatalog, MaverickAlert.overlap_catalog_id == SoftwareCatalog.id)
-        .outerjoin(Vendor, SoftwareCatalog.vendor_id == Vendor.id)
+        .outerjoin(Contract, MaverickAlert.overlap_contract_id == Contract.id)
+        .outerjoin(
+            ContractTermsVersion,
+            MaverickAlert.overlap_contract_term_id == ContractTermsVersion.id,
+        )
+        .outerjoin(Vendor, Contract.vendor_id == Vendor.id)
         .where(MaverickAlert.tenant_id == tenant_id)
         .order_by(MaverickAlert.created_at.desc())
     )
@@ -75,7 +82,7 @@ async def get_maverick_spend_feed(
     potential_annual_savings = 0.0
     overlap_similarities: list[float] = []
 
-    for alert, txn, emp, dept, cat, ven in rows:
+    for alert, txn, emp, dept, contract, contract_term, ven in rows:
         if dept is not None:
             dept_name = dept.name
         elif emp is not None and emp.department_raw:
@@ -110,27 +117,28 @@ async def get_maverick_spend_feed(
         if not isinstance(product_prof, dict):
             product_prof = {}
         unmanaged_cat = product_prof.get("category") or "Software"
-        shared_caps = list(product_prof.get("capabilities") or [])[:4]
-
-        approved_alt = cat.name if cat else "Enterprise Software Pool"
-        approved_vendor = ven.name if ven else (cat.name if cat else "Approved Vendor")
-
         annual_savings = round(amount_val * 12.0, 2)
-
-        overlap_obj = SoftwareOverlapSchema(
-            unmanagedTool=unmanaged_tool,
-            unmanagedCategory=unmanaged_cat,
-            approvedAlternative=approved_alt,
-            approvedContractId=str(cat.id) if cat else "none",
-            approvedVendorName=approved_vendor,
-            cosineSimilarity=round(overlap_score_val, 2),
-            sharedCapabilities=shared_caps,
-            recommendedAction=alert.recommended_action
-            or "Review and migrate to approved enterprise alternative.",
-            employeeEmail=emp_email,
-            employeeName=emp_name,
-            annualizedSavingsOpportunity=annual_savings,
-        )
+        matched = evidence.get("matched_contract_product") or {}
+        overlap_obj = None
+        if contract is not None and contract_term is not None:
+            overlap_obj = SoftwareOverlapSchema(
+                unmanagedTool=unmanaged_tool,
+                unmanagedCategory=unmanaged_cat,
+                approvedAlternative=str(
+                    matched.get("name")
+                    or contract_term.description
+                    or contract_term.product_code
+                    or ""
+                ),
+                approvedContractId=str(contract.id),
+                approvedVendorName=ven.name if ven else "",
+                cosineSimilarity=round(overlap_score_val, 2),
+                sharedCapabilities=list(matched.get("shared_capabilities") or []),
+                recommendedAction=alert.recommended_action or "Procurement review recommended.",
+                employeeEmail=emp_email,
+                employeeName=emp_name,
+                annualizedSavingsOpportunity=annual_savings,
+            )
 
         item = MaverickAlertItemSchema(
             id=str(alert.id),
@@ -212,6 +220,19 @@ async def update_maverick_alert_status(
 _ANALYTICS_QUEUE = "analytics_tasks"
 _BATCH_TASK = "zellovest.workers.tasks.maverick_spend.detect_maverick_spend"
 _GCS_SCAN_TASK = "zellovest.workers.tasks.maverick_spend.scan_maverick_spend_from_gcs"
+_CONTRACT_PRODUCT_SYNC_TASK = (
+    "zellovest.workers.tasks.maverick_spend.sync_contract_products_to_qdrant"
+)
+
+
+def _celery_client() -> Celery:
+    """Return a Redis-backed Celery client for analytics dispatch and status."""
+    settings = get_procurement_core_settings()
+    return Celery(
+        "zellovest.procurement",
+        broker=settings.redis_url,
+        backend=settings.redis_url,
+    )
 
 
 def _dispatch_task(
@@ -234,10 +255,77 @@ def _dispatch_task(
         Exception: Propagated so the API can return a clear 5xx when the
             broker is unreachable.
     """
-    settings = get_procurement_core_settings()
-    celery = Celery("zellovest.procurement", broker=settings.redis_url)
+    celery = _celery_client()
     task = celery.send_task(task_name, kwargs=kwargs, queue=queue)
     return str(task.id or "")
+
+
+@router.post(
+    "/contract-products/reindex",
+    response_model=ContractProductReindexStatusSchema,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def reindex_contract_products(
+    body: ContractProductReindexRequest,
+) -> ContractProductReindexStatusSchema:
+    """Queue a refresh of vectors for real, active contract product lines."""
+    try:
+        task_id = _dispatch_task(
+            _CONTRACT_PRODUCT_SYNC_TASK,
+            {"tenant_id": body.tenant_id},
+        )
+    except Exception as exc:
+        logger.error(
+            "contract_product_reindex_dispatch_failed",
+            tenant_id=body.tenant_id,
+            error_class=type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Approved-software indexing worker is unavailable; retry shortly.",
+        ) from exc
+
+    logger.info(
+        "contract_product_reindex_queued",
+        tenant_id=body.tenant_id,
+        task_id=task_id,
+    )
+    return ContractProductReindexStatusSchema(task_id=task_id, status="PENDING")
+
+
+@router.get(
+    "/contract-products/reindex/{task_id}",
+    response_model=ContractProductReindexStatusSchema,
+)
+async def get_contract_product_reindex_status(
+    task_id: str,
+) -> ContractProductReindexStatusSchema:
+    """Return the latest Celery status and result for a product-index refresh."""
+    result = _celery_client().AsyncResult(task_id)
+    task_status = str(result.status)
+    if task_status == "SUCCESS" and isinstance(result.result, dict):
+        summary_keys = (
+            "active_terms",
+            "indexed_products",
+            "excluded_non_saas",
+            "enrichment_failures",
+        )
+        summary = {
+            key: int(result.result[key])
+            for key in summary_keys
+            if key in result.result and result.result[key] is not None
+        }
+        return ContractProductReindexStatusSchema(
+            task_id=task_id,
+            status=task_status,
+            summary=summary,
+        )
+    error = str(result.result) if task_status == "FAILURE" else None
+    return ContractProductReindexStatusSchema(
+        task_id=task_id,
+        status=task_status,
+        error=error,
+    )
 
 
 @router.post("/trigger", status_code=status.HTTP_202_ACCEPTED)

@@ -4,7 +4,7 @@ Per PRD 14-17 and Technical Architecture Specification:
 Stage 0: Normalization & Ingestion into card_transactions.
 Stage 1: Feature Engineering + Preliminary Jev AI Screening (cadence, recurrence, software).
 Stage 2: Merchant & Product Context Resolution (Groq JSON + persistent cache).
-Stage 3: Approved Software Capability Retrieval (Qdrant software_capabilities + license check).
+Stage 3: Active contracted-software capability retrieval (dedicated Qdrant collection).
 Stage 4: Final Maverick Spend Assessment (Deterministic Policy + Jev AI).
 Stage 5: Alert Generation & Persistence (maverick_alerts).
 """
@@ -12,21 +12,69 @@ Stage 5: Alert Generation & Persistence (maverick_alerts).
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from threading import Lock
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 from zellovest_shared.config import get_settings
-from zellovest_shared.db.core import SoftwareCatalog
 from zellovest_shared.db.session import get_session_factory
 from zellovest_shared.db.transact import CardTransaction
 from zellovest_shared.logging_conf import get_logger
-from zellovest_shared.maverick.catalog_matcher import index_software_catalog_item
+from zellovest_shared.maverick.catalog_matcher import sync_active_contract_products
 from zellovest_shared.maverick.pipeline import process_transaction_maverick_spend
 from zellovest_shared.workers.gcs_writer import list_object_keys, read_records_gz
 
 from zellovest_workers.celery_app import QUEUE_ANALYTICS, celery_app
 
 logger = get_logger(__name__)
+_CONTRACT_INDEX_REFRESH_INTERVAL = timedelta(minutes=5)
+_contract_index_refreshed_at: dict[str, datetime] = {}
+_contract_index_refresh_lock = Lock()
+
+
+def _refresh_contract_product_index(
+    session: Session, tenant_id: str, settings: Any = None
+) -> dict[str, int] | None:
+    """Refresh approved software vectors without blocking spend detection.
+
+    A vector-store or enrichment outage should not stop a card-transaction
+    scan from producing the underlying Maverick alert. In that case stage 3
+    records no approved alternative and the alert remains reviewable.
+    """
+    try:
+        summary = sync_active_contract_products(session, tenant_id, settings=settings)
+        logger.info("maverick_contract_product_index_refreshed", tenant_id=tenant_id, **summary)
+        return summary
+    except Exception as exc:
+        logger.warning(
+            "maverick_contract_product_index_refresh_failed",
+            tenant_id=tenant_id,
+            error_class=type(exc).__name__,
+            error=str(exc),
+        )
+        return None
+
+
+def _ensure_contract_product_index(session: Session, tenant_id: str) -> None:
+    """Refresh active contract vectors once per worker and tenant every five minutes.
+
+    Ramp backfills dispatch one single-transaction task per cleared card
+    transaction. This guard ensures the first task has a real procurement
+    catalog available while avoiding repeated Groq and embedding calls for the
+    remaining transactions in the same batch.
+    """
+    now = datetime.now(UTC)
+    with _contract_index_refresh_lock:
+        refreshed_at = _contract_index_refreshed_at.get(tenant_id)
+        if (
+            refreshed_at is not None
+            and now - refreshed_at < _CONTRACT_INDEX_REFRESH_INTERVAL
+        ):
+            return
+        summary = _refresh_contract_product_index(session, tenant_id)
+        if summary is not None:
+            _contract_index_refreshed_at[tenant_id] = now
 
 
 @celery_app.task(
@@ -47,6 +95,7 @@ def detect_maverick_spend_for_transaction(
     factory = get_session_factory()
     session = factory()
     try:
+        _ensure_contract_product_index(session, tenant_id)
         result = process_transaction_maverick_spend(
             session=session,
             tenant_id=tenant_id,
@@ -84,6 +133,7 @@ def detect_maverick_spend(
     factory = get_session_factory()
     session = factory()
     try:
+        _refresh_contract_product_index(session, tenant_id)
         cutoff = datetime.now(UTC) - timedelta(days=lookback_days)
         stmt = (
             select(CardTransaction.id)
@@ -91,6 +141,7 @@ def detect_maverick_spend(
                 CardTransaction.tenant_id == tenant_id,
                 CardTransaction.amount >= min_amount,
                 CardTransaction.txn_date >= cutoff,
+                CardTransaction.state == "CLEARED",
             )
             .order_by(CardTransaction.txn_date.desc())
         )
@@ -314,6 +365,8 @@ def scan_maverick_spend_from_gcs(
     statuses: dict[str, int] = {}
     dispatched = 0
     try:
+        if cleared_ids:
+            _refresh_contract_product_index(session, tenant_id, settings)
         if run_inline:
             for txn_id in cleared_ids:
                 try:
@@ -378,28 +431,22 @@ def scan_maverick_spend_from_gcs(
 
 
 @celery_app.task(
-    name="zellovest.workers.tasks.maverick_spend.sync_catalog_to_qdrant",
+    name="zellovest.workers.tasks.maverick_spend.sync_contract_products_to_qdrant",
     queue=QUEUE_ANALYTICS,
     max_retries=3,
 )
-def sync_catalog_to_qdrant(tenant_id: str) -> dict[str, Any]:
-    """Embed and index all approved software catalog items in Qdrant for a tenant."""
-    logger.info("sync_catalog_to_qdrant_started", tenant_id=tenant_id)
+def sync_contract_products_to_qdrant(tenant_id: str) -> dict[str, Any]:
+    """Embed currently active contracted software products in Qdrant for a tenant."""
+    logger.info("sync_contract_products_to_qdrant_started", tenant_id=tenant_id)
     factory = get_session_factory()
     session = factory()
     try:
-        stmt = select(SoftwareCatalog).where(SoftwareCatalog.tenant_id == tenant_id)
-        items = list(session.execute(stmt).scalars().all())
-        indexed = 0
-        for item in items:
-            if index_software_catalog_item(session, item):
-                indexed += 1
+        summary = sync_active_contract_products(session, tenant_id)
         logger.info(
-            "sync_catalog_to_qdrant_completed",
+            "sync_contract_products_to_qdrant_completed",
             tenant_id=tenant_id,
-            total=len(items),
-            indexed=indexed,
+            **summary,
         )
-        return {"tenant_id": tenant_id, "total": len(items), "indexed": indexed}
+        return {"tenant_id": tenant_id, **summary}
     finally:
         session.close()

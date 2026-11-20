@@ -23,6 +23,7 @@ import uuid
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
+from celery import Celery
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
 from sqlalchemy import and_, delete, func, not_, or_, select, update
 from sqlalchemy.exc import IntegrityError
@@ -83,10 +84,33 @@ from zellovest_shared.logging_conf import get_logger
 logger = get_logger(__name__)
 router = APIRouter(prefix="/documents", tags=["documents"])
 
+_ANALYTICS_QUEUE = "analytics_tasks"
+_CONTRACT_PRODUCT_SYNC_TASK = (
+    "zellovest.workers.tasks.maverick_spend.sync_contract_products_to_qdrant"
+)
+
 _PROCESSING_STATUSES = (
     DbUploadStatus.STAGED,
     DbUploadStatus.PROCESSING,
 )
+
+
+def _enqueue_contract_product_sync(
+    *, tenant_id: str, settings: IngestionAPISettings
+) -> str:
+    """Queue a best-effort refresh of approved contract-product vectors.
+
+    The contract review has already committed before this function is called,
+    so a temporary broker failure must never undo the human-approved ledger
+    change. The caller logs dispatch failures for operational follow-up.
+    """
+    celery = Celery("zellovest.ingestion", broker=settings.redis_url)
+    task = celery.send_task(
+        _CONTRACT_PRODUCT_SYNC_TASK,
+        kwargs={"tenant_id": tenant_id},
+        queue=_ANALYTICS_QUEUE,
+    )
+    return str(task.id or "")
 
 
 def _escaped_like(term: str) -> str:
@@ -1857,6 +1881,7 @@ async def commit_contract_review(
     body: ContractReviewCommitRequest,
     user: Any = Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session),
+    settings: IngestionAPISettings = Depends(get_app_settings),
 ) -> ContractReviewCommitResponse:
     """Commit human-verified contract terms into the versioned ledger.
 
@@ -1870,6 +1895,7 @@ async def commit_contract_review(
         body: User-corrected contract header and commercial terms.
         user: Authenticated reviewer whose identity is written to the receipt.
         session: Async database session.
+        settings: Service settings used to publish the post-commit vector refresh.
 
     Returns:
         IDs for the committed contract and pricing-version rows.
@@ -2135,6 +2161,24 @@ async def commit_contract_review(
         reviewer_id=reviewer_id,
         term_count=len(term_ids),
     )
+    try:
+        task_id = _enqueue_contract_product_sync(
+            tenant_id=upload_tenant_id,
+            settings=settings,
+        )
+        logger.info(
+            "contract_product_vector_sync_enqueued",
+            tenant_id=upload_tenant_id,
+            contract_id=str(contract.id),
+            task_id=task_id,
+        )
+    except Exception as exc:
+        logger.warning(
+            "contract_product_vector_sync_enqueue_failed",
+            tenant_id=upload_tenant_id,
+            contract_id=str(contract.id),
+            error_class=type(exc).__name__,
+        )
     return ContractReviewCommitResponse(
         document_id=document_id,
         contract_id=contract.id,

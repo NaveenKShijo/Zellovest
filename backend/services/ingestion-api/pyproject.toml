@@ -15,6 +15,7 @@ dependencies = [
     "httpx>=0.26",
     "python-multipart>=0.0.6",
     "google-cloud-storage>=2.18",
+    "celery[redis]>=5.3",
 ]
 
 [project.optional-dependencies]

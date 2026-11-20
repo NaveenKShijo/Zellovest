@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import uuid
 from collections.abc import Mapping, Sequence
@@ -540,3 +541,30 @@ def run_seat_forecast(
     }
     logger.info("seat_forecast_completed", **result)
     return result
+
+
+@celery_app.task(
+    name="zellovest.workers.tasks.forecasting.dispatch_seat_forecasts",
+    queue=QUEUE_ANALYTICS,
+    max_retries=3,
+    autoretry_for=(ConnectionError, TimeoutError),
+    retry_backoff=True,
+    retry_jitter=True,
+)
+def dispatch_seat_forecasts() -> dict[str, Any]:
+    """Enqueue a batch forecast for each supported renewal horizon every 15 days."""
+    tenant_id = os.getenv("TENANT_ID", "").strip()
+    if not tenant_id:
+        raise ValueError("TENANT_ID is required for scheduled seat forecasting")
+
+    task_ids = [
+        run_seat_forecast.delay(tenant_id, horizon_days).id
+        for horizon_days in sorted(ALLOWED_HORIZONS, reverse=True)
+    ]
+    logger.info(
+        "seat_forecast_dispatch_completed",
+        tenant_id=tenant_id,
+        horizon_days=sorted(ALLOWED_HORIZONS, reverse=True),
+        task_ids=task_ids,
+    )
+    return {"tenant_id": tenant_id, "task_ids": task_ids}

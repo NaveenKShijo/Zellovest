@@ -97,7 +97,7 @@ async def seed_contracts(
 @router.get("/upcoming-renewals", response_model=list[UpcomingRenewalResponse])
 async def list_upcoming_renewals(
     tenant_id: str | None = Query(default=None),
-    days_ahead: int = Query(default=365, ge=1, le=730),
+    days_ahead: int | None = Query(default=None, ge=1, le=3650),
     badge: str = Query(default="all"),
     auto_renew_only: bool = Query(default=False),
     search: str | None = Query(default=None),
@@ -111,7 +111,7 @@ async def list_upcoming_renewals(
     logger.info("list_upcoming_renewals_called", tenant_id=resolved_tenant, days_ahead=days_ahead)
 
     today = datetime.now(UTC).date()
-    max_date = today + timedelta(days=days_ahead)
+    max_date = today + timedelta(days=days_ahead) if days_ahead is not None else None
 
     items: list[UpcomingRenewalResponse] = []
     try:
@@ -133,13 +133,6 @@ async def list_upcoming_renewals(
         result = await session.execute(query)
         rows = result.all()
 
-        # If zero contracts exist in the database for this tenant, auto-seed real enterprise contracts
-        if not rows:
-            logger.info("no_contracts_found_auto_seeding", tenant_id=resolved_tenant)
-            await seed_tenant_renewal_contracts(session, resolved_tenant)
-            result = await session.execute(query)
-            rows = result.all()
-
         for row in rows:
             contract: Contract = row[0]
             vendor: Vendor | None = row[1] if len(row) > 1 else None
@@ -147,7 +140,9 @@ async def list_upcoming_renewals(
             ren_date = contract.renewal_date or contract.end_date
             if not ren_date:
                 continue
-            if ren_date > max_date or ren_date < today - timedelta(days=30):
+            if max_date is not None and ren_date > max_date:
+                continue
+            if ren_date < today - timedelta(days=30):
                 continue
 
             notice_period = contract.notice_period_days if contract.notice_period_days is not None else 30
@@ -413,41 +408,45 @@ async def prepare_negotiation_brief(
     except Exception as exc:
         logger.info("llm_synthesis_skipped_or_failed", reason=str(exc))
 
+    notice_days = contract_row.notice_period_days if contract_row else 30
+    default_leverage_points = [
+        f"Okta login activity shows 23% unused/idle licenses over 90 days; reducing commitments saves ~${float(annual_spend) * 0.18:,.0f}/yr.",
+        f"Contractual {notice_days}-day notice window provides active leverage if non-renewal option is signaled before cutoff.",
+        "Historical spend increased YoY; benchmark market alternatives to resist vendor price increases.",
+    ]
+    if exceptions_count > 0:
+        default_leverage_points.append(
+            f"AP Audit uncovered {exceptions_count} invoice discrepancies (${total_exceptions_discrepancy:,.2f}) — use to demand fee credits."
+        )
+
+    default_recommended_actions = [
+        "1. Transmit formal confirmation of notice timeline to retain contractual termination rights.",
+        "2. Propose reducing committed seat tier by 15-20% based on observed login abandonment.",
+        "3. Offer a 2-year commitment in exchange for freezing current unit prices with 0% escalation.",
+        "4. Request credit for past billing anomalies identified during automated AP audit.",
+    ]
+
+    default_talking_points = [
+        f"\"Our internal audit indicates our team is utilizing only 75% of provisioned {vendor_name} seats.\"",
+        "\"Under our current budget framework, any renewal requiring price escalation cannot be approved without tier restructuring.\"",
+        "\"We are evaluating alternative platforms that provide multi-year price locks and flexible seat licensing.\"",
+    ]
+
+    default_risk_factors = [
+        "Auto-renewal clause will legally lock in escalated rates if written opt-out is delayed beyond notice deadline.",
+        "Key operational workflows depend on this tool; plan sufficient lead time for migration if terms are rejected.",
+    ]
+
     if llm_synthesized and isinstance(llm_synthesized, dict):
-        leverage_points = llm_synthesized.get("leverage_points") or []
-        recommended_actions = llm_synthesized.get("recommended_actions") or []
-        talking_points = llm_synthesized.get("talking_points") or []
-        risk_factors = llm_synthesized.get("risk_factors") or []
+        leverage_points = llm_synthesized.get("leverage_points") or default_leverage_points
+        recommended_actions = llm_synthesized.get("recommended_actions") or default_recommended_actions
+        talking_points = llm_synthesized.get("talking_points") or default_talking_points
+        risk_factors = llm_synthesized.get("risk_factors") or default_risk_factors
     else:
-        # Deterministic evidence-backed synthesis
-        notice_days = contract_row.notice_period_days if contract_row else 30
-        leverage_points = [
-            f"Okta login activity shows 23% unused/idle licenses over 90 days; reducing commitments saves ~${float(annual_spend) * 0.18:,.0f}/yr.",
-            f"Contractual {notice_days}-day notice window provides active leverage if non-renewal option is signaled before cutoff.",
-            "Historical spend increased YoY; benchmark market alternatives to resist vendor price increases.",
-        ]
-        if exceptions_count > 0:
-            leverage_points.append(
-                f"AP Audit uncovered {exceptions_count} invoice discrepancies (${total_exceptions_discrepancy:,.2f}) — use to demand fee credits."
-            )
-
-        recommended_actions = [
-            "1. Transmit formal confirmation of notice timeline to retain contractual termination rights.",
-            "2. Propose reducing committed seat tier by 15-20% based on observed login abandonment.",
-            "3. Offer a 2-year commitment in exchange for freezing current unit prices with 0% escalation.",
-            "4. Request credit for past billing anomalies identified during automated AP audit.",
-        ]
-
-        talking_points = [
-            f"\"Our internal audit indicates our team is utilizing only 75% of provisioned {vendor_name} seats.\"",
-            "\"Under our current budget framework, any renewal requiring price escalation cannot be approved without tier restructuring.\"",
-            "\"We are evaluating alternative platforms that provide multi-year price locks and flexible seat licensing.\"",
-        ]
-
-        risk_factors = [
-            "Auto-renewal clause will legally lock in escalated rates if written opt-out is delayed beyond notice deadline.",
-            "Key operational workflows depend on this tool; plan sufficient lead time for migration if terms are rejected.",
-        ]
+        leverage_points = default_leverage_points
+        recommended_actions = default_recommended_actions
+        talking_points = default_talking_points
+        risk_factors = default_risk_factors
 
     return NegotiationBriefResponse(
         vendor_id=body.vendor_id,

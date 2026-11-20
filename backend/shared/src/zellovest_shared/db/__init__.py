@@ -16,6 +16,7 @@ from zellovest_shared.db.core import (
 from zellovest_shared.db.intelligence import (
     AlertStatus,
     AuditEvent,
+    ContractProductProfile,
     ExceptionRule,
     ExceptionStatus,
     LicenseAssignment,
@@ -96,6 +97,7 @@ __all__ = [
     "BusinessEntity",
     "CardTransaction",
     "ConnectionStatus",
+    "ContractProductProfile",
     "Contract",
     "ContractChangeType",
     "ContractLine",

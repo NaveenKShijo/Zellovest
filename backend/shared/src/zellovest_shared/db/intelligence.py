@@ -227,6 +227,47 @@ class LicenseAssignment(Base):
     )
 
 
+class ContractProductProfile(Base):
+    """LLM-enriched semantic profile for one current contracted product line."""
+
+    __tablename__ = "contract_product_profiles"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "contract_line_id", name="uq_contract_product_profile_line"
+        ),
+        Index("ix_contract_product_profiles_tenant", "tenant_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    contract_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("contracts.id"), nullable=False
+    )
+    contract_line_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("contract_lines.id"), nullable=False
+    )
+    contract_term_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("contract_terms_versioned.id"), nullable=False
+    )
+    vendor_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("vendors.id"), nullable=False
+    )
+    source_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    product_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    category: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    capabilities: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    use_cases: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    capability_text: Mapped[str] = mapped_column(Text, nullable=False)
+    is_saas: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    raw_response: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
 class UsageEvent(Base):
     """Okta log signal (``logs.read``; ``occurred_at`` = published)."""
 
@@ -350,6 +391,12 @@ class MaverickAlert(Base):
     capability_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     overlap_catalog_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("software_catalog.id"), nullable=True
+    )
+    overlap_contract_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("contracts.id"), nullable=True
+    )
+    overlap_contract_term_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("contract_terms_versioned.id"), nullable=True
     )
     overlap_score: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
     recommended_action: Mapped[str | None] = mapped_column(Text, nullable=True)

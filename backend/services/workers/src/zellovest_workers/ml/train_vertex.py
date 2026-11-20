@@ -85,7 +85,6 @@ class TrainingConfig:
     region: str
     ml_bucket: str
     feature_table: str
-    registry_serving_image_uri: str
     brier_score_limit: float = 0.05
     experiment_name: str = "seat-retention-training"
     random_state: int = 47
@@ -108,7 +107,6 @@ class TrainingConfig:
             region=settings.vertex_ai_region,
             ml_bucket=ml_bucket.removeprefix("gs://").rstrip("/"),
             feature_table=feature_table,
-            registry_serving_image_uri=settings.vertex_model_serving_image_uri,
             brier_score_limit=float(os.getenv("SEAT_MODEL_BRIER_LIMIT", "0.05")),
             experiment_name=os.getenv("VERTEX_SEAT_EXPERIMENT", "seat-retention-training"),
         )
@@ -390,17 +388,15 @@ def _upload_file(
     blob.upload_from_filename(str(source), content_type=content_type)
 
 
-def _register_vertex_model(
+def _log_vertex_experiment(
     config: TrainingConfig,
     *,
     version: str,
     artifact_uri: str,
     metrics: TrainingMetrics,
     hyperparameters: Mapping[str, Any],
-) -> str:
-    """Log experiment lineage and register the approved artifact in Vertex AI."""
-    if not config.registry_serving_image_uri:
-        raise ValueError("VERTEX_MODEL_SERVING_IMAGE_URI is required to register the model")
+) -> None:
+    """Log training parameters and evaluation metrics to Vertex Experiments."""
     from google.cloud import aiplatform
 
     aiplatform.init(
@@ -424,22 +420,10 @@ def _register_vertex_model(
                 "f1": metrics.f1,
             }
         )
-    model = aiplatform.Model.upload(
-        display_name="zellovest-seat-retention",
-        artifact_uri=artifact_uri,
-        serving_container_image_uri=config.registry_serving_image_uri,
-        description=(
-            "Calibrated LightGBM seat-retention model. Batch inference only; "
-            f"lineage version {version}."
-        ),
-        labels={"system": "seat-forecasting", "approved": "true"},
-        sync=True,
-    )
-    return str(model.resource_name)
 
 
 def train_and_publish(config: TrainingConfig | None = None) -> dict[str, Any]:
-    """Train, gate, version, register, and atomically promote a challenger."""
+    """Train, gate, version, log lineage, and promote a model artifact to GCS."""
     resolved = config or TrainingConfig.from_environment()
     version = f"v_{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
     baseline = load_production_metrics(resolved)
@@ -483,7 +467,7 @@ def train_and_publish(config: TrainingConfig | None = None) -> dict[str, Any]:
             )
 
         artifact_uri = f"gs://{resolved.ml_bucket}/{version_prefix}/"
-        registry_resource = _register_vertex_model(
+        _log_vertex_experiment(
             resolved,
             version=version,
             artifact_uri=artifact_uri,
@@ -491,7 +475,7 @@ def train_and_publish(config: TrainingConfig | None = None) -> dict[str, Any]:
             hyperparameters=hyperparameters,
         )
 
-        # Promotion occurs only after both validation and registry lineage succeed.
+        # Promote only after validation, artifact upload, and experiment logging succeed.
         for path, name, content_type in (
             (model_path, "model.booster", "application/octet-stream"),
             (calibration_path, "calibration.json", "application/json"),
@@ -509,7 +493,6 @@ def train_and_publish(config: TrainingConfig | None = None) -> dict[str, Any]:
         "status": "approved",
         "model_version": version,
         "artifact_uri": artifact_uri,
-        "registry_resource": registry_resource,
         "metrics": asdict(metrics),
         "hyperparameters": hyperparameters,
     }

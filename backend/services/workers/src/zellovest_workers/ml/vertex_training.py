@@ -1,0 +1,85 @@
+"""Refresh features and submit an explicitly requested Vertex AI training job."""
+
+from __future__ import annotations
+
+import argparse
+import os
+from typing import Any
+
+from zellovest_shared.config import MLRuntimeSettings
+from zellovest_shared.logging_conf import get_logger
+from zellovest_workers.ml.feature_pipeline import (
+    FeaturePipelineConfig,
+    run_feature_pipeline,
+)
+
+logger = get_logger(__name__)
+
+
+def submit_vertex_training(tenant_id: str) -> str:
+    """Submit one custom-container training job to Vertex AI."""
+    settings = MLRuntimeSettings()
+    project_id = settings.google_cloud_project.strip()
+    bucket = settings.gcs_ml_bucket.removeprefix("gs://").rstrip("/")
+    image_uri = settings.vertex_training_image_uri.strip()
+    if not project_id or not bucket or not image_uri:
+        raise ValueError(
+            "GOOGLE_CLOUD_PROJECT, GCS_ML_BUCKET, and VERTEX_TRAINING_IMAGE_URI are required"
+        )
+
+    from google.cloud import aiplatform
+
+    aiplatform.init(
+        project=project_id,
+        location=settings.vertex_ai_region,
+        staging_bucket=f"gs://{bucket}",
+    )
+    training_job = aiplatform.CustomContainerTrainingJob(
+        display_name=f"seat-retention-{tenant_id}",
+        container_uri=image_uri,
+        command=["python", "-m", "zellovest_workers.ml.train_vertex"],
+    )
+    training_job.run(
+        args=["--feature-table", f"{project_id}.{settings.bigquery_gold_dataset}.gold_seat_features"],
+        environment_variables={
+            "GOOGLE_CLOUD_PROJECT": project_id,
+            "GCS_ML_BUCKET": bucket,
+            "VERTEX_AI_REGION": settings.vertex_ai_region,
+        },
+        replica_count=1,
+        machine_type=os.getenv("VERTEX_TRAINING_MACHINE_TYPE", "n1-standard-8"),
+        base_output_dir=f"gs://{bucket}/vertex-output/{tenant_id}",
+        service_account=os.getenv("GCP_SERVICE_ACCOUNT") or None,
+        sync=False,
+    )
+    resource_name = str(training_job.resource_name)
+    logger.info(
+        "seat_training_job_submitted",
+        tenant_id=tenant_id,
+        resource_name=resource_name,
+        image_uri=image_uri,
+    )
+    return resource_name
+
+
+def run_training(tenant_id: str) -> dict[str, Any]:
+    """Refresh BigQuery features and start one Vertex training job."""
+    feature_config = FeaturePipelineConfig.from_environment(tenant_id=tenant_id)
+    completed = run_feature_pipeline(feature_config)
+    resource_name = submit_vertex_training(tenant_id)
+    return {"tenant_id": tenant_id, "features_refreshed": completed, "training_job": resource_name}
+
+
+def main() -> None:
+    """Run the manually requested Vertex training operation."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--tenant-id", default=os.getenv("TENANT_ID"), required=False)
+    args = parser.parse_args()
+    tenant_id = str(args.tenant_id or "").strip()
+    if not tenant_id:
+        parser.error("--tenant-id or TENANT_ID is required")
+    run_training(tenant_id)
+
+
+if __name__ == "__main__":
+    main()
