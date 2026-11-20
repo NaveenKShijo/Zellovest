@@ -8,10 +8,8 @@ from typing import Any
 
 from zellovest_shared.config import MLRuntimeSettings
 from zellovest_shared.logging_conf import get_logger
-from zellovest_workers.ml.feature_pipeline import (
-    FeaturePipelineConfig,
-    run_feature_pipeline,
-)
+
+from zellovest_workers.ml.feature_pipeline import FeaturePipelineConfig, run_feature_pipeline
 
 logger = get_logger(__name__)
 

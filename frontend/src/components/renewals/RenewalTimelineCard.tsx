@@ -134,7 +134,7 @@ export function RenewalTimelineCard({
       </div>
 
       {/* Main Content Info */}
-      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr', gap: '16px', alignItems: 'center' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: '16px', alignItems: 'center' }}>
         {/* Vendor & Product */}
         <div>
           <h3 style={{ fontSize: '18px', fontWeight: 700, color: 'var(--text-primary)' }}>
@@ -158,19 +158,6 @@ export function RenewalTimelineCard({
           </div>
           <div style={{ fontSize: '11px', color: renewal.spendYoYPct > 10 ? 'var(--color-danger)' : 'var(--text-muted)', fontWeight: 600 }}>
             {renewal.spendYoYPct > 0 ? `+${renewal.spendYoYPct}%` : `${renewal.spendYoYPct}%`} YoY
-          </div>
-        </div>
-
-        {/* Okta Utilization */}
-        <div>
-          <span style={{ fontSize: '11.5px', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 600 }}>
-            Okta Utilization
-          </span>
-          <div style={{ fontSize: '17px', fontWeight: 700, color: renewal.utilizationPct < 80 ? 'var(--color-danger)' : 'var(--color-success)', marginTop: '2px' }}>
-            {renewal.utilizationPct}%
-          </div>
-          <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
-            {renewal.utilizationPct < 80 ? 'Shelfware Identified' : 'Healthy Adoption'}
           </div>
         </div>
 

@@ -1,13 +1,19 @@
 'use client';
 
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { MaverickAlertItem, MaverickSpendKPIs } from '@/types';
 import { MaverickKPIsBar } from '@/components/maverick/MaverickKPIsBar';
 import { MaverickFilters } from '@/components/maverick/MaverickFilters';
 import { MaverickAlertFeed } from '@/components/maverick/MaverickAlertFeed';
 import { useToast } from '@/contexts/ToastContext';
+import { useAuth } from '@/contexts/AuthContext';
 import { useApi } from '@/lib/api';
+import {
+  invalidateMaverickFeeds,
+  peekMaverickFeed,
+  readMaverickFeed,
+} from '@/lib/maverickDataCache';
 
 const DEFAULT_KPIS: MaverickSpendKPIs = {
   totalUnmanagedSpend: 0,
@@ -19,11 +25,10 @@ const DEFAULT_KPIS: MaverickSpendKPIs = {
 export default function MaverickSpendPage() {
   const router = useRouter();
   const { notify } = useToast();
+  const { user } = useAuth();
   const api = useApi();
+  const cacheScopeId = useMemo(() => user?.id ?? 'anonymous', [user]);
 
-  const [alerts, setAlerts] = useState<MaverickAlertItem[]>([]);
-  const [kpis, setKpis] = useState<MaverickSpendKPIs>(DEFAULT_KPIS);
-  const [isLoading, setIsLoading] = useState(true);
   const [isScanning, setIsScanning] = useState(false);
   const [isRefreshingProducts, setIsRefreshingProducts] = useState(false);
   const [productIndexStatus, setProductIndexStatus] = useState<string | null>(null);
@@ -33,29 +38,82 @@ export default function MaverickSpendPage() {
   const [selectedDepartment, setSelectedDepartment] = useState('all');
   const [minOverlapThreshold, setMinOverlapThreshold] = useState<number>(0);
   const [selectedStatus, setSelectedStatus] = useState('all');
+  const viewKey = useMemo(
+    () => [selectedDepartment, selectedStatus, minOverlapThreshold].join('|'),
+    [selectedDepartment, selectedStatus, minOverlapThreshold]
+  );
 
-  const loadData = useCallback(async () => {
-    try {
+  // Reuse a previously visited feed immediately, then revalidate it as needed.
+  const initialCached = peekMaverickFeed(cacheScopeId, viewKey);
+  const [alerts, setAlerts] = useState<MaverickAlertItem[]>(() => initialCached?.alerts ?? []);
+  const [kpis, setKpis] = useState<MaverickSpendKPIs>(() => initialCached?.kpis ?? DEFAULT_KPIS);
+  const [isLoading, setIsLoading] = useState<boolean>(() => !initialCached);
+  const requestIdRef = useRef(0);
+
+  const loadData = useCallback(async (force: boolean = false) => {
+    const requestId = ++requestIdRef.current;
+    const cached = peekMaverickFeed(cacheScopeId, viewKey);
+    if (cached && !force) {
+      setAlerts(cached.alerts || []);
+      setKpis(cached.kpis || DEFAULT_KPIS);
+      setIsLoading(false);
+    } else {
       setIsLoading(true);
-      const res = await api.maverick.getFeed({
-        department: selectedDepartment,
-        status: selectedStatus,
-        min_overlap: minOverlapThreshold > 0 ? minOverlapThreshold : undefined,
-      });
-      if (res) {
+    }
+
+    try {
+      const res = await readMaverickFeed(
+        cacheScopeId,
+        viewKey,
+        () => api.maverick.getFeed({
+          department: selectedDepartment,
+          status: selectedStatus,
+          min_overlap: minOverlapThreshold > 0 ? minOverlapThreshold : undefined,
+        }),
+        {
+          force,
+          onRevalidate: (fresh) => {
+            if (requestId !== requestIdRef.current) return;
+            setAlerts(fresh.alerts || []);
+            setKpis(fresh.kpis || DEFAULT_KPIS);
+            setIsLoading(false);
+          },
+        }
+      );
+      if (requestId === requestIdRef.current) {
         setAlerts(res.alerts || []);
         setKpis(res.kpis || DEFAULT_KPIS);
       }
     } catch {
-      setAlerts([]);
-      setKpis(DEFAULT_KPIS);
+      // Retain a last-known-good result when revalidation temporarily fails.
+      if (requestId === requestIdRef.current && !cached) {
+        setAlerts([]);
+        setKpis(DEFAULT_KPIS);
+      }
     } finally {
-      setIsLoading(false);
+      if (requestId === requestIdRef.current) {
+        setIsLoading(false);
+      }
     }
-  }, [api, selectedDepartment, selectedStatus, minOverlapThreshold]);
+  }, [api.maverick, cacheScopeId, minOverlapThreshold, selectedDepartment, selectedStatus, viewKey]);
 
   useEffect(() => {
     loadData();
+  }, [loadData]);
+
+  // Align with Document Explorer: revalidate when the user returns to the tab.
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void loadData();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleVisibilityChange);
+    };
   }, [loadData]);
 
   const handleTriggerScan = async () => {
@@ -66,11 +124,12 @@ export default function MaverickSpendPage() {
         'Maverick Scan Dispatched',
         'Worker is normalizing the latest Ramp card-transaction batch from GCS and running Jev identification against the approved software catalog.'
       );
-      setTimeout(() => {
-        loadData();
+      invalidateMaverickFeeds(cacheScopeId);
+      window.setTimeout(() => {
+        void loadData(true);
       }, 4000);
-      setTimeout(() => {
-        loadData();
+      window.setTimeout(() => {
+        void loadData(true);
       }, 12000);
     } catch {
       notify.error('Scan Failed', 'Could not dispatch background maverick scan.');
@@ -164,6 +223,7 @@ export default function MaverickSpendPage() {
     setAlerts((prev) =>
       prev.map((a) => (a.id === alertId ? { ...a, status: 'dismissed' as const } : a))
     );
+    invalidateMaverickFeeds(cacheScopeId);
     api.maverick.updateStatus(alertId, 'dismissed').catch(() => {});
     notify.info('Exception Logged', 'Corporate card charge approved as legitimate standalone exception.');
   };

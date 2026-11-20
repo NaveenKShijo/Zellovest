@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { UpcomingRenewal, RenewalBadgeUrgency } from '@/types';
 import { RenewalKPIsBar } from '@/components/renewals/RenewalKPIsBar';
@@ -8,42 +8,110 @@ import { RenewalTimelineFilter } from '@/components/renewals/RenewalTimelineFilt
 import { RenewalTimelineCard } from '@/components/renewals/RenewalTimelineCard';
 import { RenewalLeverageModal } from '@/components/renewals/RenewalLeverageModal';
 import { useToast } from '@/contexts/ToastContext';
+import { useAuth } from '@/contexts/AuthContext';
 import { useApi } from '@/lib/api';
+import {
+  peekRenewalsList,
+  readRenewalsList,
+  subscribeRenewals,
+  invalidateRenewals,
+} from '@/lib/renewalDataCache';
 
 export default function RenewalsPage() {
   const router = useRouter();
   const { notify } = useToast();
+  const { user } = useAuth();
   const api = useApi();
-
-  const [renewals, setRenewals] = useState<UpcomingRenewal[]>([]);
-  const [selectedRenewal, setSelectedRenewal] = useState<UpcomingRenewal | null>(null);
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
+  const cacheScopeId = useMemo(() => user?.id ?? 'anonymous', [user]);
 
   // Filters state
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedBadge, setSelectedBadge] = useState<RenewalBadgeUrgency | 'all'>('all');
   const [autoRenewOnly, setAutoRenewOnly] = useState(false);
 
-  const fetchRenewals = useCallback(async () => {
-    try {
-      setIsLoading(true);
-      const data = await api.negotiation.upcomingRenewals({
-        badge: selectedBadge !== 'all' ? selectedBadge : undefined,
-        auto_renew_only: autoRenewOnly || undefined,
-        search: searchQuery.trim() || undefined,
-      });
-      setRenewals(data || []);
-    } catch (err: unknown) {
-      console.error('Failed to load upcoming renewals from database:', err);
-      setRenewals([]);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [api.negotiation, selectedBadge, autoRenewOnly, searchQuery]);
+  // Identity of the current filter view
+  const viewKey = useMemo(
+    () => [selectedBadge, autoRenewOnly ? '1' : '0', searchQuery.trim().toLowerCase()].join('|'),
+    [selectedBadge, autoRenewOnly, searchQuery]
+  );
+
+  // Initialize synchronously from cache if viewed previously (0ms instant render)
+  const initialCached = peekRenewalsList(cacheScopeId, viewKey);
+  const [renewals, setRenewals] = useState<UpcomingRenewal[]>(() => initialCached ?? []);
+  const [isLoading, setIsLoading] = useState<boolean>(() => !initialCached);
+  const [selectedRenewal, setSelectedRenewal] = useState<UpcomingRenewal | null>(null);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const requestIdRef = useRef(0);
+
+  const fetchRenewals = useCallback(
+    async (force: boolean = false) => {
+      const requestId = ++requestIdRef.current;
+      const cached = peekRenewalsList(cacheScopeId, viewKey);
+      if (!cached || force) {
+        setIsLoading(true);
+      }
+
+      try {
+        const data = await readRenewalsList(
+          cacheScopeId,
+          viewKey,
+          () =>
+            api.negotiation.upcomingRenewals({
+              badge: selectedBadge !== 'all' ? selectedBadge : undefined,
+              auto_renew_only: autoRenewOnly || undefined,
+              search: searchQuery.trim() || undefined,
+            }),
+          {
+            force,
+            onRevalidate: (fresh) => {
+              if (requestId !== requestIdRef.current) return;
+              setRenewals(fresh || []);
+              setIsLoading(false);
+            },
+          }
+        );
+
+        if (requestId === requestIdRef.current) {
+          setRenewals(data || []);
+        }
+      } catch (err: unknown) {
+        if (requestId === requestIdRef.current) {
+          console.error('Failed to load upcoming renewals from database:', err);
+          if (!cached) setRenewals([]);
+        }
+      } finally {
+        if (requestId === requestIdRef.current) {
+          setIsLoading(false);
+        }
+      }
+    },
+    [api.negotiation, cacheScopeId, viewKey, selectedBadge, autoRenewOnly, searchQuery]
+  );
 
   useEffect(() => {
-    fetchRenewals();
+    fetchRenewals(false);
+  }, [fetchRenewals]);
+
+  // Invalidation subscriber: automatically refresh when a reminder or contract changes
+  useEffect(() => {
+    return subscribeRenewals(() => {
+      fetchRenewals(true);
+    });
+  }, [fetchRenewals]);
+
+  // Window focus / visibility revalidation (SWR)
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        fetchRenewals(false);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', handleVisibilityChange);
+    };
   }, [fetchRenewals]);
 
   const filteredRenewals = useMemo(() => {
@@ -82,7 +150,7 @@ export default function RenewalsPage() {
     );
 
     const prompt = encodeURIComponent(
-      `Prepare commercial negotiation strategy and market benchmark leverage dossier for upcoming ${renewal.vendorName} renewal on ${renewal.renewalDate}. Contract: ${renewal.contractNumber}, Spend: $${renewal.annualSpend} (+${renewal.spendYoYPct}% YoY), Okta Utilization: ${renewal.utilizationPct}%. Auto-renew: ${renewal.autoRenew ? 'Yes (Notice required ' + renewal.noticePeriodDays + 'd prior)' : 'No'}. Key points: ${renewal.keyLeveragePoints.join('; ')}`
+      `Prepare commercial negotiation strategy and market benchmark leverage dossier for upcoming ${renewal.vendorName} renewal on ${renewal.renewalDate}. Contract: ${renewal.contractNumber}, Spend: $${renewal.annualSpend} (+${renewal.spendYoYPct}% YoY). Auto-renew: ${renewal.autoRenew ? 'Yes (Notice required ' + renewal.noticePeriodDays + 'd prior)' : 'No'}. Key points: ${renewal.keyLeveragePoints.join('; ')}`
     );
     router.push(`/assistant?prompt=${prompt}`);
   };
@@ -100,7 +168,10 @@ export default function RenewalsPage() {
           </p>
         </div>
         <button
-          onClick={() => fetchRenewals()}
+          onClick={() => {
+            invalidateRenewals(cacheScopeId);
+            fetchRenewals(true);
+          }}
           disabled={isLoading}
           style={{
             display: 'flex',
@@ -136,7 +207,7 @@ export default function RenewalsPage() {
 
       {/* 3. Chronological Renewal Cards */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-        {isLoading ? (
+        {isLoading && renewals.length === 0 ? (
           <div
             style={{
               textAlign: 'center',

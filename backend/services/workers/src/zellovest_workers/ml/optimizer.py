@@ -15,7 +15,7 @@ from typing import TypeAlias
 import numpy as np
 from numpy.typing import NDArray
 
-FloatArray: TypeAlias = NDArray[np.float64]
+FloatArray: TypeAlias = NDArray[np.float64]  # noqa: UP040 - supports Python 3.11
 
 
 @dataclass(frozen=True, slots=True)

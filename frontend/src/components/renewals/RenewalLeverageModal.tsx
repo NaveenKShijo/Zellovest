@@ -4,6 +4,12 @@ import React, { useState, useEffect } from 'react';
 import { UpcomingRenewal, NegotiationBriefResponse, ClauseCitation } from '@/types';
 import { useApi } from '@/lib/api';
 import { useToast } from '@/contexts/ToastContext';
+import { useAuth } from '@/contexts/AuthContext';
+import {
+  peekNegotiationBrief,
+  readNegotiationBrief,
+  invalidateRenewals,
+} from '@/lib/renewalDataCache';
 
 interface RenewalLeverageModalProps {
   renewal: UpcomingRenewal | null;
@@ -20,9 +26,13 @@ export function RenewalLeverageModal({
 }: RenewalLeverageModalProps) {
   const api = useApi();
   const { notify } = useToast();
+  const { user } = useAuth();
+  const cacheScopeId = user?.id ?? 'anonymous';
 
   const [activeTab, setActiveTab] = useState<'overview' | 'aiBrief'>('overview');
-  const [brief, setBrief] = useState<NegotiationBriefResponse | null>(null);
+  const briefCacheKey = renewal?.contractId || renewal?.vendorId || '';
+  const initialBrief = peekNegotiationBrief(cacheScopeId, briefCacheKey);
+  const [brief, setBrief] = useState<NegotiationBriefResponse | null>(initialBrief);
   const [isBriefLoading, setIsBriefLoading] = useState(false);
   const [isSettingReminder, setIsSettingReminder] = useState(false);
   const [reminderScheduledDate, setReminderScheduledDate] = useState<string | null>(null);
@@ -31,18 +41,35 @@ export function RenewalLeverageModal({
     if (isOpen && renewal) {
       setActiveTab('overview');
       setReminderScheduledDate(null);
-      // Pre-fetch negotiation brief for live dossier
-      setIsBriefLoading(true);
-      api.negotiation
-        .prepareBrief({
-          vendor_id: renewal.vendorId,
-          contract_id: renewal.contractId,
-        })
+      const cached = peekNegotiationBrief(cacheScopeId, briefCacheKey);
+      if (cached) {
+        setBrief(cached);
+        setIsBriefLoading(false);
+      } else {
+        setIsBriefLoading(true);
+      }
+
+      readNegotiationBrief(
+        cacheScopeId,
+        briefCacheKey,
+        () =>
+          api.negotiation.prepareBrief({
+            vendor_id: renewal.vendorId,
+            contract_id: renewal.contractId,
+          }),
+        {
+          onRevalidate: (fresh) => {
+            setBrief(fresh);
+          },
+        }
+      )
         .then((res) => setBrief(res))
-        .catch(() => setBrief(null))
+        .catch(() => {
+          if (!cached) setBrief(null);
+        })
         .finally(() => setIsBriefLoading(false));
     }
-  }, [isOpen, renewal]);
+  }, [isOpen, renewal, cacheScopeId, briefCacheKey, api.negotiation]);
 
   if (!isOpen || !renewal) return null;
 
@@ -62,6 +89,7 @@ export function RenewalLeverageModal({
         remind_days_before_notice: remindDaysBefore,
       });
       setReminderScheduledDate(res.remind_date);
+      invalidateRenewals(cacheScopeId);
       notify.success(
         'Notice Deadline Reminder Scheduled',
         `Automated alert will notify procurement on ${res.remind_date} (${remindDaysBefore} days before notice cutoff).`
@@ -230,10 +258,13 @@ export function RenewalLeverageModal({
                 </div>
 
                 <div style={{ padding: '14px', borderRadius: 'var(--radius-md)', backgroundColor: 'var(--bg-app)', border: '1px solid var(--border-subtle)' }}>
-                  <span style={{ fontSize: '11.5px', color: 'var(--text-muted)', fontWeight: 600 }}>OKTA UTILIZATION</span>
-                  <div style={{ fontSize: '18px', fontWeight: 800, color: renewal.utilizationPct < 80 ? 'var(--color-danger)' : 'var(--color-success)', marginTop: '2px' }}>
-                    {renewal.utilizationPct}%
+                  <span style={{ fontSize: '11.5px', color: 'var(--text-muted)', fontWeight: 600 }}>RENEWAL DATE</span>
+                  <div style={{ fontSize: '15px', fontWeight: 700, color: 'var(--text-primary)', marginTop: '4px' }}>
+                    {renewal.renewalDate}
                   </div>
+                  <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                    {renewal.daysUntilRenewal} days remaining
+                  </span>
                 </div>
 
                 <div style={{ padding: '14px', borderRadius: 'var(--radius-md)', backgroundColor: 'var(--bg-app)', border: '1px solid var(--border-subtle)' }}>
@@ -320,80 +351,142 @@ export function RenewalLeverageModal({
                     <div
                       key={i}
                       style={{
-                        display: 'flex',
-                        alignItems: 'flex-start',
-                        gap: '10px',
-                        padding: '12px 14px',
+                        padding: '12px 16px',
                         borderRadius: 'var(--radius-sm)',
-                        backgroundColor: '#FFFFFF',
+                        backgroundColor: 'var(--bg-app)',
                         border: '1px solid var(--border-subtle)',
+                        fontSize: '13px',
+                        color: 'var(--text-primary)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '10px',
                       }}
                     >
-                      <span style={{ color: 'var(--color-brand)', fontWeight: 700, fontSize: '14px' }}>✓</span>
-                      <span style={{ fontSize: '13px', color: 'var(--text-primary)', lineHeight: 1.4 }}>{pt}</span>
+                      <span style={{ color: 'var(--color-brand)', fontWeight: 700 }}>•</span>
+                      <span>{pt}</span>
                     </div>
                   ))}
                 </div>
               </div>
             </>
           ) : (
-            /* AI Negotiation Intelligence Brief Tab */
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            /* AI Negotiation Intelligence Dossier Tab */
+            <div>
               {isBriefLoading ? (
-                <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-muted)' }}>
-                  <div style={{ fontSize: '28px', marginBottom: '8px' }}>⚡</div>
-                  <p style={{ fontWeight: 600 }}>Synthesizing Clause Citations, AP Discrepancies, and BATNA Targets...</p>
+                <div style={{ textAlign: 'center', padding: '40px', color: 'var(--text-secondary)' }}>
+                  <div style={{ fontSize: '24px', marginBottom: '8px' }}>🧠</div>
+                  <strong style={{ display: 'block', fontSize: '14px', color: 'var(--text-primary)' }}>
+                    Generating Live AI Negotiation Brief...
+                  </strong>
+                  <p style={{ fontSize: '12.5px', marginTop: '4px' }}>
+                    Synthesizing contractual terms, invoice discrepancies, and commercial benchmarks.
+                  </p>
                 </div>
               ) : brief ? (
                 <>
-                  {/* Talking Points */}
-                  {brief.talking_points && brief.talking_points.length > 0 && (
-                    <div style={{ padding: '16px', borderRadius: 'var(--radius-md)', backgroundColor: 'var(--bg-app)', border: '1px solid var(--border-subtle)' }}>
-                      <h4 style={{ fontSize: '13px', fontWeight: 700, textTransform: 'uppercase', color: 'var(--color-brand)', marginBottom: '8px' }}>
-                        Tactical Supplier Talking Points
-                      </h4>
-                      <ul style={{ margin: 0, paddingLeft: '20px', fontSize: '13px', color: 'var(--text-primary)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                        {brief.talking_points.map((tp: string, i: number) => (
-                          <li key={i}>{tp}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
+                  <div
+                    style={{
+                      backgroundColor: 'var(--bg-surface-tint)',
+                      border: '1px solid var(--color-brand-border)',
+                      borderRadius: 'var(--radius-md)',
+                      padding: '16px 20px',
+                      marginBottom: '20px',
+                    }}
+                  >
+                    <span style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', color: 'var(--color-brand)' }}>
+                      Executive Renewal Strategy
+                    </span>
+                    <p style={{ fontSize: '13.5px', color: 'var(--text-primary)', marginTop: '4px', lineHeight: 1.5 }}>
+                      {brief.executive_summary || brief.leverage_points[0] || `Commercial negotiation dossier prepared for ${brief.vendor_name}.`}
+                    </p>
+                  </div>
 
-                  {/* Recommended Actions & Leverage */}
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-                    <div style={{ padding: '14px', borderRadius: 'var(--radius-md)', backgroundColor: '#FFFFFF', border: '1px solid var(--border-subtle)' }}>
-                      <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--color-brand)' }}>RECOMMENDED ACTIONS</span>
-                      <ul style={{ margin: '8px 0 0 0', paddingLeft: '18px', fontSize: '12.5px', color: 'var(--text-primary)', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                        {(brief.recommended_actions || []).map((action: string, i: number) => (
-                          <li key={i}>{action}</li>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '20px' }}>
+                    {/* Recommended Actions */}
+                    <div
+                      style={{
+                        backgroundColor: '#FFFFFF',
+                        border: '1px solid var(--border-subtle)',
+                        borderRadius: 'var(--radius-md)',
+                        padding: '18px',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '10px' }}>
+                        <span>📋</span>
+                        <h4 style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
+                          Recommended Action Plan
+                        </h4>
+                      </div>
+                      <ol style={{ margin: 0, paddingLeft: '18px', fontSize: '13px', color: 'var(--text-primary)', lineHeight: 1.6 }}>
+                        {brief.recommended_actions.map((act, i) => (
+                          <li key={i}>{act}</li>
                         ))}
-                      </ul>
+                      </ol>
                     </div>
-                    <div style={{ padding: '14px', borderRadius: 'var(--radius-md)', backgroundColor: '#FFFFFF', border: '1px solid var(--border-subtle)' }}>
-                      <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--color-danger)' }}>COMMERCIAL RISK FACTORS</span>
-                      <ul style={{ margin: '8px 0 0 0', paddingLeft: '18px', fontSize: '12.5px', color: 'var(--text-primary)', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                        {(brief.risk_factors || []).map((risk: string, i: number) => (
+
+                    {/* Identified Risks */}
+                    <div
+                      style={{
+                        backgroundColor: '#FFFFFF',
+                        border: '1px solid var(--border-subtle)',
+                        borderRadius: 'var(--radius-md)',
+                        padding: '18px',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '10px' }}>
+                        <span>⚠️</span>
+                        <h4 style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
+                          Contractual Risk Factors
+                        </h4>
+                      </div>
+                      <ul style={{ margin: 0, paddingLeft: '18px', fontSize: '13px', color: 'var(--text-primary)', lineHeight: 1.6 }}>
+                        {brief.risk_factors.map((risk, i) => (
                           <li key={i}>{risk}</li>
                         ))}
                       </ul>
                     </div>
                   </div>
 
-                  {/* Contract Clause Citations */}
-                  {brief.contractual_clauses && brief.contractual_clauses.length > 0 && (
-                    <div>
-                      <h4 style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '8px' }}>
-                        Verified Contract Clause Citations (RAG Grounded):
+                  {/* Talking Points */}
+                  {brief.talking_points && brief.talking_points.length > 0 && (
+                    <div style={{ marginBottom: '20px' }}>
+                      <h4 style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '10px' }}>
+                        Vendor Meeting Talking Points (For Procurement Lead):
                       </h4>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                        {brief.contractual_clauses.map((c: ClauseCitation, i: number) => (
+                        {brief.talking_points.map((tp, i) => (
                           <div
                             key={i}
                             style={{
-                              padding: '10px 14px',
+                              padding: '12px 16px',
                               borderRadius: 'var(--radius-sm)',
-                              backgroundColor: '#FAFAF9',
+                              backgroundColor: 'var(--bg-app)',
+                              border: '1px solid var(--border-subtle)',
+                              fontSize: '13px',
+                              color: 'var(--text-primary)',
+                            }}
+                          >
+                            💬 {tp}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Clause Citations */}
+                  {((brief.contractual_clauses && brief.contractual_clauses.length > 0) || (brief.clause_citations && brief.clause_citations.length > 0)) && (
+                    <div>
+                      <h4 style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '10px' }}>
+                        Evidence Grounding & Clause Citations:
+                      </h4>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        {(brief.contractual_clauses || brief.clause_citations || []).map((c: ClauseCitation, i: number) => (
+                          <div
+                            key={i}
+                            style={{
+                              padding: '12px 16px',
+                              borderRadius: 'var(--radius-sm)',
+                              backgroundColor: '#FFFFFF',
                               border: '1px solid var(--border-subtle)',
                               fontSize: '12.5px',
                             }}
