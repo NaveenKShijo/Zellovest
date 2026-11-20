@@ -87,7 +87,7 @@ jobs:
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_CI_SERVICE_ACCOUNT }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
           create_credentials_file: true
 
       - name: Configure Google Cloud CLI
@@ -98,10 +98,14 @@ jobs:
       - name: Configure Artifact Registry Docker access
         run: gcloud auth configure-docker "${{ vars.GCP_ARTIFACT_REGISTRY_LOCATION }}-docker.pkg.dev" --quiet
 
-      - name: Build and publish immutable worker image
+      - name: Build and publish worker image if this commit is not already present
         env:
           IMAGE_URI: ${{ vars.GCP_ARTIFACT_REGISTRY_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GCP_ARTIFACT_REGISTRY_REPOSITORY }}/zellovest-workers:${{ github.sha }}
         run: |
+          if gcloud artifacts docker images describe "$IMAGE_URI" --format="value(image_summary.digest)" >/dev/null 2>&1; then
+            echo "Image already exists for this commit: $IMAGE_URI"
+            exit 0
+          fi
           docker build --file backend/services/workers/Dockerfile --tag "$IMAGE_URI" backend
           docker push "$IMAGE_URI"
           echo "Published $IMAGE_URI"

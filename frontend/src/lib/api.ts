@@ -532,6 +532,18 @@ export function useApi() {
           }
         );
       },
+      reindexContractProducts: (tenantId = 'default-org') =>
+        request<{ task_id: string; status: string; summary?: Record<string, number> | null; error?: string | null }>(
+          '/v1/maverick-spend/contract-products/reindex',
+          {
+            method: 'POST',
+            body: JSON.stringify({ tenant_id: tenantId }),
+          }
+        ),
+      getContractProductReindexStatus: (taskId: string) =>
+        request<{ task_id: string; status: string; summary?: Record<string, number> | null; error?: string | null }>(
+          `/v1/maverick-spend/contract-products/reindex/${encodeURIComponent(taskId)}`
+        ),
       triggerDetection: (
         lookbackDays = 90,
         tenantId = 'default-org',

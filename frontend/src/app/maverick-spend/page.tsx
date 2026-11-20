@@ -25,6 +25,8 @@ export default function MaverickSpendPage() {
   const [kpis, setKpis] = useState<MaverickSpendKPIs>(DEFAULT_KPIS);
   const [isLoading, setIsLoading] = useState(true);
   const [isScanning, setIsScanning] = useState(false);
+  const [isRefreshingProducts, setIsRefreshingProducts] = useState(false);
+  const [productIndexStatus, setProductIndexStatus] = useState<string | null>(null);
 
   // Filters state
   const [searchQuery, setSearchQuery] = useState('');
@@ -74,6 +76,51 @@ export default function MaverickSpendPage() {
       notify.error('Scan Failed', 'Could not dispatch background maverick scan.');
     } finally {
       setIsScanning(false);
+    }
+  };
+
+  const pollContractProductIndex = useCallback(async (taskId: string, attempt = 0) => {
+    try {
+      const result = await api.maverick.getContractProductReindexStatus(taskId);
+      if (result.status === 'SUCCESS') {
+        const indexed = result.summary?.indexed_products ?? 0;
+        const failed = result.summary?.enrichment_failures ?? 0;
+        setProductIndexStatus(
+          failed > 0
+            ? `${indexed} approved product(s) indexed; ${failed} line(s) need Groq enrichment retry.`
+            : `${indexed} approved product(s) indexed from active contracts.`
+        );
+        notify.success('Approved Software Updated', `${indexed} active contract product(s) are ready for matching.`);
+        return;
+      }
+      if (result.status === 'FAILURE') {
+        setProductIndexStatus(result.error || 'Approved-software indexing failed.');
+        notify.error('Approved Software Update Failed', result.error || 'Review the worker logs and retry.');
+        return;
+      }
+      if (attempt < 12) {
+        window.setTimeout(() => {
+          void pollContractProductIndex(taskId, attempt + 1);
+        }, 2500);
+      } else {
+        setProductIndexStatus('Indexing is still running. Refresh this page shortly for the result.');
+      }
+    } catch {
+      setProductIndexStatus('Could not read the approved-software indexing status.');
+    }
+  }, [api, notify]);
+
+  const handleRefreshApprovedSoftware = async () => {
+    try {
+      setIsRefreshingProducts(true);
+      setProductIndexStatus('Indexing active contract products…');
+      const queued = await api.maverick.reindexContractProducts('default-org');
+      void pollContractProductIndex(queued.task_id);
+    } catch {
+      setProductIndexStatus('Could not queue approved-software indexing.');
+      notify.error('Approved Software Update Failed', 'Could not dispatch the contract-product indexing task.');
+    } finally {
+      setIsRefreshingProducts(false);
     }
   };
 
@@ -134,7 +181,7 @@ export default function MaverickSpendPage() {
             Decentralized Spend & Semantic Overlap
           </h1>
           <p style={{ color: 'var(--text-secondary)', fontSize: '13.5px', marginTop: '3px' }}>
-            TypeSafe AI (Jev System One) detects unmanaged recurring subscriptions on corporate cards and maps semantic vector overlap to approved enterprise catalog contracts.
+            TypeSafe AI (Jev System One) detects unmanaged recurring subscriptions on corporate cards and maps semantic overlap to active procurement contract products.
           </p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -163,7 +210,30 @@ export default function MaverickSpendPage() {
             </svg>
             {isScanning ? 'Scanning...' : 'Scan Card Transactions'}
           </button>
+          <button
+            onClick={handleRefreshApprovedSoftware}
+            disabled={isRefreshingProducts}
+            style={{
+              padding: '8px 14px',
+              fontSize: '12.5px',
+              fontWeight: 600,
+              borderRadius: 'var(--radius-sm)',
+              border: '1px solid var(--border-subtle)',
+              backgroundColor: '#FFFFFF',
+              color: 'var(--text-primary)',
+              cursor: isRefreshingProducts ? 'not-allowed' : 'pointer',
+              boxShadow: 'var(--shadow-sm)',
+            }}
+            title="Index active contract products for semantic matching"
+          >
+            {isRefreshingProducts ? 'Refreshing...' : 'Refresh Approved Software'}
+          </button>
         </div>
+        {productIndexStatus && (
+          <p style={{ color: 'var(--text-secondary)', fontSize: '12px', marginTop: '8px' }}>
+            {productIndexStatus}
+          </p>
+        )}
       </div>
 
       {/* 1. KPIs Overview */}

@@ -1,0 +1,71 @@
+name: Train seat model on Vertex AI
+
+on:
+  workflow_dispatch:
+    inputs:
+      tenant_id:
+        description: Tenant whose telemetry and renewal outcomes should be used
+        required: true
+        type: string
+      training_image_tag:
+        description: Immutable worker image tag published by CI (commit SHA)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GOOGLE_CLOUD_PROJECT: ${{ vars.GCP_PROJECT_ID }}
+      GCS_RAW_BUCKET: ${{ vars.GCS_RAW_BUCKET }}
+      GCS_ML_BUCKET: ${{ vars.GCS_ML_BUCKET }}
+      TENANT_ID: ${{ inputs.tenant_id }}
+      VERTEX_AI_REGION: ${{ vars.VERTEX_AI_REGION || 'us-central1' }}
+      BIGQUERY_LOCATION: ${{ vars.BIGQUERY_LOCATION || 'US' }}
+      VERTEX_TRAINING_IMAGE_URI: ${{ vars.GCP_ARTIFACT_REGISTRY_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GCP_ARTIFACT_REGISTRY_REPOSITORY }}/zellovest-workers:${{ inputs.training_image_tag }}
+      GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/services/workers/uv.lock
+
+      - name: Validate immutable image tag
+        env:
+          TRAINING_IMAGE_TAG: ${{ inputs.training_image_tag }}
+        run: |
+          if [[ ! "$TRAINING_IMAGE_TAG" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "training_image_tag must be the 40-character commit SHA published by CI" >&2
+            exit 1
+          fi
+
+      - name: Authenticate with Workload Identity Federation
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+
+      - uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+
+      - name: Install worker dependencies
+        working-directory: backend/services/workers
+        run: uv sync --locked
+
+      - name: Refresh features and submit Vertex training job
+        working-directory: backend/services/workers
+        run: uv run --locked python -m zellovest_workers.ml.vertex_training --tenant-id "$TENANT_ID"

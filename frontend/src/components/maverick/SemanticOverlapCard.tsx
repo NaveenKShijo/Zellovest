@@ -15,7 +15,7 @@ export function SemanticOverlapCard({
   onDismiss,
 }: SemanticOverlapCardProps) {
   const { overlap, jevScores } = alert;
-  const isHighMatch = overlap.cosineSimilarity >= 0.85;
+  const isHighMatch = (overlap?.cosineSimilarity ?? 0) >= 0.85;
 
   const formatCurrency = (val: number) =>
     new Intl.NumberFormat('en-US', {
@@ -108,7 +108,7 @@ export function SemanticOverlapCard({
           padding: '18px 20px',
           border: '1px solid var(--border-tint)',
           display: 'grid',
-          gridTemplateColumns: '1fr auto 1fr',
+          gridTemplateColumns: overlap ? '1fr auto 1fr' : '1fr',
           gap: '20px',
           alignItems: 'center',
         }}
@@ -119,16 +119,17 @@ export function SemanticOverlapCard({
             Unmanaged Card Tool
           </div>
           <div style={{ fontSize: '16px', fontWeight: 700, color: 'var(--text-primary)' }}>
-            {overlap.unmanagedTool}
+            {overlap?.unmanagedTool || alert.merchantName}
           </div>
           <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-            Category: {overlap.unmanagedCategory}
+            Category: {overlap?.unmanagedCategory || 'Software'}
           </div>
           <div style={{ fontSize: '12px', color: 'var(--color-danger)', fontWeight: 600, marginTop: '2px' }}>
             Annual Run-Rate: {formatCurrency(alert.amount * 12)}/yr
           </div>
         </div>
 
+        {overlap && <>
         {/* Center: Cosine Similarity Indicator */}
         <div
           style={{
@@ -166,14 +167,12 @@ export function SemanticOverlapCard({
           <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
             Contracted with: {overlap.approvedVendorName}
           </div>
-          <div style={{ fontSize: '12px', color: 'var(--color-success)', fontWeight: 600, marginTop: '2px' }}>
-            Fully Funded Corporate Contract
-          </div>
         </div>
+        </>}
       </div>
 
       {/* Shared Capabilities Pill List */}
-      <div>
+      {overlap && overlap.sharedCapabilities.length > 0 && <div>
         <div style={{ fontSize: '12.5px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '8px' }}>
           Overlapping Feature Capabilities (Vector Embedding Match):
         </div>
@@ -198,7 +197,7 @@ export function SemanticOverlapCard({
             </span>
           ))}
         </div>
-      </div>
+      </div>}
 
       {/* Recommended Action & Action Triggers */}
       <div
@@ -214,7 +213,7 @@ export function SemanticOverlapCard({
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12.5px', color: 'var(--text-secondary)' }}>
           <span style={{ fontSize: '15px' }}>💡</span>
-          <span>{overlap.recommendedAction}</span>
+          <span>{overlap?.recommendedAction || 'Procurement review recommended.'}</span>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>

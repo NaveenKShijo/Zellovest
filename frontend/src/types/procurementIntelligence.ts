@@ -118,7 +118,7 @@ export interface MaverickAlertItem {
   transactionDate: string;
   jevScores: JevDecisionScores;
   status: 'open' | 'notified' | 'migrated' | 'dismissed';
-  overlap: SoftwareOverlap;
+  overlap: SoftwareOverlap | null;
 }
 
 export interface MaverickSpendKPIs {
