@@ -15,19 +15,32 @@ import redis
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from zellovest_agentic.agent import ActionService, AskAIAgent
 from zellovest_agentic.api.routers import ask_ai, negotiation, rag, tools
 from zellovest_agentic.config import get_agentic_reasoning_settings
+from zellovest_agentic.mcp import McpPool
 from zellovest_shared.logging_conf import configure_logging, get_logger
 
 configure_logging()
 logger = get_logger(__name__)
 
 
+def _wire_agent(app: FastAPI, settings) -> None:
+    """Attach the MCP pool and agent services to app state."""
+    pool = getattr(app.state, "mcp_pool", None)
+    if pool is None or getattr(app.state, "settings", None) is not settings:
+        pool = McpPool(settings)
+        app.state.mcp_pool = pool
+        app.state.ask_ai_agent = AskAIAgent(settings, pool)
+        app.state.action_service = ActionService(settings, pool)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Attach settings + Redis client to app state."""
+    """Attach settings, MCP host pool, agent, and Redis client to app state."""
     settings = getattr(app.state, "settings", None) or get_agentic_reasoning_settings()
     app.state.settings = settings
+    _wire_agent(app, settings)
     try:
         app.state.redis = redis.Redis.from_url(settings.redis_url, decode_responses=False)
     except Exception as exc:
@@ -46,6 +59,7 @@ def create_app(settings=None) -> FastAPI:
         redoc_url="/redoc",
     )
     app.state.settings = settings or get_agentic_reasoning_settings()
+    _wire_agent(app, app.state.settings)
 
     @app.middleware("http")
     async def correlation_id_middleware(request: Request, call_next):
@@ -84,7 +98,16 @@ def create_app(settings=None) -> FastAPI:
             client.ping()
         except Exception:
             return JSONResponse(status_code=503, content={"ready": False, "redis": "unreachable"})
-        return JSONResponse(status_code=200, content={"ready": True, "service": "agentic-reasoning"})
+        pool = getattr(request.app.state, "mcp_pool", None)
+        mcp_health = pool.health() if pool is not None else {"servers": {}}
+        return JSONResponse(
+            status_code=200,
+            content={
+                "ready": True,
+                "service": "agentic-reasoning",
+                "mcp": mcp_health,
+            },
+        )
 
     return app
 

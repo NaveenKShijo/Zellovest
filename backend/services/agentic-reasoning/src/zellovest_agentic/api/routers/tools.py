@@ -1,413 +1,234 @@
-"""Tool Calling Sandbox Engine router."""
+"""Tool sandbox: schema-validated, risk-classed access to MCP tools.
 
-import asyncio
+This router never executes domain logic itself. It is a thin host surface over
+the three MCP servers so operators and tests can inspect contracts and invoke
+tools with the same validation, tenant scoping, timeout, and audit behavior the
+agent uses.
+
+High-risk tools are refused here on purpose: they may only run through
+``POST /ask-ai/actions/confirm`` so explicit human confirmation and an HMAC
+token are always involved (PRD 24 / 25.4).
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
 import time
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from zellovest_agentic.api.deps import get_current_user, get_db_session, normalize_tenant_id
-from zellovest_agentic.services.tracing import trace_span
+from zellovest_agentic.api.deps import (
+    build_mcp_identity,
+    get_current_user,
+    normalize_tenant_id,
+)
+from zellovest_agentic.mcp import McpHostError, McpPool
 from zellovest_shared.db.models import User
 from zellovest_shared.logging_conf import get_logger
-from zellovest_shared.rag import search_documents
+from zellovest_shared.mcp_contracts import ToolContract
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/tools", tags=["tools"])
 
 
 class ToolSchema(BaseModel):
-    """MCP tool schema."""
+    """Full MCP tool contract (PRD 25.7)."""
 
     name: str
+    server: str
     description: str
     input_schema: dict[str, Any]
-    output_schema: dict[str, Any] | None = None
-    risk_class: str  # read_only, low_risk, high_risk
-    authorization_scope: str
-    tenant_scoped: bool = True
+    output_schema: dict[str, Any]
+    auth_scope: str
+    roles: list[str]
+    risk_class: str
+    operation: str
+    tenant_scoped: bool
+    timeout_seconds: float
+    idempotent: bool
+    requires_confirmation: bool
+    evidence_behavior: str
+    audit_event_type: str
+    version: str
 
 
 class ToolCallRequest(BaseModel):
-    """Request to call a tool."""
+    """Request to call a tool through the sandbox."""
 
     tool_name: str = Field(..., min_length=1)
-    arguments: dict[str, Any]
+    arguments: dict[str, Any] = Field(default_factory=dict)
     tenant_id: str = Field(..., min_length=1, max_length=128)
     correlation_id: UUID | None = None
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
+    dry_run: bool = False
 
 
 class ToolCallResponse(BaseModel):
-    """Tool call response."""
+    """Tool call response with invocation metadata."""
 
     tool_name: str
+    server: str
+    risk_class: str
     success: bool
     result: dict[str, Any] | None = None
     error: str | None = None
+    error_code: str | None = None
     execution_time_ms: int
-    provenance: dict[str, Any] | None = None
+    attempts: int = 1
+    provenance: dict[str, Any] = Field(default_factory=dict)
 
 
-# Available tools registry (mirrors MCP-1, MCP-2, MCP-3)
-AVAILABLE_TOOLS: dict[str, ToolSchema] = {
-    # MCP-1: Procurement Intelligence
-    "get_vendor": ToolSchema(
-        name="get_vendor",
-        description="Get vendor details by ID",
-        input_schema={"vendor_id": {"type": "string"}},
-        output_schema={"id": {"type": "string"}, "name": {"type": "string"}},
-        risk_class="read_only",
-        authorization_scope="procurement.vendor.read",
-    ),
-    "get_vendor_spend": ToolSchema(
-        name="get_vendor_spend",
-        description="Get authoritative spend totals for a vendor",
-        input_schema={
-            "vendor_id": {"type": "string"},
-            "start_date": {"type": "string", "format": "date"},
-            "end_date": {"type": "string", "format": "date"},
-        },
-        output_schema={"total_spend": {"type": "number"}, "currency": {"type": "string"}},
-        risk_class="read_only",
-        authorization_scope="procurement.spend.read",
-    ),
-    "get_license_usage": ToolSchema(
-        name="get_license_usage",
-        description="Get license utilization for a vendor",
-        input_schema={"vendor_id": {"type": "string"}},
-        output_schema={"total": {"type": "integer"}, "used": {"type": "integer"}},
-        risk_class="read_only",
-        authorization_scope="procurement.license.read",
-    ),
-    "find_renewals": ToolSchema(
-        name="find_renewals",
-        description="Find upcoming contract renewals",
-        input_schema={
-            "tenant_id": {"type": "string"},
-            "days_ahead": {"type": "integer", "default": 90},
-        },
-        output_schema={"renewals": {"type": "array"}},
-        risk_class="read_only",
-        authorization_scope="procurement.renewal.read",
-    ),
-    "get_reconciliation_exception": ToolSchema(
-        name="get_reconciliation_exception",
-        description="Get invoice reconciliation exception details",
-        input_schema={"exception_id": {"type": "string"}},
-        output_schema={"exception_id": {"type": "string"}, "details": {"type": "object"}},
-        risk_class="read_only",
-        authorization_scope="procurement.reconciliation.read",
-    ),
-    "compare_invoice_contract": ToolSchema(
-        name="compare_invoice_contract",
-        description="Compare invoice against contract terms",
-        input_schema={
-            "invoice_id": {"type": "string"},
-            "contract_id": {"type": "string"},
-        },
-        output_schema={"variances": {"type": "array"}},
-        risk_class="read_only",
-        authorization_scope="procurement.reconciliation.read",
-    ),
-    "get_maverick_spend": ToolSchema(
-        name="get_maverick_spend",
-        description="Get unmanaged SaaS spend detections",
-        input_schema={"tenant_id": {"type": "string"}},
-        output_schema={"detections": {"type": "array"}},
-        risk_class="read_only",
-        authorization_scope="procurement.maverick.read",
-    ),
-    "calculate_spend": ToolSchema(
-        name="calculate_spend",
-        description="Calculate spend totals with filters",
-        input_schema={
-            "tenant_id": {"type": "string"},
-            "vendor_id": {"type": "string", "optional": True},
-            "start_date": {"type": "string", "format": "date"},
-            "end_date": {"type": "string", "format": "date"},
-        },
-        output_schema={"total": {"type": "number"}, "breakdown": {"type": "object"}},
-        risk_class="read_only",
-        authorization_scope="procurement.spend.read",
-    ),
-    "calculate_savings": ToolSchema(
-        name="calculate_savings",
-        description="Calculate potential savings from optimization",
-        input_schema={"tenant_id": {"type": "string"}},
-        output_schema={"potential_savings": {"type": "number"}},
-        risk_class="read_only",
-        authorization_scope="procurement.savings.read",
-    ),
-    # MCP-2: Document Knowledge
-    "search_documents": ToolSchema(
-        name="search_documents",
-        description="Search procurement documents semantically",
-        input_schema={
-            "query": {"type": "string"},
-            "vendor_id": {"type": "string", "optional": True},
-            "document_type": {"type": "string", "optional": True},
-        },
-        output_schema={"chunks": {"type": "array"}},
-        risk_class="read_only",
-        authorization_scope="documents.read",
-    ),
-    "search_contracts": ToolSchema(
-        name="search_contracts",
-        description="Search contract documents specifically",
-        input_schema={"query": {"type": "string"}},
-        output_schema={"chunks": {"type": "array"}},
-        risk_class="read_only",
-        authorization_scope="contracts.read",
-    ),
-    "search_invoices": ToolSchema(
-        name="search_invoices",
-        description="Search invoice documents",
-        input_schema={"query": {"type": "string"}},
-        output_schema={"chunks": {"type": "array"}},
-        risk_class="read_only",
-        authorization_scope="invoices.read",
-    ),
-    "get_source_provenance": ToolSchema(
-        name="get_source_provenance",
-        description="Get full provenance for a document chunk",
-        input_schema={"chunk_id": {"type": "string"}},
-        output_schema={"document_id": {"type": "string"}, "page": {"type": "integer"}},
-        risk_class="read_only",
-        authorization_scope="documents.read",
-    ),
-    # MCP-3: External Systems
-    "create_procurement_task": ToolSchema(
-        name="create_procurement_task",
-        description="Create a procurement review task",
-        input_schema={
-            "title": {"type": "string"},
-            "description": {"type": "string"},
-            "vendor_id": {"type": "string", "optional": True},
-            "priority": {"type": "string", "enum": ["low", "medium", "high"]},
-        },
-        output_schema={"task_id": {"type": "string"}},
-        risk_class="low_risk",
-        authorization_scope="procurement.task.write",
-    ),
-    "create_review_task": ToolSchema(
-        name="create_review_task",
-        description="Create a human review task",
-        input_schema={
-            "title": {"type": "string"},
-            "description": {"type": "string"},
-            "reference_type": {"type": "string"},
-            "reference_id": {"type": "string"},
-        },
-        output_schema={"task_id": {"type": "string"}},
-        risk_class="low_risk",
-        authorization_scope="procurement.task.write",
-    ),
-    "create_renewal_reminder": ToolSchema(
-        name="create_renewal_reminder",
-        description="Create a renewal notice deadline reminder",
-        input_schema={
-            "contract_id": {"type": "string"},
-            "vendor_id": {"type": "string"},
-            "remind_before_days": {"type": "integer", "default": 15},
-        },
-        output_schema={"reminder_id": {"type": "string"}},
-        risk_class="low_risk",
-        authorization_scope="procurement.renewal.write",
-    ),
-    "start_human_review_workflow": ToolSchema(
-        name="start_human_review_workflow",
-        description="Start a human review workflow",
-        input_schema={
-            "workflow_type": {"type": "string"},
-            "reference_id": {"type": "string"},
-            "assignee_id": {"type": "string", "optional": True},
-        },
-        output_schema={"workflow_id": {"type": "string"}},
-        risk_class="low_risk",
-        authorization_scope="procurement.workflow.write",
-    ),
-}
+def _pool(request: Request) -> McpPool:
+    """Return the app-scoped MCP pool, creating it lazily for tests."""
+    pool = getattr(request.app.state, "mcp_pool", None)
+    if pool is None:
+        from zellovest_agentic.config import get_agentic_reasoning_settings
+
+        settings = getattr(request.app.state, "settings", None) or get_agentic_reasoning_settings()
+        request.app.state.settings = settings
+        pool = McpPool(settings)
+        request.app.state.mcp_pool = pool
+    return pool
+
+
+def _as_schema(contract: ToolContract) -> ToolSchema:
+    """Serialize a contract for the discovery endpoints."""
+    metadata = contract.as_metadata()
+    return ToolSchema(
+        input_schema=contract.strict_input_schema(),
+        output_schema=dict(contract.output_schema),
+        **metadata,
+    )
 
 
 @router.get("", response_model=list[ToolSchema])
-async def list_tools() -> list[ToolSchema]:
-    """List all available tools for the agent."""
-    return list(AVAILABLE_TOOLS.values())
+async def list_tools(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+) -> list[ToolSchema]:
+    """List every MCP tool this role may invoke."""
+    registry = _pool(request).registry_for(current_user.role or "procurement_member")
+    return [_as_schema(contract) for contract in registry.all()]
 
 
 @router.get("/{tool_name}", response_model=ToolSchema)
-async def get_tool(tool_name: str) -> ToolSchema:
-    """Get a specific tool schema."""
-    if tool_name not in AVAILABLE_TOOLS:
+async def get_tool(
+    tool_name: str,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+) -> ToolSchema:
+    """Return one tool contract visible to this role."""
+    registry = _pool(request).registry_for(current_user.role or "procurement_member")
+    contract = registry.get(tool_name)
+    if contract is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Tool {tool_name} not found",
         )
-    return AVAILABLE_TOOLS[tool_name]
+    return _as_schema(contract)
 
 
 @router.post("/call", response_model=ToolCallResponse)
 async def call_tool(
     body: ToolCallRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db_session),
 ) -> ToolCallResponse:
-    """Execute a tool call (sandbox for testing)."""
+    """Validate and invoke one MCP tool with tenant and risk enforcement."""
     tenant_id = normalize_tenant_id(current_user.tenant_id)
-    logger.info("tool_call_requested", tool=body.tool_name, tenant_id=tenant_id)
     if normalize_tenant_id(body.tenant_id) != tenant_id:
         raise HTTPException(status_code=403, detail="tenant context mismatch")
 
-    if body.tool_name not in AVAILABLE_TOOLS:
+    registry = _pool(request).registry_for(current_user.role or "procurement_member")
+    contract = registry.get(body.tool_name)
+    if contract is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Tool {body.tool_name} not found",
         )
-
-    # 1. Document Knowledge search tools
-    if body.tool_name in {"search_documents", "search_contracts"}:
-        query = str(body.arguments.get("query", "")).strip()
-        if not query:
-            raise HTTPException(status_code=422, detail="query is required")
-        started = time.perf_counter()
-        try:
-            with trace_span("mcp.document_search", {"tenant_id": tenant_id, "tool": body.tool_name}):
-                chunks = await asyncio.to_thread(
-                    search_documents,
-                    tenant_id=tenant_id,
-                    query=query,
-                    vendor_id=body.arguments.get("vendor_id"),
-                    document_type=(
-                        "contract" if body.tool_name == "search_contracts" else body.arguments.get("document_type")
-                    ),
-                    limit=min(20, int(body.arguments.get("limit", 10))),
-                )
-        except Exception as exc:
-            logger.error(
-                "document_tool_failed",
-                tenant_id=tenant_id,
-                tool=body.tool_name,
-                error_class=type(exc).__name__,
-            )
-            return ToolCallResponse(
-                tool_name=body.tool_name,
-                success=False,
-                error="document search unavailable",
-                execution_time_ms=int((time.perf_counter() - started) * 1000),
-            )
-        return ToolCallResponse(
-            tool_name=body.tool_name,
-            success=True,
-            result={"chunks": chunks},
-            execution_time_ms=int((time.perf_counter() - started) * 1000),
-            provenance={"tenant_id": tenant_id, "source": "qdrant"},
+    if contract.requires_confirmation:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "confirmation_required",
+                "message": (
+                    f"{body.tool_name} is high risk; confirm it with "
+                    "POST /api/v1/ask-ai/actions/confirm"
+                ),
+            },
         )
 
-    # 2. find_renewals tool
-    if body.tool_name == "find_renewals":
-        started = time.perf_counter()
-        from zellovest_agentic.api.routers.negotiation import list_upcoming_renewals
-
-        days_ahead = int(body.arguments.get("days_ahead", 90))
-        renewals = await list_upcoming_renewals(
-            tenant_id=tenant_id,
-            days_ahead=days_ahead,
-            badge="all",
-            auto_renew_only=bool(body.arguments.get("auto_renew_only", False)),
-            search=body.arguments.get("search"),
-            current_user=current_user,
-            session=session,
-        )
-        return ToolCallResponse(
-            tool_name=body.tool_name,
-            success=True,
-            result={"renewals": [r.model_dump() for r in renewals]},
-            execution_time_ms=int((time.perf_counter() - started) * 1000),
-            provenance={"tenant_id": tenant_id, "source": "database"},
-        )
-
-    # 3. create_renewal_reminder tool
-    if body.tool_name == "create_renewal_reminder":
-        started = time.perf_counter()
-        from zellovest_agentic.api.routers.negotiation import create_renewal_reminder
-        from zellovest_agentic.schemas.negotiation import RenewalReminderRequest
-
-        contract_id = str(body.arguments.get("contract_id", ""))
-        vendor_id = str(body.arguments.get("vendor_id", ""))
-        if not contract_id:
-            raise HTTPException(status_code=422, detail="contract_id is required")
-
-        remind_before_days = int(
-            body.arguments.get("remind_before_days", body.arguments.get("remind_days_before_notice", 15))
-        )
-        reminder_req = RenewalReminderRequest(
-            contract_id=contract_id,
-            vendor_id=vendor_id,
-            remind_days_before_notice=remind_before_days,
-            notes=body.arguments.get("notes"),
-        )
-        rem_res = await create_renewal_reminder(
-            body=reminder_req,
-            current_user=current_user,
-            session=session,
-        )
-        return ToolCallResponse(
-            tool_name=body.tool_name,
-            success=True,
-            result=rem_res.model_dump(),
-            execution_time_ms=int((time.perf_counter() - started) * 1000),
-            provenance={"tenant_id": tenant_id, "source": "database"},
-        )
-
-    # 4. get_maverick_spend tool
-    if body.tool_name == "get_maverick_spend":
-        started = time.perf_counter()
-        try:
-            from sqlalchemy import select
-            from zellovest_shared.db.intelligence import MaverickAlert
-
-            stmt = (
-                select(MaverickAlert)
-                .where(MaverickAlert.tenant_id == tenant_id)
-                .order_by(MaverickAlert.created_at.desc())
-            )
-            alerts = (await session.execute(stmt)).scalars().all()
-            detections = [
-                {
-                    "id": str(a.id),
-                    "merchant_name": a.merchant_name,
-                    "jev_is_saas_score": float(a.jev_is_saas_score or 0.0),
-                    "jev_review_score": float(a.jev_review_score or 0.0),
-                    "status": a.status.value if hasattr(a.status, "value") else str(a.status),
-                    "recommended_action": a.recommended_action,
-                    "overlap_score": float(a.overlap_score or 0.0),
-                    "capability_text": a.capability_text,
-                }
-                for a in alerts
-            ]
-            return ToolCallResponse(
-                tool_name=body.tool_name,
-                success=True,
-                result={"detections": detections},
-                execution_time_ms=int((time.perf_counter() - started) * 1000),
-                provenance={"tenant_id": tenant_id, "source": "postgres"},
-            )
-        except Exception as exc:
-            logger.error("get_maverick_spend_tool_failed", error=str(exc))
-            return ToolCallResponse(
-                tool_name=body.tool_name,
-                success=False,
-                error=f"maverick spend query failed: {exc}",
-                execution_time_ms=int((time.perf_counter() - started) * 1000),
-            )
-
-    # Remaining tools are metadata-only until their domain handlers are wired.
-    return ToolCallResponse(
-        tool_name=body.tool_name,
-        success=False,
-        error="Tool execution not implemented - requires MCP client integration",
-        execution_time_ms=0,
+    identity = build_mcp_identity(
+        current_user,
+        str(body.correlation_id or request.state.request_id),
     )
+    arguments = dict(body.arguments)
+    if contract.operation == "write":
+        if body.idempotency_key:
+            arguments["idempotency_key"] = body.idempotency_key
+        arguments.setdefault(
+            "idempotency_key",
+            _pool(request).derive_idempotency_key(body.tool_name, arguments, identity),
+        )
+        arguments["dry_run"] = bool(body.dry_run)
+
+    started = time.perf_counter()
+    logger.info(
+        "tool_sandbox_requested",
+        tenant_id=tenant_id,
+        tool=body.tool_name,
+        risk_class=contract.risk_class,
+        correlation_id=identity.correlation_id,
+    )
+    try:
+        result = await _pool(request).call_tool(
+            body.tool_name,
+            arguments,
+            identity,
+            purpose="tool sandbox invocation",
+            idempotency_key=arguments.get("idempotency_key"),
+        )
+    except McpHostError as exc:
+        elapsed = int((time.perf_counter() - started) * 1000)
+        status_code = {
+            "forbidden": status.HTTP_403_FORBIDDEN,
+            "not_found": status.HTTP_404_NOT_FOUND,
+            "invalid_arguments": status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "conflict": status.HTTP_409_CONFLICT,
+            "timeout": status.HTTP_504_GATEWAY_TIMEOUT,
+            "unavailable": status.HTTP_503_SERVICE_UNAVAILABLE,
+            "circuit_open": status.HTTP_503_SERVICE_UNAVAILABLE,
+        }.get(exc.code, status.HTTP_502_BAD_GATEWAY)
+        raise HTTPException(
+            status_code=status_code,
+            detail={
+                "code": exc.code,
+                "message": exc.message,
+                "tool": body.tool_name,
+                "server": contract.server,
+                "execution_time_ms": elapsed,
+            },
+        ) from exc
+
+    return ToolCallResponse(
+        tool_name=result.tool,
+        server=result.server,
+        risk_class=result.risk_class,
+        success=True,
+        result=result.data,
+        execution_time_ms=result.latency_ms,
+        attempts=result.attempts,
+        provenance={
+            "tenant_id": tenant_id,
+            "server": result.server,
+            "tool_version": result.tool_version,
+            "correlation_id": result.correlation_id,
+            "as_of": datetime.now(UTC).isoformat(),
+        },
+    )
+
+
+__all__ = ["router"]

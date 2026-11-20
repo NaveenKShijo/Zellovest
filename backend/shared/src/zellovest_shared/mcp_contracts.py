@@ -852,7 +852,7 @@ _EXTERNAL_TOOLS: tuple[ToolContract, ...] = (
                 "idempotency_key": _IDEMPOTENCY,
                 "dry_run": _DRY_RUN,
             },
-            ("title",),
+            ("title", "idempotency_key"),
         ),
         output_schema=_object(
             {"workflow_id": {"type": "string"}, "status": {"type": "string"}},
@@ -886,7 +886,7 @@ _EXTERNAL_TOOLS: tuple[ToolContract, ...] = (
                 "idempotency_key": _IDEMPOTENCY,
                 "dry_run": _DRY_RUN,
             },
-            ("title", "reference_type", "reference_id"),
+            ("title", "reference_type", "reference_id", "idempotency_key"),
         ),
         output_schema=_object(
             {"workflow_id": {"type": "string"}, "status": {"type": "string"}},
@@ -921,7 +921,7 @@ _EXTERNAL_TOOLS: tuple[ToolContract, ...] = (
                 "idempotency_key": _IDEMPOTENCY,
                 "dry_run": _DRY_RUN,
             },
-            ("contract_id",),
+            ("contract_id", "idempotency_key"),
         ),
         output_schema=_object(
             {"workflow_id": {"type": "string"}, "status": {"type": "string"}},
@@ -964,7 +964,7 @@ _EXTERNAL_TOOLS: tuple[ToolContract, ...] = (
                 "idempotency_key": _IDEMPOTENCY,
                 "dry_run": _DRY_RUN,
             },
-            ("contract_id",),
+            ("contract_id", "idempotency_key"),
         ),
         output_schema=_object(
             {"workflow_id": {"type": "string"}, "status": {"type": "string"}},
@@ -1003,7 +1003,7 @@ _EXTERNAL_TOOLS: tuple[ToolContract, ...] = (
                 "idempotency_key": _IDEMPOTENCY,
                 "dry_run": _DRY_RUN,
             },
-            ("workflow_type", "reference_type", "reference_id"),
+            ("workflow_type", "reference_type", "reference_id", "idempotency_key"),
         ),
         output_schema=_object(
             {"workflow_id": {"type": "string"}, "status": {"type": "string"}},
@@ -1031,7 +1031,7 @@ _EXTERNAL_TOOLS: tuple[ToolContract, ...] = (
                 "idempotency_key": _IDEMPOTENCY,
                 "dry_run": _DRY_RUN,
             },
-            ("channel", "text"),
+            ("channel", "text", "idempotency_key"),
         ),
         output_schema=_object(
             {"delivered": {"type": "boolean"}, "status": {"type": "string"}},

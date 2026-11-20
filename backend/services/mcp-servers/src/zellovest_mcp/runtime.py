@@ -157,13 +157,27 @@ class McpServerRuntime:
         return decorator
 
     def _declared_tools(self) -> list[types.Tool]:
-        """Return MCP tool descriptors for every declared contract."""
+        """Return MCP tool descriptors for every declared contract.
+
+        The wire-level ``outputSchema`` only asserts that a tool returns an
+        object: tools append provenance/pagination fields, and a strict schema
+        at the transport layer would reject truthful responses. The full
+        output contract is published in ``_meta`` (and at ``/v1/contracts``)
+        so the host and documentation retain the precise shape.
+        """
         return [
             types.Tool(
                 name=contract.name,
                 description=contract.description,
                 inputSchema=contract.strict_input_schema(),
-                outputSchema=dict(contract.output_schema),
+                outputSchema={"type": "object", "additionalProperties": True},
+                _meta={
+                    "zellovest/server": contract.server,
+                    "zellovest/version": contract.version,
+                    "zellovest/risk_class": contract.risk_class,
+                    "zellovest/operation": contract.operation,
+                    "zellovest/output_schema": dict(contract.output_schema),
+                },
             )
             for contract in self.contracts.values()
         ]

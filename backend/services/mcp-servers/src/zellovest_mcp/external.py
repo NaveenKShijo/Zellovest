@@ -160,7 +160,7 @@ async def _find_idempotent(
     return await session.scalar(
         select(Workflow).where(
             Workflow.tenant_id == tenant_id,
-            Workflow.extra["idempotency_key"].astext == idempotency_key,
+            Workflow.extra["idempotency_key"].as_string() == idempotency_key,
         )
     )
 

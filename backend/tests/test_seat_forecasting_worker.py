@@ -15,6 +15,12 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 from zellovest_shared.config import MLRuntimeSettings, Settings
 from zellovest_shared.db.intelligence import SeatForecast
+from zellovest_workers.ml.feature_pipeline import (
+    SQL_DIRECTORY,
+    SQL_FILES,
+    FeaturePipelineConfig,
+    render_sql,
+)
 from zellovest_workers.ml.optimizer import optimize_commitment, poisson_binomial_pmf
 from zellovest_workers.ml.train_vertex import (
     FEATURE_COLUMNS,
@@ -27,6 +33,28 @@ from zellovest_workers.tasks import seat_forecasting
 from zellovest_workers.tasks.seat_forecasting import ActiveSeat
 
 TELEMETRY_DIRECTORY = Path(__file__).resolve().parents[2] / "data" / "telemetry"
+
+
+def test_feature_sql_templates_render_without_unresolved_placeholders() -> None:
+    """Ensure documented SQL comments do not look like unresolved variables."""
+    config = FeaturePipelineConfig(
+        project_id="test-project",
+        tenant_id="tenant_test",
+        gcs_raw_bucket="test-raw-bucket",
+        bronze_dataset="bronze",
+        silver_dataset="silver",
+        gold_dataset="gold",
+        bq_location="US",
+        default_trueup_penalty_rate=0.25,
+    )
+
+    for filename in SQL_FILES:
+        rendered = render_sql(
+            (SQL_DIRECTORY / filename).read_text(encoding="utf-8"),
+            config.template_values(),
+        )
+        assert "{{" not in rendered
+        assert "}}" not in rendered
 
 
 class _TelemetryPredictor:

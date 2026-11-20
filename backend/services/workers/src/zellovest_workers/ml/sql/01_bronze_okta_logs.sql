@@ -1,4 +1,4 @@
--- BigQuery Standard SQL. Render {{...}} placeholders before execution.
+-- BigQuery Standard SQL. Render named template placeholders before execution.
 -- The deployment owns one tenant-isolated bucket; tenant_id is injected in
 -- downstream transforms because native Okta logs do not carry Zellovest IDs.
 

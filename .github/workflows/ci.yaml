@@ -87,9 +87,18 @@ jobs:
         env:
           GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER || secrets.GCP_WIF_PROVIDER }}
           GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT || secrets.GCP_SERVICE_ACCOUNT }}
+          GCP_ARTIFACT_REGISTRY_LOCATION: ${{ vars.GCP_ARTIFACT_REGISTRY_LOCATION }}
         run: |
           if [[ -z "$GCP_WIF_PROVIDER" || -z "$GCP_SERVICE_ACCOUNT" ]]; then
             echo "Set GCP_WIF_PROVIDER and GCP_SERVICE_ACCOUNT in repository variables or secrets." >&2
+            exit 1
+          fi
+          if [[ -z "$GCP_ARTIFACT_REGISTRY_LOCATION" ]]; then
+            echo "Set GCP_ARTIFACT_REGISTRY_LOCATION to the Artifact Registry location, such as us-central1." >&2
+            exit 1
+          fi
+          if [[ "$GCP_ARTIFACT_REGISTRY_LOCATION" == *-docker.pkg.dev ]]; then
+            echo "GCP_ARTIFACT_REGISTRY_LOCATION must be a location only (for example us-central1), not a registry hostname." >&2
             exit 1
           fi
 
@@ -106,7 +115,9 @@ jobs:
           project_id: ${{ vars.GCP_PROJECT_ID }}
 
       - name: Configure Artifact Registry Docker access
-        run: gcloud auth configure-docker "${{ vars.GCP_ARTIFACT_REGISTRY_LOCATION }}-docker.pkg.dev" --quiet
+        env:
+          GAR_HOST: ${{ vars.GCP_ARTIFACT_REGISTRY_LOCATION }}-docker.pkg.dev
+        run: gcloud auth configure-docker "$GAR_HOST" --quiet
 
       - name: Build and publish worker image if this commit is not already present
         env:

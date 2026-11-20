@@ -13,6 +13,10 @@ from zellovest_shared.db.core import (
     Tenant,
     Vendor,
 )
+from zellovest_shared.db.conversations import (
+    AskAiConversation,
+    AskAiMessage,
+)
 from zellovest_shared.db.intelligence import (
     AlertStatus,
     AuditEvent,

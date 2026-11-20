@@ -12,6 +12,8 @@ from zellovest_shared.security.jwt import decode_token
 
 from zellovest_shared.db.session import get_async_db_session
 
+from zellovest_agentic.mcp.client import McpIdentity
+
 _bearer = HTTPBearer(auto_error=False)
 
 
@@ -26,6 +28,30 @@ def normalize_tenant_id(tenant_id: str | None) -> str:
     if tenant_id in (None, "", "default", "default-org"):
         return "default-org"
     return tenant_id
+
+
+def build_mcp_identity(user: User, request_id: str) -> McpIdentity:
+    """Build the MCP identity propagated to the three MCP servers.
+
+    Tenant and actor are derived from the authenticated user, never from tool
+    arguments or a client-supplied tenant id (PRD 25.5 tenant boundary).
+
+    Args:
+        user: Authenticated database user.
+        request_id: Correlation id assigned by request middleware.
+
+    Returns:
+        Immutable identity carried in MCP transport headers.
+    """
+    tenant_id = normalize_tenant_id(user.tenant_id)
+    return McpIdentity(
+        tenant_id=tenant_id,
+        actor_id=str(user.id),
+        role=user.role or "procurement_member",
+        correlation_id=request_id,
+        deployment_id=tenant_id,
+        actor_email=user.email,
+    )
 
 
 async def get_current_user(

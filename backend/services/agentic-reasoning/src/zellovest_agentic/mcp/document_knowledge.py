@@ -6,7 +6,6 @@ import os
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
-
 from zellovest_shared.rag import search_documents as retrieve_documents
 
 mcp = FastMCP("zellovest-document-knowledge")

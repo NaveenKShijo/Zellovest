@@ -466,6 +466,10 @@ from zellovest_shared.db.intelligence import (  # noqa: E402,F401
     WorkflowStatus,
     WorkflowType,
 )
+from zellovest_shared.db.conversations import (  # noqa: E402,F401
+    AskAiConversation,
+    AskAiMessage,
+)
 from zellovest_shared.db.transact import (  # noqa: E402,F401
     CardTransaction,
     Contract,

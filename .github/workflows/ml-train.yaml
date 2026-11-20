@@ -29,7 +29,7 @@ jobs:
       VERTEX_AI_REGION: ${{ vars.VERTEX_AI_REGION || 'us-central1' }}
       BIGQUERY_LOCATION: ${{ vars.BIGQUERY_LOCATION || 'US' }}
       VERTEX_TRAINING_IMAGE_URI: ${{ vars.GCP_ARTIFACT_REGISTRY_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GCP_ARTIFACT_REGISTRY_REPOSITORY }}/zellovest-workers:${{ inputs.training_image_tag }}
-      GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT || secrets.GCP_SERVICE_ACCOUNT }}
+      GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
     steps:
       - uses: actions/checkout@v4
 
