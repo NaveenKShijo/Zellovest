@@ -130,12 +130,8 @@ class OktaApp(Base):
     label: Mapped[str | None] = mapped_column(String(256), nullable=True)
     status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     sign_on_mode: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    okta_created_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    okta_updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    okta_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    okta_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     raw_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -157,12 +153,8 @@ class OktaGroup(Base):
     name: Mapped[str] = mapped_column(String(256), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     group_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    okta_created_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    okta_updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    okta_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    okta_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_membership_updated: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -218,9 +210,7 @@ class LicenseAssignment(Base):
     assigned_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
-    unassigned_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    unassigned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -232,9 +222,7 @@ class ContractProductProfile(Base):
 
     __tablename__ = "contract_product_profiles"
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id", "contract_line_id", name="uq_contract_product_profile_line"
-        ),
+        UniqueConstraint("tenant_id", "contract_line_id", name="uq_contract_product_profile_line"),
         Index("ix_contract_product_profiles_tenant", "tenant_id"),
     )
 
@@ -502,6 +490,12 @@ class SavingsLedgerEntry(Base):
 
     __tablename__ = "savings_ledger"
     __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "source_type",
+            "source_id",
+            name="uq_savings_ledger_source",
+        ),
         Index("ix_sav_tenant_kind_status", "tenant_id", "kind", "status"),
         Index("ix_sav_tenant_vendor", "tenant_id", "vendor_id"),
     )

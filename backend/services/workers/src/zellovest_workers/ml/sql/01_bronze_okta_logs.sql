@@ -12,7 +12,6 @@ OPTIONS (
   format = 'NEWLINE_DELIMITED_JSON',
   uris = ['gs://{{GCS_RAW_BUCKET}}/raw/okta_logs/*/*.jsonl.gz'],
   hive_partition_uri_prefix = 'gs://{{GCS_RAW_BUCKET}}/raw/okta_logs',
-  autodetect = TRUE,
   ignore_unknown_values = TRUE
 );
 
@@ -26,7 +25,6 @@ OPTIONS (
   format = 'NEWLINE_DELIMITED_JSON',
   uris = ['gs://{{GCS_RAW_BUCKET}}/raw/license_assignments/*/*.jsonl.gz'],
   hive_partition_uri_prefix = 'gs://{{GCS_RAW_BUCKET}}/raw/license_assignments',
-  autodetect = TRUE,
   ignore_unknown_values = TRUE
 );
 
@@ -37,7 +35,6 @@ OPTIONS (
   format = 'NEWLINE_DELIMITED_JSON',
   uris = ['gs://{{GCS_RAW_BUCKET}}/raw/hris_employees/*/*.jsonl.gz'],
   hive_partition_uri_prefix = 'gs://{{GCS_RAW_BUCKET}}/raw/hris_employees',
-  autodetect = TRUE,
   ignore_unknown_values = TRUE
 );
 
@@ -48,6 +45,5 @@ OPTIONS (
   format = 'NEWLINE_DELIMITED_JSON',
   uris = ['gs://{{GCS_RAW_BUCKET}}/raw/license_contracts/*/*.jsonl.gz'],
   hive_partition_uri_prefix = 'gs://{{GCS_RAW_BUCKET}}/raw/license_contracts',
-  autodetect = TRUE,
   ignore_unknown_values = TRUE
 );

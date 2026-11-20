@@ -57,7 +57,7 @@ def mock_identity():
 def test_tool_registry_role_filtering_and_validation():
     """Registry only exposes tools allowed for the role, and validates schemas."""
     registry = ToolRegistry(PROCUREMENT_ROLE)
-    assert len(registry.all()) == 33
+    assert len(registry.all()) == 34
     assert registry.get("get_vendor") is not None
 
     # Unknown tool raises ToolValidationError
@@ -210,7 +210,9 @@ async def test_plan_executor_proposes_high_risk_and_handles_failures(mock_identi
     # Mock tool call in pool
     async def fake_call_tool(tool_name, arguments, identity, **kwargs):
         if tool_name == "get_vendor":
-            raise McpHostError("timeout", "database read timed out", server=MCP_PROCUREMENT, tool="get_vendor")
+            raise McpHostError(
+                "timeout", "database read timed out", server=MCP_PROCUREMENT, tool="get_vendor"
+            )
         if tool_name == "send_email":
             # Dry-run preview
             return McpToolResult(
@@ -313,7 +315,9 @@ def test_synthesizer_evidence_grounding_and_gap_handling():
     assert len(result.citations) >= 1
     # Answers mention unavailable data rather than fabricating zero
     lower_ans = result.answer.lower()
-    assert any(term in lower_ans for term in ["unavailable", "not available", "timed out", "timeout"])
+    assert any(
+        term in lower_ans for term in ["unavailable", "not available", "timed out", "timeout"]
+    )
 
 
 @pytest.mark.asyncio
@@ -376,7 +380,7 @@ def test_api_tools_endpoints():
     res = client.get("/api/v1/tools")
     assert res.status_code == 200
     tools = res.json()
-    assert len(tools) == 33
+    assert len(tools) == 34
 
     # Get single tool
     res_tool = client.get("/api/v1/tools/get_vendor")

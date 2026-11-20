@@ -15,7 +15,7 @@ from zellovest_shared.mcp_contracts import (
 
 
 def test_mcp_servers_and_counts():
-    """Exactly three logical MCP servers with 33 tools total (PRD 25.1 / 25.12)."""
+    """Exactly three logical MCP servers with 34 tools total (PRD 25.1 / 25.12)."""
     assert len(MCP_SERVERS) == 3
     assert set(MCP_SERVERS) == {MCP_PROCUREMENT, MCP_DOCUMENTS, MCP_EXTERNAL}
 
@@ -23,17 +23,17 @@ def test_mcp_servers_and_counts():
     doc_tools = contracts_for_server(MCP_DOCUMENTS)
     ext_tools = contracts_for_server(MCP_EXTERNAL)
 
-    # MCP-1 has 13 tools
-    assert len(proc_tools) == 13
+    # MCP-1 has 14 tools, including bounded commercial-history investigation.
+    assert len(proc_tools) == 14
     # MCP-2 has 10 tools
     assert len(doc_tools) == 10
     # MCP-3 has 10 tools
     assert len(ext_tools) == 10
-    assert len(TOOL_CONTRACTS) == 33
+    assert len(TOOL_CONTRACTS) == 34
 
 
 def test_mcp1_procurement_tool_names():
-    """Verify all 13 MCP-1 Procurement Intelligence tools exist."""
+    """Verify all 14 MCP-1 Procurement Intelligence tools exist."""
     expected = {
         "get_vendor",
         "get_contract",
@@ -43,6 +43,7 @@ def test_mcp1_procurement_tool_names():
         "get_license_usage",
         "find_renewals",
         "get_reconciliation_exception",
+            "get_vendor_commercial_history",
         "compare_invoice_contract",
         "get_maverick_spend",
         "get_spend_trend",

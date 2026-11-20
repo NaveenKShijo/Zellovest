@@ -15,8 +15,8 @@ import redis
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from zellovest_agentic.agent import ActionService, AskAIAgent
-from zellovest_agentic.api.routers import ask_ai, negotiation, rag, tools
+from zellovest_agentic.agent import ActionService, AskAIAgent, ProcurementInvestigationAgent
+from zellovest_agentic.api.routers import ask_ai, investigations, negotiation, rag, tools
 from zellovest_agentic.config import get_agentic_reasoning_settings
 from zellovest_agentic.mcp import McpPool
 from zellovest_shared.logging_conf import configure_logging, get_logger
@@ -33,6 +33,7 @@ def _wire_agent(app: FastAPI, settings) -> None:
         app.state.mcp_pool = pool
         app.state.ask_ai_agent = AskAIAgent(settings, pool)
         app.state.action_service = ActionService(settings, pool)
+        app.state.investigation_agent = ProcurementInvestigationAgent(pool)
 
 
 @asynccontextmanager
@@ -81,6 +82,7 @@ def create_app(settings=None) -> FastAPI:
 
     prefix = app.state.settings.api_v1_prefix
     app.include_router(ask_ai.router, prefix=prefix, tags=["ask_ai"])
+    app.include_router(investigations.router, prefix=prefix, tags=["investigations"])
     app.include_router(negotiation.router, prefix=prefix, tags=["negotiation"])
     app.include_router(rag.router, prefix=prefix, tags=["rag"])
     app.include_router(tools.router, prefix=prefix, tags=["tools"])

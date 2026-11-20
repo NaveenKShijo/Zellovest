@@ -55,6 +55,8 @@ def test_feature_sql_templates_render_without_unresolved_placeholders() -> None:
         )
         assert "{{" not in rendered
         assert "}}" not in rendered
+        if filename == "01_bronze_okta_logs.sql":
+            assert "autodetect =" not in rendered.lower()
 
 
 class _TelemetryPredictor:

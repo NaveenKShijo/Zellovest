@@ -309,9 +309,7 @@ async def _find_vendor(
 
     if domain:
         normalized = domain.strip().lower().removeprefix("www.")
-        vendor = await session.scalar(
-            stmt.where(func.lower(Vendor.domain) == normalized).limit(1)
-        )
+        vendor = await session.scalar(stmt.where(func.lower(Vendor.domain) == normalized).limit(1))
         if vendor is None:
             raise not_found("vendor")
         return vendor
@@ -393,8 +391,7 @@ async def get_vendor(context, arguments: dict[str, Any]) -> dict[str, Any]:
             },
             "as_of": datetime.now(UTC).isoformat(),
             "summary": (
-                f"{vendor.name}: {contract_count or 0} contracts, "
-                f"{invoice_count or 0} invoices"
+                f"{vendor.name}: {contract_count or 0} contracts, {invoice_count or 0} invoices"
             ),
         }
 
@@ -459,8 +456,7 @@ async def get_contract(context, arguments: dict[str, Any]) -> dict[str, Any]:
             "versions": versions,
             "as_of": datetime.now(UTC).isoformat(),
             "summary": (
-                f"{contract.contract_number}: {len(terms)} priced lines, "
-                f"{len(versions)} versions"
+                f"{contract.contract_number}: {len(terms)} priced lines, {len(versions)} versions"
             ),
         }
 
@@ -537,8 +533,7 @@ async def get_invoice(context, arguments: dict[str, Any]) -> dict[str, Any]:
             ],
             "as_of": datetime.now(UTC).isoformat(),
             "summary": (
-                f"{invoice.invoice_number}: {len(lines)} lines, "
-                f"{len(exceptions)} exceptions"
+                f"{invoice.invoice_number}: {len(lines)} lines, {len(exceptions)} exceptions"
             ),
         }
 
@@ -556,8 +551,7 @@ async def get_purchase_order(context, arguments: dict[str, Any]) -> dict[str, An
             stmt = stmt.where(PurchaseOrder.id == _uuid(arguments["po_id"], "po_id"))
         elif arguments.get("po_number"):
             stmt = stmt.where(
-                func.lower(PurchaseOrder.po_number)
-                == str(arguments["po_number"]).strip().lower()
+                func.lower(PurchaseOrder.po_number) == str(arguments["po_number"]).strip().lower()
             )
         else:
             raise invalid("po_id or po_number is required")
@@ -598,8 +592,7 @@ async def get_purchase_order(context, arguments: dict[str, Any]) -> dict[str, An
             ],
             "as_of": datetime.now(UTC).isoformat(),
             "summary": (
-                f"{po.po_number}: {len(lines)} lines, "
-                f"{_money(po.total_amount)} {po.currency}"
+                f"{po.po_number}: {len(lines)} lines, {_money(po.total_amount)} {po.currency}"
             ),
         }
 
@@ -610,9 +603,7 @@ async def get_vendor_spend(context, arguments: dict[str, Any]) -> dict[str, Any]
     start, end = _window(arguments.get("start_date"), arguments.get("end_date"))
     include = set(arguments.get("include") or ["invoices", "card_transactions"])
     async with async_session_context() as session:
-        vendor = await _find_vendor(
-            session, context.tenant_id, vendor_id=arguments["vendor_id"]
-        )
+        vendor = await _find_vendor(session, context.tenant_id, vendor_id=arguments["vendor_id"])
         invoice_total = _ZERO
         card_total = _ZERO
         by_month: dict[str, dict[str, Decimal]] = defaultdict(
@@ -698,9 +689,7 @@ async def get_license_usage(context, arguments: dict[str, Any]) -> dict[str, Any
     inactive_days = int(arguments.get("inactive_days") or 30)
     cutoff = datetime.now(UTC) - timedelta(days=inactive_days)
     async with async_session_context() as session:
-        vendor = await _find_vendor(
-            session, context.tenant_id, vendor_id=arguments["vendor_id"]
-        )
+        vendor = await _find_vendor(session, context.tenant_id, vendor_id=arguments["vendor_id"])
         assignments = (
             await session.scalars(
                 select(LicenseAssignment).where(
@@ -862,9 +851,7 @@ async def find_renewals(context, arguments: dict[str, Any]) -> dict[str, Any]:
             if renewal > max_date or days_until < -30:
                 continue
             notice_period = (
-                contract.notice_period_days
-                if contract.notice_period_days is not None
-                else 30
+                contract.notice_period_days if contract.notice_period_days is not None else 30
             )
             notice_deadline = renewal - timedelta(days=notice_period)
             days_to_notice = (notice_deadline - today).days
@@ -942,8 +929,7 @@ async def get_reconciliation_exception(context, arguments: dict[str, Any]) -> di
         exception = await session.scalar(
             select(ReconciliationException).where(
                 ReconciliationException.tenant_id == context.tenant_id,
-                ReconciliationException.id
-                == _uuid(arguments["exception_id"], "exception_id"),
+                ReconciliationException.id == _uuid(arguments["exception_id"], "exception_id"),
             )
         )
         if exception is None:
@@ -991,9 +977,7 @@ async def get_reconciliation_exception(context, arguments: dict[str, Any]) -> di
                     else None
                 ),
                 "billed_value": (
-                    _money(exception.billed_value)
-                    if exception.billed_value is not None
-                    else None
+                    _money(exception.billed_value) if exception.billed_value is not None else None
                 ),
                 "variance_amount": (
                     _money(exception.variance_amount)
@@ -1023,8 +1007,160 @@ async def get_reconciliation_exception(context, arguments: dict[str, Any]) -> di
             ),
             "as_of": datetime.now(UTC).isoformat(),
             "summary": (
-                f"{_enum(exception.rule_type)} variance "
-                f"{_money(exception.variance_amount or 0)}"
+                f"{_enum(exception.rule_type)} variance {_money(exception.variance_amount or 0)}"
+            ),
+        }
+
+
+@procurement.tool("get_vendor_commercial_history")
+async def get_vendor_commercial_history(context, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Return bounded commercial evidence for a reconciliation investigation.
+
+    The tool deliberately returns records and contract lineage without drawing a
+    conclusion.  The reasoning service can then explain an exception while the
+    AP audit engine remains the authority for all variance arithmetic.
+    """
+    vendor_id = _uuid(arguments["vendor_id"], "vendor_id")
+    contract_id = (
+        _uuid(arguments["contract_id"], "contract_id") if arguments.get("contract_id") else None
+    )
+    limit = int(arguments.get("limit", 20))
+    before_date = arguments.get("before_date")
+    before = (
+        datetime.combine(date.fromisoformat(before_date), time.min, UTC) if before_date else None
+    )
+
+    async with async_session_context() as session:
+        vendor = await session.scalar(
+            select(Vendor).where(Vendor.tenant_id == context.tenant_id, Vendor.id == vendor_id)
+        )
+        if vendor is None:
+            raise not_found("vendor")
+
+        contract = None
+        if contract_id is not None:
+            contract = await session.scalar(
+                select(Contract).where(
+                    Contract.tenant_id == context.tenant_id,
+                    Contract.id == contract_id,
+                )
+            )
+            if contract is None:
+                raise not_found("contract")
+            if contract.vendor_id != vendor_id:
+                raise invalid("contract_id does not belong to vendor_id")
+
+        invoice_stmt = (
+            select(Invoice)
+            .where(Invoice.tenant_id == context.tenant_id, Invoice.vendor_id == vendor_id)
+            .order_by(Invoice.invoice_date.desc())
+            .limit(limit)
+        )
+        if contract_id is not None:
+            invoice_stmt = invoice_stmt.where(Invoice.contract_id == contract_id)
+        if before is not None:
+            invoice_stmt = invoice_stmt.where(Invoice.invoice_date < before)
+        invoices = (await session.scalars(invoice_stmt)).all()
+
+        invoice_history: list[dict[str, Any]] = []
+        for invoice in invoices:
+            lines = (
+                await session.scalars(
+                    select(InvoiceLineItem)
+                    .where(
+                        InvoiceLineItem.tenant_id == context.tenant_id,
+                        InvoiceLineItem.invoice_id == invoice.id,
+                    )
+                    .order_by(InvoiceLineItem.line_no)
+                )
+            ).all()
+            invoice_history.append(
+                {
+                    **_invoice_json(invoice, vendor),
+                    "line_items": [_line_json(line) for line in lines],
+                }
+            )
+
+        card_stmt = (
+            select(CardTransaction)
+            .where(
+                CardTransaction.tenant_id == context.tenant_id,
+                CardTransaction.vendor_id == vendor_id,
+            )
+            .order_by(CardTransaction.txn_date.desc())
+            .limit(limit)
+        )
+        if before is not None:
+            card_stmt = card_stmt.where(CardTransaction.txn_date < before)
+        card_transactions = (await session.scalars(card_stmt)).all()
+
+        versions: list[ContractVersion] = []
+        terms: list[ContractTermsVersion] = []
+        if contract is not None:
+            versions = (
+                await session.scalars(
+                    select(ContractVersion)
+                    .where(
+                        ContractVersion.tenant_id == context.tenant_id,
+                        ContractVersion.contract_id == contract.id,
+                    )
+                    .order_by(ContractVersion.version_no)
+                )
+            ).all()
+            terms = (
+                await session.scalars(
+                    select(ContractTermsVersion)
+                    .where(
+                        ContractTermsVersion.tenant_id == context.tenant_id,
+                        ContractTermsVersion.contract_id == contract.id,
+                    )
+                    .order_by(
+                        ContractTermsVersion.contract_line_id, ContractTermsVersion.version_no
+                    )
+                )
+            ).all()
+
+        return {
+            "vendor_id": str(vendor.id),
+            "vendor_name": vendor.name,
+            "contract_id": str(contract.id) if contract else None,
+            "invoices": invoice_history,
+            "card_transactions": [
+                {
+                    "id": str(transaction.id),
+                    "merchant_name": transaction.merchant_name,
+                    "merchant_domain": transaction.merchant_domain,
+                    "amount": _money(transaction.amount),
+                    "currency": transaction.currency,
+                    "transaction_date": _iso(transaction.txn_date),
+                    "is_recurring": transaction.is_recurring,
+                    "recurrence_interval_days": transaction.recurrence_interval_days,
+                    "category": transaction.sk_category_name,
+                }
+                for transaction in card_transactions
+            ],
+            "contract_versions": [
+                {
+                    "id": str(version.id),
+                    "version_no": version.version_no,
+                    "change_type": _enum(version.change_type),
+                    "effective_from": _iso(version.effective_from),
+                    "effective_to": _iso(version.effective_to),
+                    "source_document_id": (
+                        str(version.source_document_id) if version.source_document_id else None
+                    ),
+                    "parent_version_id": (
+                        str(version.parent_version_id) if version.parent_version_id else None
+                    ),
+                }
+                for version in versions
+            ],
+            "term_history": [_term_json(term) for term in terms],
+            "as_of": datetime.now(UTC).isoformat(),
+            "summary": (
+                f"{len(invoice_history)} prior invoices, "
+                f"{len(card_transactions)} card transactions, "
+                f"{len(versions)} contract versions, and {len(terms)} versioned terms"
             ),
         }
 
@@ -1073,9 +1209,7 @@ async def compare_invoice_contract(context, arguments: dict[str, Any]) -> dict[s
             if term.effective_to is None or term.effective_to >= invoice_date
         ]
         terms = _latest_terms(in_force)
-        by_code = {
-            normalize_text(term.product_code): term for term in terms if term.product_code
-        }
+        by_code = {normalize_text(term.product_code): term for term in terms if term.product_code}
         by_description = {normalize_text(term.description): term for term in terms}
 
         lines = (
@@ -1157,9 +1291,7 @@ async def compare_invoice_contract(context, arguments: dict[str, Any]) -> dict[s
                     {
                         "code": "line_total_variance",
                         "severity": severity_for_variance(
-                            float((total_variance / expected_line) * 100)
-                            if expected_line
-                            else None
+                            float((total_variance / expected_line) * 100) if expected_line else None
                         ),
                         "message": f"billed total differs by {total_variance}",
                     }
@@ -1186,9 +1318,7 @@ async def compare_invoice_contract(context, arguments: dict[str, Any]) -> dict[s
             )
 
         total_variance = (billed_total - expected_total).quantize(Decimal("0.01"))
-        variance_pct = (
-            float((total_variance / expected_total) * 100) if expected_total else None
-        )
+        variance_pct = float((total_variance / expected_total) * 100) if expected_total else None
         return {
             "invoice_id": str(invoice.id),
             "invoice_number": invoice.invoice_number,
@@ -1248,9 +1378,7 @@ async def get_maverick_spend(context, arguments: dict[str, Any]) -> dict[str, An
             stmt = stmt.where(MaverickAlert.status == AlertStatus(status))
         if min_score is not None:
             stmt = stmt.where(MaverickAlert.jev_is_saas_score >= Decimal(str(min_score)))
-        total = await session.scalar(
-            select(func.count()).select_from(stmt.subquery())
-        )
+        total = await session.scalar(select(func.count()).select_from(stmt.subquery()))
         rows = (
             await session.execute(
                 stmt.order_by(
@@ -1273,9 +1401,7 @@ async def get_maverick_spend(context, arguments: dict[str, Any]) -> dict[str, An
                 "status": _enum(alert.status),
                 "recommended_action": alert.recommended_action,
                 "overlap_score": _ratio(alert.overlap_score),
-                "overlap_product": (
-                    profile.product_name if profile else None
-                ),
+                "overlap_product": (profile.product_name if profile else None),
                 "capability_text": alert.capability_text,
                 "employee": (
                     {
@@ -1311,9 +1437,7 @@ async def get_spend_trend(context, arguments: dict[str, Any]) -> dict[str, Any]:
         start = end - timedelta(days=365)
     granularity = arguments.get("granularity") or "month"
     source = arguments.get("source") or "both"
-    vendor_id = (
-        _uuid(arguments["vendor_id"], "vendor_id") if arguments.get("vendor_id") else None
-    )
+    vendor_id = _uuid(arguments["vendor_id"], "vendor_id") if arguments.get("vendor_id") else None
     bucket = "month" if granularity == "month" else "week"
 
     async with async_session_context() as session:
@@ -1355,10 +1479,12 @@ async def get_spend_trend(context, arguments: dict[str, Any]) -> dict[str, Any]:
             currencies = list(
                 (
                     await session.scalars(
-                        select(Invoice.currency).where(
+                        select(Invoice.currency)
+                        .where(
                             Invoice.tenant_id == context.tenant_id,
                             Invoice.vendor_id == vendor_id,
-                        ).limit(20)
+                        )
+                        .limit(20)
                     )
                 ).all()
             )
@@ -1391,9 +1517,7 @@ async def calculate_spend(context, arguments: dict[str, Any]) -> dict[str, Any]:
     assert start is not None and end is not None
     source = arguments.get("source") or "both"
     group_by = arguments.get("group_by") or "vendor"
-    vendor_id = (
-        _uuid(arguments["vendor_id"], "vendor_id") if arguments.get("vendor_id") else None
-    )
+    vendor_id = _uuid(arguments["vendor_id"], "vendor_id") if arguments.get("vendor_id") else None
     category = arguments.get("category")
 
     async with async_session_context() as session:
@@ -1517,9 +1641,7 @@ def _spend_group_key(
 @procurement.tool("calculate_savings")
 async def calculate_savings(context, arguments: dict[str, Any]) -> dict[str, Any]:
     """Calculate verified savings and potential recovery opportunities."""
-    vendor_id = (
-        _uuid(arguments["vendor_id"], "vendor_id") if arguments.get("vendor_id") else None
-    )
+    vendor_id = _uuid(arguments["vendor_id"], "vendor_id") if arguments.get("vendor_id") else None
     start, end = _window(arguments.get("start_date"), arguments.get("end_date"))
     include_opportunities = arguments.get("include_opportunities", True)
 
@@ -1575,9 +1697,7 @@ async def calculate_savings(context, arguments: dict[str, Any]) -> dict[str, Any
                 ).where(Invoice.vendor_id == vendor_id)
             for exception in (await session.scalars(exception_stmt)).all():
                 potential_overbilling += to_decimal(exception.variance_amount)
-            forecast_stmt = select(SeatForecast).where(
-                SeatForecast.tenant_id == context.tenant_id
-            )
+            forecast_stmt = select(SeatForecast).where(SeatForecast.tenant_id == context.tenant_id)
             if vendor_id:
                 forecast_stmt = forecast_stmt.where(SeatForecast.vendor_id == vendor_id)
             seen: set[uuid.UUID] = set()

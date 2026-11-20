@@ -22,6 +22,7 @@ from zellovest_procurement.api.routers import (
     invoices,
     maverick,
     purchase_orders,
+    savings,
     tenants,
     vendors,
     workflows,
@@ -88,6 +89,7 @@ def create_app(settings=None) -> FastAPI:
     app.include_router(compliance.router, prefix=prefix, tags=["compliance"])
     app.include_router(maverick.router, prefix=prefix, tags=["maverick-spend"])
     app.include_router(workflows.router, prefix=prefix, tags=["workflows"])
+    app.include_router(savings.router, prefix=prefix, tags=["savings-ledger"])
 
     @app.get("/healthz", tags=["ops"])
     def healthz() -> dict:

@@ -50,7 +50,7 @@ def test_contracts_discovery_endpoint_auth():
     assert authed.status_code == 200
     data = authed.json()
     assert data["server"] == MCP_PROCUREMENT
-    assert len(data["tools"]) == 13
+    assert len(data["tools"]) == 14
 
 
 def test_procurement_tool_validation():
@@ -207,9 +207,11 @@ async def test_external_tools_high_risk_with_valid_token():
         mock_session.commit = AsyncMock()
         yield mock_session
 
-    with patch("zellovest_mcp.external.get_mcp_settings", return_value=fake_settings), \
-         patch("zellovest_mcp.external.async_session_context", fake_session_context), \
-         patch("smtplib.SMTP"):
+    with (
+        patch("zellovest_mcp.external.get_mcp_settings", return_value=fake_settings),
+        patch("zellovest_mcp.external.async_session_context", fake_session_context),
+        patch("smtplib.SMTP"),
+    ):
         result = await handler(context, email_params)
         assert result["delivered"] is True
         assert result["status"] == "sent"

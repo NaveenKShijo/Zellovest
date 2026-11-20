@@ -21,6 +21,7 @@ from zellovest_agentic.schemas.rag import (
     DocumentUploadRequest,
     DocumentUploadResponse,
 )
+from zellovest_agentic.schemas.investigation import ReconciliationInvestigationResponse
 
 __all__ = [
     "AskAIRequest",
@@ -38,4 +39,5 @@ __all__ = [
     "DocumentSearchResponse",
     "DocumentUploadRequest",
     "DocumentUploadResponse",
+    "ReconciliationInvestigationResponse",
 ]

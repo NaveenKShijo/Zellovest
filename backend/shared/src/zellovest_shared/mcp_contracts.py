@@ -204,8 +204,7 @@ _PROCUREMENT_TOOLS: tuple[ToolContract, ...] = (
         name="get_invoice",
         server=MCP_PROCUREMENT,
         description=(
-            "Return one invoice header, its line items, vendor, and linked "
-            "audit exceptions."
+            "Return one invoice header, its line items, vendor, and linked audit exceptions."
         ),
         input_schema=_object(
             {
@@ -225,9 +224,7 @@ _PROCUREMENT_TOOLS: tuple[ToolContract, ...] = (
         name="get_purchase_order",
         server=MCP_PROCUREMENT,
         description="Return one purchase order header, line items, vendor, and linked contract.",
-        input_schema=_object(
-            {"po_id": _UUID, "po_number": {"type": "string", "maxLength": 128}}
-        ),
+        input_schema=_object({"po_id": _UUID, "po_number": {"type": "string", "maxLength": 128}}),
         output_schema=_object(
             {"purchase_order": _any_object(), "line_items": {"type": "array"}},
             ("purchase_order",),
@@ -352,6 +349,38 @@ _PROCUREMENT_TOOLS: tuple[ToolContract, ...] = (
         risk_class="read_only",
         operation="read",
         timeout_seconds=15.0,
+    ),
+    ToolContract(
+        name="get_vendor_commercial_history",
+        server=MCP_PROCUREMENT,
+        description=(
+            "Return a bounded, tenant-scoped commercial history for an investigation: "
+            "prior invoices, vendor-linked card transactions, contract versions, and "
+            "versioned pricing terms. It does not perform financial calculations."
+        ),
+        input_schema=_object(
+            {
+                "vendor_id": _UUID,
+                "contract_id": _UUID,
+                "before_date": _DATE,
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20},
+            },
+            ("vendor_id",),
+        ),
+        output_schema=_object(
+            {
+                "vendor_id": {"type": "string"},
+                "invoices": {"type": "array"},
+                "card_transactions": {"type": "array"},
+                "contract_versions": {"type": "array"},
+                "term_history": {"type": "array"},
+            },
+            ("vendor_id", "invoices", "card_transactions", "contract_versions", "term_history"),
+        ),
+        auth_scope="procurement.reconciliation.read",
+        risk_class="read_only",
+        operation="read",
+        timeout_seconds=20.0,
     ),
     ToolContract(
         name="compare_invoice_contract",
@@ -754,8 +783,7 @@ _DOCUMENT_TOOLS: tuple[ToolContract, ...] = (
         name="get_source_provenance",
         server=MCP_DOCUMENTS,
         description=(
-            "Return the source document, page, section, bbox, and raw passage for "
-            "one chunk id."
+            "Return the source document, page, section, bbox, and raw passage for one chunk id."
         ),
         input_schema=_object({"chunk_id": _UUID}, ("chunk_id",)),
         output_schema=_object(
@@ -839,8 +867,7 @@ _EXTERNAL_TOOLS: tuple[ToolContract, ...] = (
         name="create_procurement_task",
         server=MCP_EXTERNAL,
         description=(
-            "Create a tracked procurement task. Supports dry-run preview and "
-            "idempotency keys."
+            "Create a tracked procurement task. Supports dry-run preview and idempotency keys."
         ),
         input_schema=_object(
             {
@@ -1134,9 +1161,7 @@ TOOL_CONTRACTS: dict[str, ToolContract] = {
 
 def contracts_for_server(server: str) -> tuple[ToolContract, ...]:
     """Return every contract declared for one logical MCP server."""
-    return tuple(
-        contract for contract in TOOL_CONTRACTS.values() if contract.server == server
-    )
+    return tuple(contract for contract in TOOL_CONTRACTS.values() if contract.server == server)
 
 
 def contract_for_tool(tool_name: str) -> ToolContract | None:
