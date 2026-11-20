@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -57,6 +58,8 @@ def test_feature_sql_templates_render_without_unresolved_placeholders() -> None:
         assert "}}" not in rendered
         if filename == "01_bronze_okta_logs.sql":
             assert "autodetect =" not in rendered.lower()
+            for uri in re.findall(r"gs://[^']+", rendered):
+                assert uri.count("*") <= 1
 
 
 class _TelemetryPredictor:
