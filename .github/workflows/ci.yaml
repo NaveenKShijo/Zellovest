@@ -48,7 +48,7 @@ jobs:
       - name: Run forecasting tests
         env:
           PYTHONPATH: src:../../shared/src
-        run: uv run --locked pytest ../../tests/test_seat_forecasting_worker.py ../../tests/test_synthetic_seat_ingestion.py -q
+        run: uv run --locked pytest ../../tests/test_seat_forecasting_worker.py ../../tests/test_synthetic_seat_ingestion.py ../../tests/test_vertex_training_submission.py -q
 
       - name: Lint forecasting code
         run: >-
@@ -57,6 +57,7 @@ jobs:
           src/zellovest_workers/tasks/seat_forecasting.py
           ../../tests/test_seat_forecasting_worker.py
           ../../tests/test_synthetic_seat_ingestion.py
+          ../../tests/test_vertex_training_submission.py
           ../../shared/src/zellovest_shared/config.py
 
       - name: Type check forecasting code

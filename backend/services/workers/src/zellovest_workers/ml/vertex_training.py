@@ -32,29 +32,32 @@ def submit_vertex_training(tenant_id: str, feature_table: str | None = None) -> 
         location=settings.vertex_ai_region,
         staging_bucket=f"gs://{bucket}",
     )
-    training_job = aiplatform.CustomContainerTrainingJob(
+    training_job = aiplatform.CustomJob(
         display_name=f"seat-retention-{tenant_id}",
-        container_uri=image_uri,
-        command=["python", "-m", "zellovest_workers.ml.train_vertex"],
-    )
-    training_job.run(
-        args=[
-            "--feature-table",
-            feature_table or f"{project_id}.{settings.bigquery_gold_dataset}.gold_seat_features",
-            "--tenant-id",
-            tenant_id,
-        ],
-        environment_variables={
-            "GOOGLE_CLOUD_PROJECT": project_id,
-            "GCS_ML_BUCKET": bucket,
-            "VERTEX_AI_REGION": settings.vertex_ai_region,
-        },
-        replica_count=1,
-        machine_type=os.getenv("VERTEX_TRAINING_MACHINE_TYPE", "n1-standard-8"),
+        worker_pool_specs=[{
+            "machine_spec": {
+                "machine_type": os.getenv("VERTEX_TRAINING_MACHINE_TYPE", "n1-standard-8"),
+            },
+            "replica_count": 1,
+            "container_spec": {
+                "image_uri": image_uri,
+                "command": ["python", "-m", "zellovest_workers.ml.train_vertex"],
+                "args": [
+                    "--feature-table",
+                    feature_table or f"{project_id}.{settings.bigquery_gold_dataset}.gold_seat_features",
+                    "--tenant-id",
+                    tenant_id,
+                ],
+                "env": [
+                    {"name": "GOOGLE_CLOUD_PROJECT", "value": project_id},
+                    {"name": "GCS_ML_BUCKET", "value": bucket},
+                    {"name": "VERTEX_AI_REGION", "value": settings.vertex_ai_region},
+                ],
+            },
+        }],
         base_output_dir=f"gs://{bucket}/vertex-output/{tenant_id}",
-        service_account=os.getenv("GCP_SERVICE_ACCOUNT") or None,
-        sync=False,
     )
+    training_job.submit(service_account=os.getenv("GCP_SERVICE_ACCOUNT") or None)
     resource_name = str(training_job.resource_name)
     logger.info(
         "seat_training_job_submitted",
