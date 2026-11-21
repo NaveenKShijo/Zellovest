@@ -170,6 +170,20 @@ export const PRD_PROMPT_PRESETS: PromptPresetItem[] = [
     label: 'Why Did Spend Increase?',
     description: 'Cross-domain synthesis: SQL + Card Ingestion + Maverick + Okta + Contracts',
   },
+  {
+    id: 'cross-domain-renewals-underutilized',
+    category: 'Cross-Domain',
+    prompt: 'Which upcoming renewals have low Okta license utilization?',
+    label: 'Renewals vs Inactive Seats',
+    description: 'Correlate 90-day renewal deadlines with inactive seat telemetry to downscope licenses',
+  },
+  {
+    id: 'cross-domain-shadow-saas-audit',
+    category: 'Cross-Domain',
+    prompt: 'Identify unmanaged corporate card spend that duplicates existing enterprise contracts.',
+    label: 'Shadow SaaS vs Rate Cards',
+    description: 'Cross-correlate Ramp employee card expenses against existing enterprise MSA discounts',
+  },
 ];
 
 /**

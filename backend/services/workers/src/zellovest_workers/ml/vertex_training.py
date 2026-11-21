@@ -73,7 +73,9 @@ def run_training(tenant_id: str) -> dict[str, Any]:
     snapshot_id = os.getenv("SEAT_FEATURE_SNAPSHOT_ID", "")
     if snapshot_id:
         if not snapshot_id.replace("_", "").isalnum():
-            raise ValueError("SEAT_FEATURE_SNAPSHOT_ID must contain only letters, digits and underscores")  # noqa: E501
+            raise ValueError(
+                "SEAT_FEATURE_SNAPSHOT_ID must contain only letters, digits and underscores"
+            )
         from google.cloud import bigquery
 
         feature_table = (

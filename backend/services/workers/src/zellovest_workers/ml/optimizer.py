@@ -10,12 +10,11 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
-from typing import TypeAlias
 
 import numpy as np
 from numpy.typing import NDArray
 
-FloatArray: TypeAlias = NDArray[np.float64]
+FloatArray = NDArray[np.float64]
 
 
 @dataclass(frozen=True, slots=True)

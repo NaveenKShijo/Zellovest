@@ -11,7 +11,6 @@ import type {
   ConversationMessage,
   ConversationHistory,
   ActionPreviewResponse,
-  RAGSearchChunk,
   Vendor,
 } from '@/types';
 import { useApi } from '@/lib/api';
@@ -73,14 +72,6 @@ export default function AssistantPage() {
   const [actionPreviewData, setActionPreviewData] = useState<ActionPreviewResponse | null>(null);
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
   const [isExecutingAction, setIsExecutingAction] = useState(false);
-
-  // Secondary Document / Passage Search State (Explorer tool)
-  const [searchQuery, setSearchQuery] = useState('');
-  const [documentType, setDocumentType] = useState('');
-  const [searchResults, setSearchResults] = useState<RAGSearchChunk[]>([]);
-  const [hasSearched, setHasSearched] = useState(false);
-  const [isSearching, setIsSearching] = useState(false);
-  const [searchError, setSearchError] = useState<string | null>(null);
 
   const messageEndRef = useRef<HTMLDivElement>(null);
 
@@ -423,31 +414,6 @@ export default function AssistantPage() {
     setIsDocModalOpen(true);
   };
 
-  // 9. Secondary Passage Search
-  const searchPassages = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const trimmed = searchQuery.trim();
-    if (!trimmed || isSearching) return;
-    setIsSearching(true);
-    setSearchError(null);
-    setHasSearched(true);
-    setSearchResults([]);
-    try {
-      const response = await api.rag.search({
-        query: trimmed,
-        vendor_id: vendorId || undefined,
-        document_type: documentType || undefined,
-        limit: 8,
-      });
-      setSearchResults(response.chunks ?? []);
-    } catch (error) {
-      setSearchResults([]);
-      setSearchError(error instanceof Error ? error.message : 'Could not search documents.');
-    } finally {
-      setIsSearching(false);
-    }
-  };
-
   return (
     <div className={styles.page}>
       {/* Top Page Header */}
@@ -760,109 +726,6 @@ export default function AssistantPage() {
             </form>
           </section>
 
-          {/* Secondary Explorer / Passage Search Aside */}
-          <aside className={styles.searchPanel} aria-labelledby="search-heading">
-            <div className={styles.panelHeader}>
-              <div className={styles.panelHeaderLeft}>
-                <div className={styles.searchIcon} aria-hidden="true">⌕</div>
-                <div>
-                  <h2 id="search-heading">Find Source Passages</h2>
-                  <p>Direct vector search across contracts and amendments.</p>
-                </div>
-              </div>
-            </div>
-
-            <form className={styles.searchForm} onSubmit={searchPassages}>
-              <label htmlFor="passage-query">Search Documents</label>
-              <div className={styles.searchInputWrap}>
-                <input
-                  id="passage-query"
-                  value={searchQuery}
-                  onChange={(event) => setSearchQuery(event.target.value)}
-                  placeholder="e.g. annual escalation cap"
-                  maxLength={500}
-                />
-                <button
-                  type="submit"
-                  disabled={!searchQuery.trim() || isSearching}
-                  aria-label="Search passages"
-                >
-                  {isSearching ? <span className={styles.spinner} /> : '⌕'}
-                </button>
-              </div>
-
-              <label htmlFor="document-type">Document Type Filter</label>
-              <select
-                id="document-type"
-                value={documentType}
-                onChange={(event) => setDocumentType(event.target.value)}
-              >
-                <option value="">All indexed documents</option>
-                <option value="contract">Contracts</option>
-                <option value="amendment">Amendments</option>
-                <option value="invoice">Invoices</option>
-              </select>
-            </form>
-
-            <div className={styles.searchResults} aria-live="polite">
-              {searchError && (
-                <div className={styles.inlineError} role="alert">
-                  {searchError}
-                </div>
-              )}
-
-              {!hasSearched && !searchError && (
-                <div className={styles.searchEmpty}>
-                  <span aria-hidden="true">⌕</span>
-                  <p>Passages will appear here with document, page, and bounding box.</p>
-                </div>
-              )}
-
-              {hasSearched && !isSearching && !searchError && searchResults.length === 0 && (
-                <div className={styles.searchEmpty}>
-                  <p>No matching passages found. Try broader wording.</p>
-                </div>
-              )}
-
-              {searchResults.map((chunk) => (
-                <article className={styles.resultCard} key={chunk.chunk_id}>
-                  <div className={styles.resultMeta}>
-                    <span>{chunk.provenance?.filename || 'Procurement document'}</span>
-                    <span>
-                      {chunk.page ? `Page ${chunk.page}` : 'Page not available'}
-                      {chunk.section ? ` · ${chunk.section}` : ''}
-                    </span>
-                  </div>
-                  <p>{chunk.content}</p>
-                  <div className={styles.resultFooter}>
-                    <span>{chunk.document_type.replace('_', ' ')}</span>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        handleOpenDocument(
-                          chunk.document_id,
-                          chunk.page ?? 1,
-                          chunk.provenance?.bbox ?? null,
-                          chunk.provenance?.filename || 'Document',
-                          chunk.content
-                        )
-                      }
-                      style={{
-                        background: 'transparent',
-                        border: 'none',
-                        color: 'var(--color-brand, #8a526f)',
-                        fontSize: '11px',
-                        fontWeight: 700,
-                        cursor: 'pointer',
-                      }}
-                    >
-                      Inspect @ Page ↗
-                    </button>
-                  </div>
-                </article>
-              ))}
-            </div>
-          </aside>
         </div>
       </div>
 

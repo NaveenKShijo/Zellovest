@@ -22,7 +22,7 @@ const CATEGORIES: Array<PromptPresetItem['category']> = [
  * PromptPresets: Full Coverage of PRD #23 Inquiries
  *
  * Provides ready-to-run questions categorized across all procurement domains.
- * Generous real estate, clear spacing, and modern cards layout.
+ * Generous real estate, clear spacing, and modern relaxing cards layout.
  */
 export const PromptPresets: React.FC<PromptPresetsProps> = ({ onSelectPrompt, isAsking }) => {
   const [selectedCategory, setSelectedCategory] = useState<PromptPresetItem['category']>('Cross-Domain');
@@ -32,13 +32,13 @@ export const PromptPresets: React.FC<PromptPresetsProps> = ({ onSelectPrompt, is
   return (
     <div
       style={{
-        marginTop: '20px',
+        marginTop: '14px',
         width: '100%',
-        maxWidth: '960px',
+        maxWidth: '1020px',
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
-        gap: '14px',
+        gap: '18px',
       }}
     >
       {/* Category Filter Pills */}
@@ -49,6 +49,7 @@ export const PromptPresets: React.FC<PromptPresetsProps> = ({ onSelectPrompt, is
           justifyContent: 'center',
           gap: '8px',
           width: '100%',
+          padding: '4px 8px',
         }}
       >
         {CATEGORIES.map((cat) => {
@@ -59,9 +60,9 @@ export const PromptPresets: React.FC<PromptPresetsProps> = ({ onSelectPrompt, is
               type="button"
               onClick={() => setSelectedCategory(cat)}
               style={{
-                padding: '6px 14px',
+                padding: '7px 16px',
                 borderRadius: '999px',
-                fontSize: '12px',
+                fontSize: '12.5px',
                 fontWeight: isSelected ? 750 : 600,
                 border: isSelected ? '1px solid var(--color-brand, #8a526f)' : '1px solid #e2dbe4',
                 backgroundColor: isSelected ? '#8a526f' : '#ffffff',
@@ -94,10 +95,10 @@ export const PromptPresets: React.FC<PromptPresetsProps> = ({ onSelectPrompt, is
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(290px, 1fr))',
-          gap: '12px',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(310px, 1fr))',
+          gap: '14px',
           width: '100%',
-          marginTop: '6px',
+          marginTop: '4px',
         }}
       >
         {filteredPrompts.map((item) => (
@@ -107,39 +108,39 @@ export const PromptPresets: React.FC<PromptPresetsProps> = ({ onSelectPrompt, is
             disabled={isAsking}
             onClick={() => onSelectPrompt(item.prompt)}
             style={{
-              padding: '14px 18px',
-              borderRadius: '12px',
-              border: '1px solid #ebe5ee',
+              padding: '16px 20px',
+              borderRadius: '13px',
+              border: '1px solid #ede7ef',
               backgroundColor: '#ffffff',
               textAlign: 'left',
               cursor: isAsking ? 'not-allowed' : 'pointer',
               display: 'flex',
               flexDirection: 'column',
               justifyContent: 'space-between',
-              gap: '6px',
-              boxShadow: '0 2px 6px rgba(45, 35, 55, 0.02)',
+              gap: '8px',
+              boxShadow: '0 2px 8px rgba(45, 35, 55, 0.025)',
               transition: 'all 160ms ease',
-              minHeight: '74px',
+              minHeight: '82px',
             }}
             onMouseEnter={(e) => {
               if (!isAsking) {
                 e.currentTarget.style.borderColor = '#c79db3';
                 e.currentTarget.style.backgroundColor = '#fdfafc';
-                e.currentTarget.style.transform = 'translateY(-1px)';
-                e.currentTarget.style.boxShadow = '0 6px 16px rgba(138, 82, 111, 0.08)';
+                e.currentTarget.style.transform = 'translateY(-2px)';
+                e.currentTarget.style.boxShadow = '0 6px 18px rgba(138, 82, 111, 0.09)';
               }
             }}
             onMouseLeave={(e) => {
               if (!isAsking) {
-                e.currentTarget.style.borderColor = '#ebe5ee';
+                e.currentTarget.style.borderColor = '#ede7ef';
                 e.currentTarget.style.backgroundColor = '#ffffff';
                 e.currentTarget.style.transform = 'translateY(0)';
-                e.currentTarget.style.boxShadow = '0 2px 6px rgba(45, 35, 55, 0.02)';
+                e.currentTarget.style.boxShadow = '0 2px 8px rgba(45, 35, 55, 0.025)';
               }
             }}
           >
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
-              <span style={{ fontSize: '13px', fontWeight: 750, color: '#2d2737' }}>
+              <span style={{ fontSize: '13.5px', fontWeight: 750, color: '#2d2737' }}>
                 {item.label}
               </span>
               <span
@@ -157,9 +158,9 @@ export const PromptPresets: React.FC<PromptPresetsProps> = ({ onSelectPrompt, is
             <p
               style={{
                 margin: 0,
-                fontSize: '12px',
-                color: '#6e6777',
-                lineHeight: 1.45,
+                fontSize: '12.5px',
+                color: '#6c6575',
+                lineHeight: 1.5,
               }}
             >
               {item.description}
