@@ -27,6 +27,7 @@ from zellovest_workers.ml.train_vertex import (
     FEATURE_COLUMNS,
     ModelRejectedError,
     TrainingMetrics,
+    _vertex_run_id,
     train_challenger,
     validate_challenger,
 )
@@ -60,6 +61,13 @@ def test_feature_sql_templates_render_without_unresolved_placeholders() -> None:
             assert "autodetect =" not in rendered.lower()
             for uri in re.findall(r"gs://[^']+", rendered):
                 assert uri.count("*") <= 1
+
+
+def test_vertex_experiment_run_id_uses_valid_resource_characters() -> None:
+    """Timestamp model versions must be normalized before Vertex run creation."""
+    run_id = _vertex_run_id("v_20261121T070616Z")
+    assert run_id == "v-20261121t070616z"
+    assert re.fullmatch(r"[a-z0-9][a-z0-9-]{0,127}", run_id)
 
 
 class _TelemetryPredictor:

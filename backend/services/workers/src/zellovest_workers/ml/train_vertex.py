@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import tempfile
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
@@ -52,6 +53,14 @@ TARGET_COLUMN = "retained_label"
 
 class ModelRejectedError(RuntimeError):
     """Raised when a challenger fails a mandatory production quality gate."""
+
+
+def _vertex_run_id(model_version: str) -> str:
+    """Normalize a model version into a Vertex-compatible run resource ID."""
+    run_id = re.sub(r"[^a-z0-9-]+", "-", model_version.lower()).strip("-")
+    if not run_id or not run_id[0].isalnum():
+        run_id = f"run-{run_id}"
+    return run_id[:128].rstrip("-")
 
 
 @dataclass(frozen=True, slots=True)
@@ -410,7 +419,7 @@ def _log_vertex_experiment(
         staging_bucket=f"gs://{config.ml_bucket}",
         experiment=config.experiment_name,
     )
-    with aiplatform.start_run(run=version) as run:
+    with aiplatform.start_run(run=_vertex_run_id(version)) as run:
         run.log_params(
             {
                 key: json.dumps(value) if isinstance(value, (list, dict)) else value
