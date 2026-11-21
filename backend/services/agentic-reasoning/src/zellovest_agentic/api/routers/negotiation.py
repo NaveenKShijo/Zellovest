@@ -75,17 +75,30 @@ async def list_seat_forecasts(
 ) -> list[dict[str, Any]]:
     """Return tenant-scoped persisted forecast cohorts without guessing renewal dates."""
     tenant_id = normalize_tenant_id(current_user.tenant_id)
+    # The synthetic setup used default_org while application identities use
+    # default-org. Both name this deployment's default organization; all other
+    # tenant IDs retain exact matching. Never accept tenant scope from the client.
+    tenant_ids = (
+        ("default-org", "default_org")
+        if tenant_id in ("default-org", "default_org")
+        else (tenant_id,)
+    )
     try:
         result = await session.execute(
             select(SeatForecast, Vendor.name)
-            .join(Vendor, (Vendor.id == SeatForecast.vendor_id) & (Vendor.tenant_id == tenant_id))
-            .where(SeatForecast.tenant_id == tenant_id)
+            .outerjoin(
+                Vendor,
+                (Vendor.id == SeatForecast.vendor_id)
+                & (Vendor.tenant_id == SeatForecast.tenant_id),
+            )
+            .where(SeatForecast.tenant_id.in_(tenant_ids))
             .order_by(SeatForecast.forecast_date.desc(), SeatForecast.created_at.desc())
         )
-        return [
+        forecasts = [
             {
                 "id": str(forecast.id), "vendor_id": str(forecast.vendor_id),
-                "vendor_name": name, "department": forecast.department,
+                "vendor_name": name or f"Vendor {forecast.vendor_id}",
+                "department": forecast.department,
                 "forecast_date": forecast.forecast_date.isoformat(),
                 "created_at": forecast.created_at.isoformat(),
                 "current_seats": forecast.current_seats,
@@ -99,6 +112,8 @@ async def list_seat_forecasts(
             }
             for forecast, name in result.all()
         ]
+        logger.info("seat_forecasts_listed", tenant_id=tenant_id, count=len(forecasts))
+        return forecasts
     except Exception as exc:
         logger.warning("seat_forecasts_list_failed", tenant_id=tenant_id, error=str(exc))
         raise HTTPException(status_code=503, detail="Unable to load seat forecasts") from exc

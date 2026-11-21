@@ -79,10 +79,13 @@ the synthetic BigQuery datasets for `default_org`, and enqueues one inference
 task for `default_org`. It does not train a model.
 Use the model bucket from synthetic training; the worker reads `models/latest`.
 Check the worker logs and query `seat_forecasts` for `default_org`.
+Open **License forecasting** and select **Refresh forecasts** to load the saved
+results. The forecast API recognizes `default_org` and the application's
+`default-org` as the same default organization. Other tenant IDs are matched
+exactly; the browser cannot choose a different organization.
 
 The preparation uses a synthetic renewal date equal to today plus the chosen
 horizon, so the corresponding features are as of today. Do not run all four
 horizons on the same day: the current PostgreSQL uniqueness key cannot store
 multiple horizons for the same vendor and department on a forecast date.
-This synthetic data and its predictions are for development only. The current
-frontend may still use mock forecasts until its database integration is complete.
+This synthetic data and its predictions are for development only.
