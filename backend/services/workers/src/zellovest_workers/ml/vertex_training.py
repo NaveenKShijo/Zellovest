@@ -44,7 +44,8 @@ def submit_vertex_training(tenant_id: str, feature_table: str | None = None) -> 
                 "command": ["python", "-m", "zellovest_workers.ml.train_vertex"],
                 "args": [
                     "--feature-table",
-                    feature_table or f"{project_id}.{settings.bigquery_gold_dataset}.gold_seat_features",
+                    feature_table
+                    or f"{project_id}.{settings.bigquery_gold_dataset}.gold_seat_features",
                     "--tenant-id",
                     tenant_id,
                 ],

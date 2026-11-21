@@ -7,6 +7,8 @@ import gzip
 import hashlib
 import json
 import os
+import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -21,7 +23,15 @@ FILES = {
 }
 
 
-def prepare_feeds(directory: Path, tenant_id: str) -> dict[str, pd.DataFrame]:
+def synthetic_vendor_id(tenant_id: str, app_name: str) -> str:
+    """Create a stable synthetic vendor UUID for one tenant and product."""
+    name = f"zellovest-synthetic:{tenant_id}:{app_name.lower()}"
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, name))
+
+
+def prepare_feeds(
+    directory: Path, tenant_id: str, *, inference_horizon: int | None = None
+) -> dict[str, pd.DataFrame]:
     """Map one tenant's synthetic records to the external table schemas."""
     frames = {}
     for name, filename in FILES.items():
@@ -31,6 +41,23 @@ def prepare_feeds(directory: Path, tenant_id: str) -> dict[str, pd.DataFrame]:
             raise ValueError(f"No {name} records found for tenant {tenant_id}")
 
     users = frames["users"]
+    if inference_horizon is not None:
+        if inference_horizon not in {30, 60, 90, 120}:
+            raise ValueError("inference horizon must be 30, 60, 90 or 120 days")
+        today = datetime.now(UTC).date()
+        assignments = frames["assignments"]
+        frames["assignments"] = assignments.loc[
+            (assignments["status"].str.upper() == "ACTIVE")
+            & (pd.to_datetime(assignments["assigned_at"]).dt.date <= today)
+            & assignments["unassigned_at"].isna()
+        ].copy()
+        if frames["assignments"].empty:
+            raise ValueError("No active synthetic assignments available for inference")
+        frames["contracts"]["renewal_date"] = today + timedelta(days=inference_horizon)
+        for name in ("assignments", "contracts"):
+            frames[name]["vendor_id"] = frames[name]["app_name"].map(
+                lambda app: synthetic_vendor_id(tenant_id, str(app))
+            )
     for name, columns in {
         "users": ("hire_date", "termination_date"),
         "assignments": ("assigned_at", "unassigned_at"),
@@ -64,14 +91,18 @@ def prepare_feeds(directory: Path, tenant_id: str) -> dict[str, pd.DataFrame]:
     }
 
 
-def upload_feeds(directory: Path, tenant_id: str, bucket_name: str, prefix: str) -> None:
+def upload_feeds(
+    directory: Path, tenant_id: str, bucket_name: str, prefix: str,
+    *, inference_horizon: int | None = None,
+) -> None:
     """Upload a run's feeds and source checksums to an isolated GCS prefix."""
     from google.cloud import storage
 
-    feeds = prepare_feeds(directory, tenant_id)
+    feeds = prepare_feeds(directory, tenant_id, inference_horizon=inference_horizon)
     bucket = storage.Client().bucket(bucket_name.removeprefix("gs://").rstrip("/"))
     manifest = {
         "tenant_id": tenant_id,
+        "inference_horizon": inference_horizon,
         "source_commit": os.getenv("GITHUB_SHA", "unknown"),
         "files": {
             filename: hashlib.sha256((directory / filename).read_bytes()).hexdigest()

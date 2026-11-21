@@ -68,6 +68,42 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/negotiation", tags=["negotiation"])
 
 
+@router.get("/seat-forecasts")
+async def list_seat_forecasts(
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> list[dict[str, Any]]:
+    """Return tenant-scoped persisted forecast cohorts without guessing renewal dates."""
+    tenant_id = normalize_tenant_id(current_user.tenant_id)
+    try:
+        result = await session.execute(
+            select(SeatForecast, Vendor.name)
+            .join(Vendor, (Vendor.id == SeatForecast.vendor_id) & (Vendor.tenant_id == tenant_id))
+            .where(SeatForecast.tenant_id == tenant_id)
+            .order_by(SeatForecast.forecast_date.desc(), SeatForecast.created_at.desc())
+        )
+        return [
+            {
+                "id": str(forecast.id), "vendor_id": str(forecast.vendor_id),
+                "vendor_name": name, "department": forecast.department,
+                "forecast_date": forecast.forecast_date.isoformat(),
+                "created_at": forecast.created_at.isoformat(),
+                "current_seats": forecast.current_seats,
+                "recommended_seats": forecast.recommended_seats,
+                "retention_curve": forecast.retention_curve,
+                "confidence": forecast.confidence,
+                "shelfware_amount": forecast.shelfware_amount,
+                "trueup_risk_amount": forecast.trueup_risk_amount,
+                "savings_estimate": forecast.savings_estimate,
+                "model_version": forecast.model_version,
+            }
+            for forecast, name in result.all()
+        ]
+    except Exception as exc:
+        logger.warning("seat_forecasts_list_failed", tenant_id=tenant_id, error=str(exc))
+        raise HTTPException(status_code=503, detail="Unable to load seat forecasts") from exc
+
+
 @router.get("/brief/source-version")
 async def negotiation_source_version(
     vendor_id: uuid.UUID,

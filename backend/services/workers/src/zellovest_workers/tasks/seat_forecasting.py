@@ -250,6 +250,7 @@ def fetch_bigquery_features(
         WHERE tenant_id = @tenant_id
           AND renewal_horizon_days = @horizon_days
           AND renewal_date >= CURRENT_DATE()
+          AND feature_as_of_date <= CURRENT_DATE()
           {vendor_filter}
         QUALIFY ROW_NUMBER() OVER (
           PARTITION BY employee_id, vendor_id

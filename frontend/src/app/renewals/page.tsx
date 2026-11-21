@@ -24,6 +24,14 @@ export default function RenewalsPage() {
 
   // Filters state
   const [searchQuery, setSearchQuery] = useState('');
+  useEffect(() => {
+    const search = new URLSearchParams(window.location.search).get('search');
+    if (search) {
+      // Handoff from a forecast narrows the timeline to its vendor.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setSearchQuery(search);
+    }
+  }, []);
   const [selectedBadge, setSelectedBadge] = useState<RenewalBadgeUrgency | 'all'>('all');
   const [autoRenewOnly, setAutoRenewOnly] = useState(false);
 

@@ -5,9 +5,10 @@ Control plane enqueues lightweight ticket metadata only
 never touch Redis.
 """
 
+import os
+
 from celery import Celery
 from kombu import Queue
-
 from zellovest_shared.logging_conf import configure_logging, get_logger
 
 configure_logging()
@@ -74,7 +75,7 @@ def make_celery(broker_url: str = "redis://localhost:6379/0") -> Celery:
     return app
 
 
-celery_app = make_celery()
+celery_app = make_celery(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
 
 # Import tasks so workers register them (must stay at bottom).
 import zellovest_workers.tasks  # noqa: F401, E402

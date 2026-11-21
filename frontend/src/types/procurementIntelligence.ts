@@ -69,6 +69,28 @@ export interface MaverickAlertItem {
 }
 
 // 3. SaaS Utilization & Predictive Seat Forecasting
+export interface PersistedSeatForecast {
+  id: string;
+  vendor_id: string;
+  vendor_name: string;
+  department: string | null;
+  forecast_date: string;
+  created_at: string;
+  current_seats: number;
+  recommended_seats: number;
+  confidence: number | string | null;
+  shelfware_amount: number | string | null;
+  trueup_risk_amount: number | string | null;
+  savings_estimate: number | string | null;
+  model_version: string | null;
+  retention_curve: {
+    horizon_days?: number;
+    expected_demand?: number;
+    expected_shelfware_seats?: number;
+    expected_trueup_seats?: number;
+    departments?: Array<{ department: string; survival_probability: number; expected_retained_seats: number; confidence_intervals: Array<{ level: number; lower_seats: number; upper_seats: number }> }>;
+  } | null;
+}
 export interface SaaSSeatForecast {
   month: string;
   actual_active_seats: number | null;

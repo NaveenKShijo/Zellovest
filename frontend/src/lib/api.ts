@@ -33,6 +33,7 @@ import {
   UpcomingRenewal,
   RawUpcomingRenewalResponse,
   NegotiationBriefResponse,
+  PersistedSeatForecast,
   RenewalPreparationResponse,
   RenewalReminderRequest,
   RenewalReminderResponse,
@@ -365,6 +366,7 @@ export function useApi() {
         }),
     },
     negotiation: {
+      seatForecasts: () => request<PersistedSeatForecast[]>('/agentic/negotiation/seat-forecasts'),
       briefSourceVersion: (vendorId: string) =>
         request<{ version: string }>(`/agentic/negotiation/brief/source-version?vendor_id=${encodeURIComponent(vendorId)}`),
       upcomingRenewals: async (params?: {
