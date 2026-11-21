@@ -7,12 +7,25 @@ import re
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any
+
 import httpx
 
 from zellovest_shared.logging_conf import get_logger
 
 logger = get_logger(__name__)
+
+
+class VoyageRateLimitError(RuntimeError):
+    """Raised when Voyage asks the caller to retry after a rate limit."""
+
+    def __init__(self, retry_after_seconds: int) -> None:
+        super().__init__("Voyage AI rate limit reached")
+        self.retry_after_seconds = max(retry_after_seconds, 1)
+
+
 _DENSE_NAME = "dense"
 _SPARSE_NAME = "sparse"
 _DENSE_SIZE = 1024
@@ -172,6 +185,20 @@ def _voyage_embeddings(texts: list[str], *, input_type: str) -> list[list[float]
                   "input_type": input_type},
             timeout=60,
         )
+        if response.status_code == 429:
+            retry_after = response.headers.get("Retry-After", "")
+            try:
+                retry_seconds = int(retry_after)
+            except ValueError:
+                try:
+                    retry_at = parsedate_to_datetime(retry_after)
+                    if retry_at.tzinfo is None:
+                        retry_at = retry_at.replace(tzinfo=UTC)
+                    retry_seconds = int((retry_at - datetime.now(UTC)).total_seconds())
+                except (TypeError, ValueError, OverflowError):
+                    retry_seconds = 60
+            logger.warning("voyage_rate_limited", retry_after_seconds=max(retry_seconds, 1))
+            raise VoyageRateLimitError(retry_seconds)
         response.raise_for_status()
         data = response.json().get("data", [])
         if len(data) != len(batch):

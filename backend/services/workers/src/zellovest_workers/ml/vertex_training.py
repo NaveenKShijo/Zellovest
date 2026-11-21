@@ -18,11 +18,14 @@ def submit_vertex_training(tenant_id: str, feature_table: str | None = None) -> 
     """Submit one custom-container training job to Vertex AI."""
     settings = MLRuntimeSettings()
     project_id = settings.google_cloud_project.strip()
-    bucket = settings.gcs_ml_bucket.removeprefix("gs://").rstrip("/")
+    synthetic = settings.seat_synthetic_mode
+    configured_bucket = settings.gcs_ml_synth if synthetic else settings.gcs_ml_bucket
+    bucket = configured_bucket.removeprefix("gs://").rstrip("/")
     image_uri = settings.vertex_training_image_uri.strip()
     if not project_id or not bucket or not image_uri:
         raise ValueError(
-            "GOOGLE_CLOUD_PROJECT, GCS_ML_BUCKET, and VERTEX_TRAINING_IMAGE_URI are required"
+            "GOOGLE_CLOUD_PROJECT, the configured model bucket, and "
+            "VERTEX_TRAINING_IMAGE_URI are required"
         )
 
     from google.cloud import aiplatform
@@ -52,6 +55,8 @@ def submit_vertex_training(tenant_id: str, feature_table: str | None = None) -> 
                 "env": [
                     {"name": "GOOGLE_CLOUD_PROJECT", "value": project_id},
                     {"name": "GCS_ML_BUCKET", "value": bucket},
+                    {"name": "GCS_ML_SYNTH", "value": bucket if synthetic else ""},
+                    {"name": "SEAT_SYNTHETIC_MODE", "value": str(synthetic).lower()},
                     {"name": "VERTEX_AI_REGION", "value": settings.vertex_ai_region},
                 ],
             },

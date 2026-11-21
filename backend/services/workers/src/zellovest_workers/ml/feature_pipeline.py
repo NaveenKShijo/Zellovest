@@ -41,9 +41,11 @@ class FeaturePipelineConfig:
         """Load feature pipeline settings from application environment."""
         settings = MLRuntimeSettings()
         resolved_tenant = str(tenant_id or os.getenv("TENANT_ID") or "").strip()
+        synthetic = settings.seat_synthetic_mode
+        raw_bucket = settings.gcs_raw_synth if synthetic else settings.gcs_raw_bucket
         required = {
             "GOOGLE_CLOUD_PROJECT": settings.google_cloud_project,
-            "GCS_RAW_BUCKET": settings.gcs_raw_bucket,
+            "GCS_RAW_SYNTH" if synthetic else "GCS_RAW_BUCKET": raw_bucket,
             "TENANT_ID": resolved_tenant,
         }
         missing = [name for name, value in required.items() if not str(value).strip()]
@@ -52,7 +54,7 @@ class FeaturePipelineConfig:
         return cls(
             project_id=settings.google_cloud_project,
             tenant_id=resolved_tenant,
-            gcs_raw_bucket=settings.gcs_raw_bucket.removeprefix("gs://").rstrip("/"),
+            gcs_raw_bucket=raw_bucket.removeprefix("gs://").rstrip("/"),
             bronze_dataset=settings.bigquery_bronze_dataset,
             silver_dataset=settings.bigquery_silver_dataset,
             gold_dataset=settings.bigquery_gold_dataset,

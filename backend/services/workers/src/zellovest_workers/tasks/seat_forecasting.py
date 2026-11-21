@@ -141,7 +141,9 @@ def _atomic_write(path: Path, content: bytes) -> None:
 def load_latest_model(settings: Settings | None = None) -> LightGBMPredictor:
     """Hot-reload ``model.booster`` from GCS with generation and SHA validation."""
     resolved = settings or get_settings()
-    bucket_name = resolved.gcs_ml_bucket.removeprefix("gs://").rstrip("/")
+    synthetic = resolved.seat_synthetic_mode
+    configured_bucket = resolved.gcs_ml_synth if synthetic else resolved.gcs_ml_bucket
+    bucket_name = configured_bucket.removeprefix("gs://").rstrip("/")
     if not bucket_name:
         raise ValueError("GCS_ML_BUCKET is required for batch inference")
 

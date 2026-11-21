@@ -639,6 +639,11 @@ export function useApi() {
       },
     },
     compliance: {
+      getOverview: () => request<{
+        total_invoices_count: number;
+        exception_invoices_count: number;
+        unreconciled_invoices_count: number;
+      }>('/v1/compliance/kpis'),
       getKpis: (tenantId?: string) => {
         const query = tenantId ? `?tenant_id=${encodeURIComponent(tenantId)}` : '';
         return request<APAuditKPIs>(`/v1/compliance/kpis${query}`);

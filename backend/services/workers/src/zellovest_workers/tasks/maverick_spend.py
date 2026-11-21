@@ -23,6 +23,7 @@ from zellovest_shared.db.transact import CardTransaction
 from zellovest_shared.logging_conf import get_logger
 from zellovest_shared.maverick.catalog_matcher import sync_active_contract_products
 from zellovest_shared.maverick.pipeline import process_transaction_maverick_spend
+from zellovest_shared.rag import VoyageRateLimitError
 from zellovest_shared.workers.gcs_writer import list_object_keys, read_records_gz
 
 from zellovest_workers.celery_app import QUEUE_ANALYTICS, celery_app
@@ -431,11 +432,12 @@ def scan_maverick_spend_from_gcs(
 
 
 @celery_app.task(
+    bind=True,
     name="zellovest.workers.tasks.maverick_spend.sync_contract_products_to_qdrant",
     queue=QUEUE_ANALYTICS,
-    max_retries=3,
+    max_retries=5,
 )
-def sync_contract_products_to_qdrant(tenant_id: str) -> dict[str, Any]:
+def sync_contract_products_to_qdrant(self: Any, tenant_id: str) -> dict[str, Any]:
     """Embed currently active contracted software products in Qdrant for a tenant."""
     logger.info("sync_contract_products_to_qdrant_started", tenant_id=tenant_id)
     factory = get_session_factory()
@@ -448,5 +450,14 @@ def sync_contract_products_to_qdrant(tenant_id: str) -> dict[str, Any]:
             **summary,
         )
         return {"tenant_id": tenant_id, **summary}
+    except VoyageRateLimitError as exc:
+        session.rollback()
+        logger.warning(
+            "sync_contract_products_to_qdrant_rate_limited",
+            tenant_id=tenant_id,
+            retry_after_seconds=exc.retry_after_seconds,
+            retries=self.request.retries,
+        )
+        raise self.retry(exc=exc, countdown=exc.retry_after_seconds, max_retries=5)
     finally:
         session.close()

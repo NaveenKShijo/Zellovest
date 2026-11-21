@@ -3,18 +3,22 @@
 This manual workflow is for development using the checked-in telemetry. It creates
 synthetic data and a model in separate locations from the real data and model.
 
-1. Configure repository variables `SYNTHETIC_GCS_RAW_BUCKET` and
-   `SYNTHETIC_GCS_ML_BUCKET`. The latter must differ from `GCS_ML_BUCKET`.
+1. Configure repository variables `GCS_RAW_SYNTH` and `GCS_ML_SYNTH`. The latter
+   must differ from production `GCS_ML_BUCKET`.
    The service account needs access to these buckets and the BigQuery and Vertex
    resources. The raw bucket must be compatible with `BIGQUERY_LOCATION`.
 2. Push the code to main and wait for the worker image CI job to publish the image.
 3. In Actions, select **Train seat model with synthetic telemetry**, choose the
-   same commit, and supply its full SHA as `training_image_tag`. Use a telemetry
-   tenant such as `tenant_001`.
+   same commit, and supply its full SHA as `training_image_tag`. Keep
+   `source_tenant_id` as `tenant_002` and set `tenant_id` to `default_org` to
+   train using those checked-in rows while tagging the generated features for
+   the application tenant.
 
-The workflow converts the selected tenant's Parquet records to four compressed
+The workflow converts the selected source tenant's Parquet records to four compressed
 JSONL feeds under `synthetic/<run-id>-<attempt>/raw/` in the synthetic raw bucket.
-It writes a manifest containing the source commit, checksums and row counts there.
+It remaps tenant-scoped employee, assignment and vendor IDs and writes the feeds
+under the target tenant. The manifest records both source and target tenant IDs,
+source commit, checksums and row counts.
 The ELT uses `zellovest_synthetic_bronze`, `zellovest_synthetic_silver` and
 `zellovest_synthetic_gold` datasets. It copies that tenant's Gold rows to a
 run-specific snapshot table and submits a Vertex custom training job. Experiment
@@ -34,8 +38,9 @@ both the analytics worker and the setup command (use actual bucket names):
 
 ```text
 GOOGLE_CLOUD_PROJECT=your-project
-GCS_RAW_BUCKET=your-synthetic-raw-bucket
-GCS_ML_BUCKET=your-synthetic-model-bucket
+GCS_RAW_SYNTH=your-synthetic-raw-bucket
+GCS_ML_SYNTH=your-synthetic-model-bucket
+SEAT_SYNTHETIC_MODE=true
 BIGQUERY_BRONZE_DATASET=zellovest_synthetic_bronze
 BIGQUERY_SILVER_DATASET=zellovest_synthetic_silver
 BIGQUERY_GOLD_DATASET=zellovest_synthetic_gold
@@ -46,25 +51,34 @@ REDIS_URL=redis://localhost:6379/0
 ```
 
 Provide Google Application Default Credentials with access to the buckets and
-BigQuery. Run these commands from `backend/services/workers` on a host with
-access to the development database and Redis:
+BigQuery. For local development, either set `GOOGLE_APPLICATION_CREDENTIALS` in
+`backend/.env` to your service account JSON file, or authenticate with
+`gcloud auth application-default login`. Do not commit credentials or the `.env`
+file. On Windows, quote a JSON key path and use forward slashes, for example
+`GOOGLE_APPLICATION_CREDENTIALS="C:/Users/you/Downloads/service-account.json"`.
+Set `BIGQUERY_LOCATION` to the exact location of your synthetic datasets; the
+example project uses `asia-south1`. Replace every example value above with your actual project, buckets,
+database, and BigQuery location. Run these commands from
+`backend/services/workers` on a host with access to the development database
+and Redis. `../../.env` resolves to `backend/.env` from this directory:
 
 ```powershell
-uv run celery -A zellovest_workers.celery_app.celery_app worker -Q analytics_tasks --pool=solo --loglevel=info
+uv run --env-file ../../.env celery -A zellovest_workers.celery_app.celery_app worker -Q analytics_tasks --pool=solo --loglevel=info
 ```
 
 In a second terminal with the same environment, choose a unique raw prefix and run:
 
 ```powershell
-$env:SEAT_RAW_PREFIX = "synthetic/local-20261121/raw"
-uv run python -m zellovest_workers.ml.synthetic_forecast_setup --directory ../../../data/telemetry --tenant-id tenant_002 --horizon 120 --development-database
+$env:SEAT_RAW_PREFIX = "synthetic/local-default-org/raw"
+uv run --env-file ../../.env python -m zellovest_workers.ml.synthetic_forecast_setup --directory ../../../data/telemetry --source-tenant-id tenant_002 --tenant-id default_org --horizon 120 --development-database
 ```
 
 This creates matching synthetic vendors, employees, and assignments in the
-development database, uploads the synthetic feeds, refreshes the synthetic
-BigQuery datasets, and enqueues one inference task. It does not train a model.
+development database under `default_org`, uploads the mapped feeds, refreshes
+the synthetic BigQuery datasets for `default_org`, and enqueues one inference
+task for `default_org`. It does not train a model.
 Use the model bucket from synthetic training; the worker reads `models/latest`.
-Check the worker logs and query `seat_forecasts` for `tenant_002`.
+Check the worker logs and query `seat_forecasts` for `default_org`.
 
 The preparation uses a synthetic renewal date equal to today plus the chosen
 horizon, so the corresponding features are as of today. Do not run all four

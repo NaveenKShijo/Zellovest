@@ -71,6 +71,9 @@ class Settings(BaseSettings):
     # cloud storage is Google Cloud Storage.
     gcs_raw_bucket: str = Field(alias="GCS_RAW_BUCKET")
     gcs_ml_bucket: str = Field(default="", alias="GCS_ML_BUCKET")
+    gcs_raw_synth: str = Field(default="", alias="GCS_RAW_SYNTH")
+    gcs_ml_synth: str = Field(default="", alias="GCS_ML_SYNTH")
+    seat_synthetic_mode: bool = Field(default=False, alias="SEAT_SYNTHETIC_MODE")
     google_cloud_project: str = Field(default="", alias="GOOGLE_CLOUD_PROJECT")
     bigquery_bronze_dataset: str = Field(
         default="zellovest_bronze", alias="BIGQUERY_BRONZE_DATASET"
@@ -210,6 +213,9 @@ class MLRuntimeSettings(BaseSettings):
     )
     gcs_raw_bucket: str = Field(default="", alias="GCS_RAW_BUCKET")
     gcs_ml_bucket: str = Field(default="", alias="GCS_ML_BUCKET")
+    gcs_raw_synth: str = Field(default="", alias="GCS_RAW_SYNTH")
+    gcs_ml_synth: str = Field(default="", alias="GCS_ML_SYNTH")
+    seat_synthetic_mode: bool = Field(default=False, alias="SEAT_SYNTHETIC_MODE")
     bigquery_bronze_dataset: str = Field(
         default="zellovest_bronze", alias="BIGQUERY_BRONZE_DATASET"
     )

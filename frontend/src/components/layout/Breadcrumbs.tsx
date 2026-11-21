@@ -13,7 +13,7 @@ const ROUTE_LABELS: Record<string, string> = {
   vendors: 'Vendor 360',
   compliance: 'AP Audit & Compliance',
   'maverick-spend': 'Maverick SaaS Spend',
-  licenses: 'Zombie Licenses',
+  licenses: 'License forecasting',
   renewals: 'Renewal Intelligence',
   assistant: 'Ask AI',
   integrations: 'Data Ingestion',

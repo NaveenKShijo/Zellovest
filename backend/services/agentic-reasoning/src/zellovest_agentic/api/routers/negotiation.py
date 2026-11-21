@@ -407,6 +407,7 @@ async def list_upcoming_renewals(
             )
     except Exception as exc:
         logger.warning("query_contracts_for_renewals_failed", error=str(exc))
+        raise HTTPException(status_code=503, detail="Unable to load upcoming renewals") from exc
 
     # Apply in-memory filtering (badge, auto_renew, search)
     filtered: list[UpcomingRenewalResponse] = []

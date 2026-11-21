@@ -104,11 +104,15 @@ class TrainingConfig:
         """Load GCP and model settings from ``backend/.env`` and the process env."""
         settings = MLRuntimeSettings()
         project_id = settings.google_cloud_project.strip()
-        ml_bucket = settings.gcs_ml_bucket.strip()
+        synthetic = settings.seat_synthetic_mode
+        ml_bucket = (settings.gcs_ml_synth if synthetic else settings.gcs_ml_bucket).strip()
         if not project_id:
             raise ValueError("GOOGLE_CLOUD_PROJECT is required for model training")
         if not ml_bucket:
-            raise ValueError("GCS_ML_BUCKET is required for model training")
+            raise ValueError(
+                "GCS_ML_SYNTH is required for synthetic training"
+                if synthetic else "GCS_ML_BUCKET is required for model training"
+            )
         feature_table = (
             f"{project_id}.{settings.bigquery_gold_dataset}.{settings.bigquery_seat_features_table}"
         )

@@ -3,10 +3,15 @@ name: Train seat model with synthetic telemetry
 on:
   workflow_dispatch:
     inputs:
-      tenant_id:
-        description: Synthetic tenant ID (for example tenant_001)
+      source_tenant_id:
+        description: Tenant ID present in checked-in synthetic telemetry
         required: true
-        default: tenant_001
+        default: tenant_002
+        type: string
+      tenant_id:
+        description: Application tenant that receives training features and forecasts
+        required: true
+        default: default_org
         type: string
       training_image_tag:
         description: Commit SHA of the worker image published by CI for this workflow revision
@@ -28,9 +33,10 @@ jobs:
       id-token: write
     env:
       GOOGLE_CLOUD_PROJECT: ${{ vars.GCP_PROJECT_ID }}
-      GCS_RAW_BUCKET: ${{ vars.SYNTHETIC_GCS_RAW_BUCKET }}
-      GCS_ML_BUCKET: ${{ vars.SYNTHETIC_GCS_ML_BUCKET }}
+      GCS_RAW_SYNTH: ${{ vars.GCS_RAW_SYNTH }}
+      GCS_ML_SYNTH: ${{ vars.GCS_ML_SYNTH }}
       PRODUCTION_ML_BUCKET: ${{ vars.GCS_ML_BUCKET }}
+      SEAT_SYNTHETIC_MODE: "true"
       TENANT_ID: ${{ inputs.tenant_id }}
       SEAT_RAW_PREFIX: synthetic/${{ github.run_id }}-${{ github.run_attempt }}/raw
       SEAT_FEATURE_SNAPSHOT_ID: ${{ github.run_id }}_${{ github.run_attempt }}
@@ -47,11 +53,11 @@ jobs:
         env:
           IMAGE_TAG: ${{ inputs.training_image_tag }}
         run: |
-          if [[ -z "$GCS_RAW_BUCKET" || -z "$GCS_ML_BUCKET" || -z "$PRODUCTION_ML_BUCKET" ]]; then
-            echo 'Set SYNTHETIC_GCS_RAW_BUCKET, SYNTHETIC_GCS_ML_BUCKET and GCS_ML_BUCKET repository variables.' >&2
+          if [[ -z "$GCS_RAW_SYNTH" || -z "$GCS_ML_SYNTH" || -z "$PRODUCTION_ML_BUCKET" ]]; then
+            echo 'Set GCS_RAW_SYNTH, GCS_ML_SYNTH and GCS_ML_BUCKET repository variables.' >&2
             exit 1
           fi
-          synthetic_bucket="${GCS_ML_BUCKET#gs://}"
+          synthetic_bucket="${GCS_ML_SYNTH#gs://}"
           production_bucket="${PRODUCTION_ML_BUCKET#gs://}"
           if [[ "${synthetic_bucket%/}" == "${production_bucket%/}" ]]; then
             echo 'The synthetic model bucket must differ from the production model bucket.' >&2
@@ -83,8 +89,9 @@ jobs:
         working-directory: backend/services/workers
         run: >-
           uv run --locked python -m zellovest_workers.ml.synthetic_ingest
-          --directory ../../../data/telemetry --tenant-id "$TENANT_ID"
-          --bucket "$GCS_RAW_BUCKET" --prefix "$SEAT_RAW_PREFIX"
+          --directory ../../../data/telemetry
+          --source-tenant-id "${{ inputs.source_tenant_id }}" --tenant-id "$TENANT_ID"
+          --bucket "$GCS_RAW_SYNTH" --prefix "$SEAT_RAW_PREFIX"
       - name: Refresh features and submit Vertex training job
         working-directory: backend/services/workers
         run: uv run --locked python -m zellovest_workers.ml.vertex_training --tenant-id "$TENANT_ID"

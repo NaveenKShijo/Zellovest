@@ -21,9 +21,16 @@ from zellovest_workers.tasks.seat_forecasting import run_seat_forecast
 logger = get_logger(__name__)
 
 
-def seed_database(directory: Path, tenant_id: str, horizon: int) -> None:
+def seed_database(
+    directory: Path, source_tenant_id: str, tenant_id: str, horizon: int
+) -> None:
     """Insert stable synthetic records into an explicitly selected development database."""
-    feeds = prepare_feeds(directory, tenant_id, inference_horizon=horizon)
+    feeds = prepare_feeds(
+        directory,
+        source_tenant_id,
+        target_tenant_id=tenant_id,
+        inference_horizon=horizon,
+    )
     session = get_session_factory()()
     try:
         users = feeds["hris_employees"].set_index("user_id")
@@ -74,12 +81,15 @@ def main() -> None:
     """Seed a disposable database, refresh synthetic features, and enqueue inference."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--directory", type=Path, required=True)
-    parser.add_argument("--tenant-id", required=True)
+    parser.add_argument("--source-tenant-id", required=True)
+    parser.add_argument("--tenant-id", required=True, help="Target application tenant ID")
     parser.add_argument("--horizon", type=int, choices=(30, 60, 90, 120), default=120)
     parser.add_argument("--development-database", action="store_true", required=True)
     args = parser.parse_args()
-    if not re.fullmatch(r"tenant_\d{3}", args.tenant_id):
-        parser.error("tenant ID must identify a synthetic tenant, e.g. tenant_002")
+    if not re.fullmatch(r"tenant_\d{3}", args.source_tenant_id):
+        parser.error("source tenant ID must identify a synthetic tenant, e.g. tenant_002")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,127}", args.tenant_id):
+        parser.error("target tenant ID must contain lowercase letters, digits, _ or -")
     config = FeaturePipelineConfig.from_environment(tenant_id=args.tenant_id)
     if (config.bronze_dataset, config.silver_dataset, config.gold_dataset) != (
         "zellovest_synthetic_bronze", "zellovest_synthetic_silver", "zellovest_synthetic_gold"
@@ -87,9 +97,13 @@ def main() -> None:
         raise ValueError("Configure the three isolated zellovest_synthetic BigQuery datasets")
     if not os.getenv("SEAT_RAW_PREFIX", "").startswith("synthetic/"):
         raise ValueError("SEAT_RAW_PREFIX must begin with synthetic/")
-    seed_database(args.directory, args.tenant_id, args.horizon)
+    seed_database(args.directory, args.source_tenant_id, args.tenant_id, args.horizon)
     upload_feeds(
-        args.directory, args.tenant_id, config.gcs_raw_bucket, config.raw_prefix,
+        args.directory,
+        args.source_tenant_id,
+        config.gcs_raw_bucket,
+        config.raw_prefix,
+        target_tenant_id=args.tenant_id,
         inference_horizon=args.horizon,
     )
     run_feature_pipeline(config)
