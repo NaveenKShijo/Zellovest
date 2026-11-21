@@ -14,8 +14,6 @@ from dataclasses import asdict, dataclass
 import numpy as np
 from numpy.typing import NDArray
 
-FloatArray = NDArray[np.float64]
-
 
 @dataclass(frozen=True, slots=True)
 class ConfidenceInterval:
@@ -69,7 +67,7 @@ class OptimizationResult:
         return result
 
 
-def poisson_binomial_pmf(probabilities: Sequence[float]) -> FloatArray:
+def poisson_binomial_pmf(probabilities: Sequence[float]) -> NDArray[np.float64]:
     """Compute ``P(K=k)`` for independent, non-identical Bernoulli trials.
 
     Args:
@@ -81,13 +79,13 @@ def poisson_binomial_pmf(probabilities: Sequence[float]) -> FloatArray:
     Raises:
         ValueError: If a probability is non-finite or outside ``[0, 1]``.
     """
-    values: FloatArray = np.asarray(probabilities, dtype=np.float64)
+    values: NDArray[np.float64] = np.asarray(probabilities, dtype=np.float64)
     if values.ndim != 1:
         raise ValueError("probabilities must be a one-dimensional sequence")
     if not np.all(np.isfinite(values)) or np.any((values < 0.0) | (values > 1.0)):
         raise ValueError("all retention probabilities must be finite and between 0 and 1")
 
-    pmf: FloatArray = np.array([1.0], dtype=np.float64)
+    pmf: NDArray[np.float64] = np.array([1.0], dtype=np.float64)
     for probability in values:
         pmf = np.asarray(
             np.convolve(pmf, np.array([1.0 - probability, probability])),
@@ -111,7 +109,7 @@ def newsvendor_critical_fractile(trueup_penalty_rate: float) -> float:
     return (1.0 + trueup_penalty_rate) / (2.0 + trueup_penalty_rate)
 
 
-def _quantile_from_pmf(pmf: FloatArray, quantile: float) -> int:
+def _quantile_from_pmf(pmf: NDArray[np.float64], quantile: float) -> int:
     """Return the smallest integer demand whose CDF reaches ``quantile``."""
     if not 0.0 <= quantile <= 1.0:
         raise ValueError("quantile must be between 0 and 1")
@@ -119,7 +117,7 @@ def _quantile_from_pmf(pmf: FloatArray, quantile: float) -> int:
 
 
 def _department_curves(
-    probabilities: FloatArray,
+    probabilities: NDArray[np.float64],
     departments: Sequence[str] | None,
     horizon_days: int,
 ) -> tuple[DepartmentRetentionCurve, ...]:
@@ -133,7 +131,7 @@ def _department_curves(
 
     curves: list[DepartmentRetentionCurve] = []
     for department, values in sorted(grouped_probabilities.items()):
-        department_probabilities: FloatArray = np.asarray(values, dtype=np.float64)
+        department_probabilities: NDArray[np.float64] = np.asarray(values, dtype=np.float64)
         pmf = poisson_binomial_pmf(values)
         seat_count = len(department_probabilities)
         intervals = tuple(
@@ -193,11 +191,11 @@ def optimize_commitment(
     if horizon_days <= 0:
         raise ValueError("horizon_days must be positive")
 
-    values: FloatArray = np.asarray(probabilities, dtype=np.float64)
+    values: NDArray[np.float64] = np.asarray(probabilities, dtype=np.float64)
     pmf = poisson_binomial_pmf(values.tolist())
     fractile = newsvendor_critical_fractile(trueup_penalty_rate)
     recommended = _quantile_from_pmf(pmf, fractile)
-    demand: FloatArray = np.arange(len(pmf), dtype=np.float64)
+    demand: NDArray[np.float64] = np.arange(len(pmf), dtype=np.float64)
     shelfware_seats = float(np.dot(np.maximum(recommended - demand, 0.0), pmf))
     trueup_seats = float(np.dot(np.maximum(demand - recommended, 0.0), pmf))
     shelfware_amount = shelfware_seats * annual_seat_cost
