@@ -198,7 +198,7 @@ services:
   mcp-procurement:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: services/mcp-servers/Dockerfile
     env_file: [.env]
     environment:
       <<: *app-env
@@ -230,7 +230,7 @@ services:
   mcp-documents:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: services/mcp-servers/Dockerfile
     env_file: [.env]
     environment:
       <<: *app-env
@@ -263,7 +263,7 @@ services:
   mcp-external:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: services/mcp-servers/Dockerfile
     env_file: [.env]
     environment:
       <<: *app-env
@@ -296,7 +296,7 @@ services:
   worker-ingestion:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: services/workers/Dockerfile
     env_file: [.env]
     environment:
       <<: *app-env
@@ -320,7 +320,7 @@ services:
   worker-documents:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: services/workers/Dockerfile
     env_file: [.env]
     environment:
       <<: *app-env
@@ -345,7 +345,7 @@ services:
   worker-analytics:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: services/workers/Dockerfile
     env_file: [.env]
     environment:
       <<: *app-env
@@ -371,7 +371,7 @@ services:
   scheduler-beat:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: services/workers/Dockerfile
     env_file: [.env]
     environment:
       <<: *app-env
