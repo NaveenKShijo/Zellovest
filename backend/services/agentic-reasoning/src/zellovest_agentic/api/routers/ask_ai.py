@@ -28,6 +28,7 @@ from zellovest_agentic.api.deps import (
     get_db_session,
     normalize_tenant_id,
 )
+from zellovest_agentic.config import AgenticReasoningSettings
 from zellovest_agentic.mcp import McpHostError
 from zellovest_agentic.schemas.ask_ai import (
     ActionConfirmRequest,
@@ -57,16 +58,25 @@ _ERROR_STATUS: dict[str, int] = {
 }
 
 
+def _settings_for(request: Request) -> AgenticReasoningSettings:
+    """Return app-scoped settings, creating them lazily for tests."""
+    settings = getattr(request.app.state, "settings", None)
+    if settings is None:
+        from zellovest_agentic.config import get_agentic_reasoning_settings
+
+        settings = get_agentic_reasoning_settings()
+        request.app.state.settings = settings
+    return settings
+
+
 def _agent_for(request: Request) -> AskAIAgent:
     """Return the app-scoped agent, creating it lazily for tests."""
     agent = getattr(request.app.state, "ask_ai_agent", None)
     if agent is not None:
         return agent
-    from zellovest_agentic.config import get_agentic_reasoning_settings
     from zellovest_agentic.mcp import McpPool
 
-    settings = getattr(request.app.state, "settings", None) or get_agentic_reasoning_settings()
-    request.app.state.settings = settings
+    settings = _settings_for(request)
     pool = McpPool(settings)
     request.app.state.mcp_pool = pool
     agent = AskAIAgent(settings, pool)
@@ -79,10 +89,9 @@ def _action_service_for(request: Request) -> ActionService:
     service = getattr(request.app.state, "action_service", None)
     if service is not None:
         return service
-    from zellovest_agentic.config import get_agentic_reasoning_settings
     from zellovest_agentic.mcp import McpPool
 
-    settings = getattr(request.app.state, "settings", None) or get_agentic_reasoning_settings()
+    settings = _settings_for(request)
     pool = getattr(request.app.state, "mcp_pool", None) or McpPool(settings)
     request.app.state.mcp_pool = pool
     service = ActionService(settings, pool)
@@ -278,7 +287,7 @@ async def list_conversations(
 ) -> ConversationListResponse:
     """List this user's Ask AI conversations."""
     tenant = _enforce_tenant(current_user, tenant_id)
-    store = ConversationStore(enabled=request.app.state.settings.agent_conversation_persistence)
+    store = ConversationStore(enabled=_settings_for(request).agent_conversation_persistence)
     conversations, total = await store.list_conversations(
         tenant_id=tenant,
         user_id=current_user.id,
@@ -302,7 +311,7 @@ async def get_conversation(
 ) -> ConversationHistory:
     """Return one conversation with its ordered, structured messages."""
     tenant = _enforce_tenant(current_user, tenant_id)
-    store = ConversationStore(enabled=request.app.state.settings.agent_conversation_persistence)
+    store = ConversationStore(enabled=_settings_for(request).agent_conversation_persistence)
     try:
         return await store.get_conversation(
             tenant_id=tenant,

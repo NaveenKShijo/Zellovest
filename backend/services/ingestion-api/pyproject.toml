@@ -5,12 +5,12 @@ description = "Ingestion & Document Ingress API - Ramp/Okta webhooks, cloud driv
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "zellovest-shared @ file://../../shared",
-    "zellovest-procurement-core @ file://../procurement-core",
+    "zellovest-shared",
+    "zellovest-procurement-core",
     "fastapi>=0.109",
     "uvicorn[standard]>=0.27",
     "pydantic>=2.6",
-    "sqlalchemy>=2.0",
+    "sqlalchemy[asyncio]>=2.0",
     "asyncpg>=0.29",
     "httpx>=0.26",
     "python-multipart>=0.0.6",
@@ -29,6 +29,10 @@ dev = [
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.uv.sources]
+zellovest-shared = { workspace = true }
+zellovest-procurement-core = { workspace = true }
 
 [tool.ruff]
 line-length = 100

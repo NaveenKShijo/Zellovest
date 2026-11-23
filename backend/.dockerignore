@@ -1,0 +1,15 @@
+# Keep the build context small and never bake local secrets into images.
+.venv/
+**/.venv/
+.uv-cache/
+wheels/
+**/__pycache__/
+**/*.py[cod]
+**/*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+**/.ruff_cache/
+.env
+.env.local
+.git/

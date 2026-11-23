@@ -244,6 +244,7 @@ Solves **investigation and natural-language access**: gives procurement a conver
 
 **Backend endpoints** (agentic-reasoning :8002 — MCP host/client)
 - `POST /api/v1/ask-ai`, `POST /ask-ai/stream`, `GET /ask-ai/conversations`, `GET /ask-ai/conversations/{id}`.
+- Action control: `POST /ask-ai/actions/preview` (side-effect-free dry run) and `POST /ask-ai/actions/confirm` (explicit human confirmation; mints the HMAC token MCP-3 verifies for high-risk tools).
 - Tool sandbox: `GET /api/v1/tools`, `GET /tools/{tool_name}`, `POST /tools/call` (schema-validated, risk-classed, tenant-scoped, audited).
 - RAG: `POST /rag/search`, `POST /rag/upload`, `GET /rag/documents/{id}/chunks`, `GET /rag/documents/{id}/pages/{page}`.
 - **MCP Server 1 — Procurement Intelligence:** `get_vendor/contract/invoice/purchase_order`, `get_vendor_spend`, `get_license_usage`, `find_renewals`, `get_reconciliation_exception`, `compare_invoice_contract`, `get_maverick_spend`, `get_spend_trend`, `calculate_spend`, `calculate_savings` (business-level ops only, no `execute_sql`).

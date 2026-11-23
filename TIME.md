@@ -172,9 +172,7 @@
    - Vendor overview: annual spend, YoY growth, renewal timeline, utilization, unused seats, discrepancies, escalation caps via RAG.
    - Adobe-style Renewal Prep example + leverage actions (remove seats, longer-term pricing, hold unit price, confirm notice deadline).
    - Executive brief generator with citations + "Export Brief to PDF".
-3. **CFO Realized Savings Ledger**
-   - Split Hard Cash Saved (short-paid/credited overcharges) vs Cost Avoidance (maverick canceled, zombie de-provisioned).
-   - Manual "Verified by Finance" confirmation; backed by deterministic `calculate_savings`.
+
 
 ### Backend & Data
 
@@ -191,8 +189,7 @@
    - **Procurement Investigation Agent:** traverses Invoice → Contract → PO → Prev Invoices → Card Tx → Amendments/Renewals; explains e.g., $140 vs $120 on 35 vs 20 seats.
    - **Renewal Agent:** investigates contract + spend + usage + invoices + clauses; prepares actions; human retains negotiation authority.
    - **Negotiation Copilot synthesis:** aggregates spend, seats, clauses via hybrid RAG into cited brief.
-4. **Savings Ledger:** `core.savings_ledger` for verified/potential; handlers for overbill, seats cut pre-renewal, maverick consolidated.
-5. **DevOps & Production Deployment (single-tenant per customer)**
+4. **DevOps & Production Deployment (single-tenant per customer)**
    - Docker multi-stage: Next.js standalone, FastAPI core, Agentic Reasoning + MCP ×3, Celery workers (Document OCR, AP Audit, Maverick Jev, Forecasting); docker-compose per-customer → GKE/Helm path; Google Cloud Load Balancing + Auth0 JWT + tenant injection; NGINX/Caddy reverse proxy (`/api/*` → FastAPI, `/` → Next.js) with SSE timeouts; Streamable HTTP for MCP prod, stdio local; Cloud SQL PG16+pgvector, Memorystore for Redis, GCS bucket with Cloud IAM; env + LLM/Jev keys via Google Cloud Secret Manager.
    - Seeding & E2E: `alembic upgrade head`, seed 10–15 vendors + contracts/amendments, invoices/POs, Ramp, Okta; verify login via public URL, PDF upload→OCR, exception + investigation, Ask AI streaming + citations, renewal brief, TLS/SSL (Let's Encrypt/Cloudflare).
 

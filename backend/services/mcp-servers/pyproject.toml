@@ -5,7 +5,7 @@ description = "Zellovest MCP-1 Procurement Intelligence, MCP-2 Document Knowledg
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "zellovest-shared @ file://../../shared",
+    "zellovest-shared",
     "mcp>=1.9,<2",
     "uvicorn[standard]>=0.30",
     "sqlalchemy[asyncio]>=2.0",
@@ -26,6 +26,9 @@ dev = [
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.uv.sources]
+zellovest-shared = { workspace = true }
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -3,6 +3,8 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 import uuid
+from unittest.mock import AsyncMock, patch
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete
@@ -10,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from zellovest_agentic.api.deps import get_current_user
 from zellovest_agentic.main import create_app
+from zellovest_agentic.mcp import McpPool, McpToolResult
 from zellovest_shared.db.core import Vendor
 from zellovest_shared.db.intelligence import Workflow, WorkflowType
 from zellovest_shared.db.models import User
@@ -295,25 +298,68 @@ async def test_schedule_and_list_renewal_reminder(fake_user: User):
 
 
 @pytest.mark.asyncio
-async def test_mcp_tool_find_renewals(fake_user: User, seed_test_contracts):
-    """MCP find_renewals tool call returns renewal items."""
+async def test_mcp_tool_find_renewals(fake_user: User):
+    """The tool sandbox forwards find_renewals to MCP-1 with tenant context.
+
+    The transport is stubbed so the test verifies host validation and tenant
+    propagation without requiring a live MCP process (the live path is covered
+    by the MCP smoke tests).
+    """
     app = create_app()
     app.dependency_overrides[get_current_user] = lambda: fake_user
+    captured: dict[str, object] = {}
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        res = await client.post(
-            "/api/v1/tools/call",
-            json={
-                "tool_name": "find_renewals",
-                "tenant_id": TEST_TENANT_ID,
-                "arguments": {"days_ahead": 90},
-            },
+    async def fake_call_tool(self, tool_name, arguments, identity, **kwargs):
+        captured.update(
+            tool_name=tool_name,
+            arguments=arguments,
+            identity=identity,
         )
-        assert res.status_code == 200
-        data = res.json()
-        assert data["success"] is True
-        assert "renewals" in data["result"]
-        assert len(data["result"]["renewals"]) > 0
+        return McpToolResult(
+            server="mcp-1-procurement",
+            tool=tool_name,
+            tool_version="1.0.0",
+            risk_class="read_only",
+            operation="read",
+            data={
+                "count": 1,
+                "renewals": [
+                    {
+                        "contract_id": str(uuid.uuid4()),
+                        "vendor_name": "Adobe Test Inc.",
+                        "renewal_date": "2026-12-01",
+                        "days_remaining": 25,
+                    }
+                ],
+            },
+            latency_ms=12,
+            attempts=1,
+            correlation_id=identity.correlation_id,
+            arguments_digest="test-digest",
+            result_size=128,
+        )
+
+    with patch.object(McpPool, "call_tool", new=fake_call_tool):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            res = await client.post(
+                "/api/v1/tools/call",
+                json={
+                    "tool_name": "find_renewals",
+                    "tenant_id": TEST_TENANT_ID,
+                    "arguments": {"days_ahead": 90},
+                },
+            )
+
+    assert res.status_code == 200
+    data = res.json()
+    assert data["success"] is True
+    assert "renewals" in data["result"]
+    assert len(data["result"]["renewals"]) > 0
+    assert captured["tool_name"] == "find_renewals"
+    assert captured["identity"].tenant_id == TEST_TENANT_ID
+    assert captured["arguments"]["days_ahead"] == 90
 
 
 def test_scan_notice_deadlines_worker_task():

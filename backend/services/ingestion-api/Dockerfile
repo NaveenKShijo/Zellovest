@@ -1,9 +1,19 @@
 FROM python:3.11-slim
 
+COPY --from=ghcr.io/astral-sh/uv:0.12.5 /uv /uvx /bin/
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    PATH="/app/.venv/bin:$PATH"
+
 WORKDIR /app
+COPY pyproject.toml uv.lock /app/
 COPY shared/ /app/shared/
-COPY services/ingestion-api/ /app/services/ingestion-api/
-RUN pip install --no-cache-dir -e /app/shared && pip install --no-cache-dir -e /app/services/ingestion-api
+COPY services/ /app/services/
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-dev --no-editable --package zellovest-ingestion-api
 
 EXPOSE 8003
 CMD ["uvicorn", "zellovest_ingestion.main:app", "--host", "0.0.0.0", "--port", "8003"]

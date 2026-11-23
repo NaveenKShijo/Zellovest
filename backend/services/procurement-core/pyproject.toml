@@ -5,11 +5,11 @@ description = "Procurement Core Service - Tenant, vendor, invoice, PO management
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "zellovest-shared @ file://../../shared",
+    "zellovest-shared",
     "fastapi>=0.109",
     "uvicorn[standard]>=0.27",
     "pydantic>=2.6",
-    "sqlalchemy>=2.0",
+    "sqlalchemy[asyncio]>=2.0",
     "asyncpg>=0.29",
     "psycopg[binary]>=3.2",
     "celery[redis]>=5.3",
@@ -27,6 +27,9 @@ dev = [
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.uv.sources]
+zellovest-shared = { workspace = true }
 
 [tool.ruff]
 line-length = 100

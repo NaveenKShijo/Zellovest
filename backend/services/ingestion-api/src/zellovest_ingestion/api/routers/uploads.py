@@ -12,6 +12,7 @@ import re
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
+from celery import Celery
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
@@ -46,6 +47,8 @@ router = APIRouter(prefix="/uploads", tags=["uploads"])
 
 _SAFE_BASENAME_MAX_LEN = 180
 _FALLBACK_FILENAME = "upload.bin"
+_STAGE_DOCUMENT_TASK = "zellovest.workers.tasks.document_ocr.stage_document"
+_INGESTION_QUEUE = "ingestion_tasks"
 
 
 def sanitize_filename(raw: str) -> str:
@@ -148,11 +151,20 @@ async def init_upload(
 
 
 def _enqueue_stage_document(
-    *, tenant_id: str, gcs_key: str, upload_id: str, hint: str | None
+    *,
+    settings: IngestionAPISettings,
+    tenant_id: str,
+    gcs_key: str,
+    upload_id: str,
+    hint: str | None,
 ) -> str:
-    """Enqueue the document staging worker (lazy import: no control/worker cycle).
+    """Enqueue the document staging worker by task name.
+
+    The API publishes task messages without importing worker implementation
+    packages, keeping the API and Celery worker images independently deployable.
 
     Args:
+        settings: Ingestion API settings containing the Redis broker URL.
         tenant_id: Owning tenant (from the lease row, never the client).
         gcs_key: Verified object key (from the lease row).
         upload_id: Lease row id.
@@ -161,16 +173,19 @@ def _enqueue_stage_document(
     Returns:
         Celery task id.
     """
-    from zellovest_workers.tasks.document_ocr import stage_document
-
-    return str(
-        stage_document.delay(
-            tenant_id=tenant_id,
-            gcs_key=gcs_key,
-            upload_id=upload_id,
-            document_type_hint=hint,
-        ).id
+    celery = Celery("zellovest.ingestion", broker=settings.redis_url)
+    task = celery.send_task(
+        _STAGE_DOCUMENT_TASK,
+        kwargs={
+            "tenant_id": tenant_id,
+            "gcs_key": gcs_key,
+            "upload_id": upload_id,
+            "document_type_hint": hint,
+        },
+        queue=_INGESTION_QUEUE,
     )
+
+    return str(task.id or "")
 
 
 def _to_upload_response(row: UploadRow) -> UploadResponse:
@@ -279,6 +294,7 @@ async def complete_upload(
     row.expires_at = None
     await session.commit()
     task_id = _enqueue_stage_document(
+        settings=settings,
         tenant_id=row.tenant_id,
         gcs_key=row.gcs_key,
         upload_id=str(row.id),

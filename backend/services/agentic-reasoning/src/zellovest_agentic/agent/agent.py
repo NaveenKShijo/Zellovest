@@ -445,15 +445,17 @@ class ActionService:
         user_id: str | uuid.UUID | None = None,
         note: str | None = None,
     ) -> dict[str, Any]:
-        """Execute a high-risk action after explicit confirmation.
+        """Execute a proposed action after explicit human confirmation.
 
-        The token is minted here - only after the signed-in user confirmed the
-        exact tool and parameters - and binds tenant, tool, idempotency key,
-        and a digest of the arguments.
+        High-risk actions additionally require an HMAC token minted here - only
+        after the signed-in user confirmed the exact tool and parameters. The
+        token binds tenant, tool, idempotency key, and a digest of the
+        arguments. Low-risk actions may also be confirmed (for example when the
+        caller disabled inline execution); they do not need a token.
 
         Args:
             identity: Authenticated caller (the human who confirmed).
-            tool: High-risk write tool.
+            tool: Write tool.
             arguments: Exact parameters the human reviewed.
             idempotency_key: Optional key; derived deterministically otherwise.
             conversation_id: Conversation to append the action result to.
@@ -464,17 +466,10 @@ class ActionService:
             A dictionary with the tool result and confirmation expiry.
 
         Raises:
-            McpHostError: For non-high-risk tools, validation failures, or
+            McpHostError: For read-only tools, validation failures, or
                 controlled transport/tool failures.
         """
         contract = self._require_write(identity, tool)
-        if not contract.requires_confirmation:
-            raise McpHostError(
-                "invalid_arguments",
-                f"{tool} is low risk and does not require confirmation; call it directly",
-                server=contract.server,
-                tool=tool,
-            )
         prepared = dict(arguments)
         key = (
             idempotency_key
@@ -486,15 +481,17 @@ class ActionService:
         prepared["dry_run"] = False
         registry = self.pool.registry_for(identity.role)
         registry.validate(tool, prepared)
-        token, expires_at = mint_confirmation_token(
-            secret=self._confirmation_secret(),
-            tenant_id=identity.tenant_id,
-            tool_name=tool,
-            idempotency_key=key,
-            parameters=prepared,
-            ttl_seconds=self.settings.ask_ai_confirmation_ttl_seconds,
-        )
-        prepared["confirmation_token"] = token
+        expires_at: float | None = None
+        if contract.requires_confirmation:
+            token, expires_at = mint_confirmation_token(
+                secret=self._confirmation_secret(),
+                tenant_id=identity.tenant_id,
+                tool_name=tool,
+                idempotency_key=key,
+                parameters=prepared,
+                ttl_seconds=self.settings.ask_ai_confirmation_ttl_seconds,
+            )
+            prepared["confirmation_token"] = token
         result = await self.pool.call_tool(
             tool,
             prepared,
@@ -524,14 +521,16 @@ class ActionService:
                         "result": result.data,
                         "note": note,
                         "confirmed_by": identity.actor_id,
-                        "expires_at": datetime.fromtimestamp(
-                            expires_at, UTC
-                        ).isoformat(),
+                        "expires_at": (
+                            datetime.fromtimestamp(expires_at, UTC).isoformat()
+                            if expires_at is not None
+                            else None
+                        ),
                     }
                 },
             )
         logger.info(
-            "ask_ai_high_risk_action_executed",
+            "ask_ai_action_confirmed",
             tenant_id=identity.tenant_id,
             correlation_id=identity.correlation_id,
             actor_id=identity.actor_id,
@@ -546,7 +545,11 @@ class ActionService:
             "success": True,
             "result": result.data,
             "error": None,
-            "expires_at": datetime.fromtimestamp(expires_at, UTC),
+            "expires_at": (
+                datetime.fromtimestamp(expires_at, UTC)
+                if expires_at is not None
+                else None
+            ),
             "conversation_id": conversation_uuid,
         }
 

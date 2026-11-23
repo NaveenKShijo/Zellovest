@@ -5,18 +5,18 @@ description = "Agentic Reasoning & Ask AI Service - Natural language understandi
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "zellovest-shared @ file://../../shared",
+    "zellovest-shared",
     "fastapi>=0.109",
     "uvicorn[standard]>=0.27",
     "pydantic>=2.6",
-    "sqlalchemy>=2.0",
+    "sqlalchemy[asyncio]>=2.0",
     "asyncpg>=0.29",
     "httpx>=0.26",
     "openai>=1.10",
     "anthropic>=0.18",
     "langchain>=0.1",
     "langgraph>=0.0.20",
-    "mcp>=0.1",
+    "mcp>=1.9,<2",
     "fastembed>=0.7.3",
     "langfuse>=4.7.0,<5",
 ]
@@ -32,6 +32,9 @@ dev = [
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.uv.sources]
+zellovest-shared = { workspace = true }
 
 [tool.ruff]
 line-length = 100

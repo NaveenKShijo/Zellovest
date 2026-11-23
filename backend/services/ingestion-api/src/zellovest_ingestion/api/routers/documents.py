@@ -115,7 +115,8 @@ def _enqueue_contract_product_sync(
 
 def _escaped_like(term: str) -> str:
     """Escape LIKE wildcards so user search matches literals only."""
-    return f"%{term.replace('%', r'\%').replace('_', r'\_')}%"
+    escaped_term = term.replace("%", r"\%").replace("_", r"\_")
+    return f"%{escaped_term}%"
 
 
 def _review_is_open(artifact: ExtractionArtifact | None) -> bool:

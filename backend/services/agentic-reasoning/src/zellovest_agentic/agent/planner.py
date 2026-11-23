@@ -182,9 +182,15 @@ class AgentPlanner:
                     continue
                 tool = str(raw.get("tool") or "").strip()
                 arguments = _sanitize_arguments(raw.get("arguments"))
-                if not tool or registry.get(tool) is None:
+                contract = registry.get(tool)
+                if not tool or contract is None:
                     notes.append(f"step {index} ignored: unavailable tool")
                     continue
+                if contract.operation == "write":
+                    # The planner reviews parameters, not transport metadata.
+                    # The executor derives the real tenant/conversation-scoped
+                    # idempotency key immediately before invocation.
+                    arguments.setdefault("idempotency_key", "planner-pending-key")
                 try:
                     validated = registry.validate(tool, arguments)
                 except ToolValidationError as exc:

@@ -21,12 +21,22 @@ services isolated (own Postgres, Redis, GCS bucket, vector namespace).
 
 ## Run locally
 
-Docker (full single-tenant stack):
+Docker (full single-tenant stack, including frontend and MCP servers):
 
 ```bash
 cd backend
-docker compose -f docker-compose.microservices.yml --env-file .env up --build
-# procurement-core :8001/docs, agentic-reasoning :8002/docs, ingestion-api :8003/docs
+docker compose up --build -d
+# frontend :3000, procurement-core :8001/docs,
+# agentic-reasoning :8002/docs, ingestion-api :8003/docs,
+# MCP-1/2/3 :8101-:8103
+```
+
+Migrations run automatically via the one-shot `migrate` service. Seed the
+first member with:
+
+```bash
+docker compose run --rm -v ./scripts:/app/scripts:ro migrate \
+  python scripts/seed_user.py --name "Your Name" --email you@company.com
 ```
 
 Directly in `.venv` (no Docker). The service packages resolve via

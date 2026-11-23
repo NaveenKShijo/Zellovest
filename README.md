@@ -86,22 +86,40 @@ And if things went wrong instead:
 ##### Why not avoid it
 Without it, the UI has two bad options after complete: freeze on “Processing…” forever (user has no idea if extraction worked), or blindly declare “Done” the moment bytes land in GCS (declaring victory before extraction even starts — which is what the old simulated UI did).
 
-# Local RAG services
+# Full local stack (Docker Compose)
 
-The microservice Compose stack includes a persistent Qdrant container. Copy
-`backend/.env.example` to `backend/.env`, configure `VOYAGE_API_KEY`,
-`GROQ_API_KEY`, and (optionally) the Langfuse Cloud keys, then start the stack
-from `backend/`:
+One command starts everything: PostgreSQL, Redis, Qdrant, schema migrations,
+the three FastAPI services (procurement-core `:8001`, agentic-reasoning
+`:8002`, ingestion-api `:8003`), the three MCP servers (`:8101`–`:8103`), the
+Celery workers + beat, and the Next.js frontend (`:3000`).
+
+Prerequisites: Docker Desktop, and a `backend/.env` (copy
+`backend/.env.example`). Set at least `JWT_SECRET_KEY`,
+`CREDENTIALS_ENCRYPTION_KEY`, `VOYAGE_API_KEY`, `GROQ_API_KEY`, and
+`GOOGLE_APPLICATION_CREDENTIALS_HOST` (host path to the GCP service-account
+JSON — it is mounted read-only at `/run/secrets/gcp-sa.json`).
 
 ```powershell
-docker compose -f docker-compose.microservices.yml --env-file .env up --build -d
+cd backend
+docker compose up --build -d
+docker compose logs -f          # follow all logs
+docker compose down             # stop everything (keeps data volumes)
 ```
 
-After PostgreSQL is ready, apply migrations from `backend/` with
-`uv run alembic upgrade head`.
+`docker compose -f docker-compose.microservices.yml up --build -d` is kept as
+a backwards-compatible alias for the same stack. Alembic migrations run
+automatically through the one-shot `migrate` service before the apps start.
 
-Qdrant is available on `http://localhost:6333` and its dashboard at
-`http://localhost:6333/dashboard`. The agentic service and document worker use
+Create the first (invite-only) member once the stack is healthy:
+
+```powershell
+docker compose run --rm -v ./scripts:/app/scripts:ro migrate `
+  python scripts/seed_user.py --name "Your Name" --email you@company.com
+```
+
+Then open `http://localhost:3000`; the demo account is created on first click
+of “Explore the live demo”. Qdrant is available on `http://localhost:6333`
+(dashboard at `http://localhost:6333/dashboard`). The agentic service and document worker use
 the Compose service URL (`http://qdrant:6333`). FastEmbed downloads its BM42
 model on first indexing/search, so the first operation can take longer.
 The `worker-documents` service is required for uploads to reach Qdrant; Qdrant
