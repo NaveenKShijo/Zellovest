@@ -17,7 +17,6 @@ Also:
 """
 
 import sqlalchemy as sa
-from sqlalchemy import create_engine
 from sqlalchemy.dialects import postgresql
 
 from alembic import op
@@ -37,20 +36,15 @@ def _create_enum(type_name: str, values: tuple[str, ...]) -> None:
 
 
 def _add_enum_values(type_name: str, values: tuple[str, ...]) -> None:
-    """Add values to a PG enum on a dedicated AUTOCOMMIT connection."""
-    url = op.get_bind().engine.url.render_as_string(hide_password=False).replace(
-        "+asyncpg", "+psycopg"
-    )
-    engine = create_engine(url, isolation_level="AUTOCOMMIT")
-    try:
-        with engine.connect() as conn:
-            for value in values:
-                conn.execute(
-                    sa.text(f"ALTER TYPE {type_name} ADD VALUE IF NOT EXISTS '{value}'")
-                )
-    finally:
-        engine.dispose()
+    conn = op.get_bind()
 
+    for value in values:
+        conn.execute(
+            sa.text(
+                f"ALTER TYPE {type_name} "
+                f"ADD VALUE IF NOT EXISTS '{value}'"
+            )
+        )
 
 def upgrade() -> None:
     _create_enum(
