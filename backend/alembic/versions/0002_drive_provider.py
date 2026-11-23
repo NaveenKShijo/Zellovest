@@ -24,24 +24,15 @@ depends_on = None
 
 
 def _add_enum_values(type_name: str, values: tuple[str, ...]) -> None:
-    """Add values to a PG enum outside the migration transaction.
+    conn = op.get_bind()
 
-    Opens a dedicated AUTOCOMMIT connection from the same database URL
-    as the migration bind (normalising any async driver to psycopg).
-    """
-    url = op.get_bind().engine.url.render_as_string(hide_password=False).replace(
-        "+asyncpg", "+psycopg"
-    )
-    engine = create_engine(url, isolation_level="AUTOCOMMIT")
-    try:
-        with engine.connect() as conn:
-            for value in values:
-                conn.execute(
-                    sa.text(f"ALTER TYPE {type_name} ADD VALUE IF NOT EXISTS '{value}'")
-                )
-    finally:
-        engine.dispose()
-
+    for value in values:
+        conn.execute(
+            sa.text(
+                f"ALTER TYPE {type_name} "
+                f"ADD VALUE IF NOT EXISTS '{value}'"
+            )
+        )
 
 def upgrade() -> None:
     # (tenant_id, provider) uniqueness: one row per provider per tenant.
