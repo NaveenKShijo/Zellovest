@@ -8,7 +8,7 @@ import { LayoutContextType } from '@/types';
  * 
  * - Default behavior is EXPANDED (false) permanently.
  * - Clicking sidebar tabs stays expanded with zero auto-shrinking or layout jumping.
- * - Desktop sidebar only collapses when user explicitly clicks the << collapse button.
+ * - Desktop sidebar only collapses when the user explicitly activates a sidebar toggle.
  */
 
 const LayoutContext = createContext<LayoutContextType | undefined>(undefined);

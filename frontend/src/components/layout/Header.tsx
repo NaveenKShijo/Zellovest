@@ -36,7 +36,12 @@ type HeaderAction = {
 /** Shared workspace header with global search and data-backed procurement actions. */
 export function Header() {
   const { user, logout } = useAuth();
-  const { toggleMobileSidebar } = useLayout();
+  const {
+    isSidebarCollapsed,
+    toggleSidebar,
+    toggleMobileSidebar,
+    setSidebarCollapsed,
+  } = useLayout();
   const api = useApi();
   const router = useRouter();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -162,13 +167,28 @@ export function Header() {
 
   const chatPrompt = encodeURIComponent('Help me review the most important procurement actions, upcoming renewal deadlines, and license seat forecasts.');
 
+  /** Toggles the desktop sidebar or opens and closes the mobile navigation drawer. */
+  const handleSidebarToggle = () => {
+    if (window.matchMedia('(max-width: 1023px)').matches) {
+      if (isSidebarCollapsed) setSidebarCollapsed(false);
+      toggleMobileSidebar();
+      return;
+    }
+
+    toggleSidebar();
+  };
+
   return (
     <header className={styles.header} ref={rootRef}>
       <div className={styles.left}>
-        <button onClick={toggleMobileSidebar} aria-label="Open navigation menu" className={`${styles.iconButton} header-mobile-toggle`}>
+        <button
+          onClick={handleSidebarToggle}
+          aria-label="Toggle navigation sidebar"
+          aria-controls="navigation-sidebar"
+          className={styles.iconButton}
+        >
           <Icon name="menu" />
         </button>
-        <span className={styles.title}>Dashboard</span>
       </div>
 
       <div className={styles.controls}>

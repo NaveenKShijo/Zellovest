@@ -135,6 +135,7 @@ export function Sidebar() {
 
       {/* Main Sidebar Element (Velvet Burgundy) */}
       <aside
+        id="navigation-sidebar"
         style={{
           width: isSidebarCollapsed ? 'var(--sidebar-collapsed-width)' : 'var(--sidebar-width)',
           backgroundColor: 'var(--bg-sidebar)',

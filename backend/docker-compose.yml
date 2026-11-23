@@ -8,7 +8,8 @@
 # Services: PostgreSQL, Redis, Qdrant, Alembic migrations, the three FastAPI
 # services, the three MCP servers, the Celery workers + beat, and the Next.js
 # frontend. All container-to-container traffic uses Compose service names; the
-# host-facing ports are unchanged from the manual setup.
+# only Traefik publishes public HTTP/S ports; application services stay on
+# Compose networks.
 #
 # The project name intentionally stays the default (the `backend` directory)
 # so the existing `backend_pgdata` / `backend_qdrantdata` volumes are reused.
@@ -32,6 +33,32 @@ x-gcp-credentials: &gcp-credentials
     read_only: true
 
 services:
+  # Public ingress. DNS for APP_DOMAIN must point at this VM, and GCP firewall
+  # rules must allow inbound TCP 80/443 for HTTP challenge and HTTPS traffic.
+  traefik:
+    image: traefik:v3.7.19
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=zellovest-proxy
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.letsencrypt.acme.email=${LETSENCRYPT_EMAIL:?Set LETSENCRYPT_EMAIL in backend/.env}
+      - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge=true
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-certs:/letsencrypt
+    networks:
+      - proxy
+    restart: unless-stopped
+
   # --- Infrastructure -------------------------------------------------------
   postgres:
     image: postgres:16-alpine
@@ -41,7 +68,7 @@ services:
       POSTGRES_DB: zellovest
     ports:
       # Host 5433: avoids clash with a system PostgreSQL on the default 5432.
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -54,7 +81,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -64,7 +91,7 @@ services:
 
   qdrant:
     image: qdrant/qdrant:latest
-    ports: ["6333:6333", "6334:6334"]
+    ports: ["127.0.0.1:6333:6333", "127.0.0.1:6334:6334"]
     volumes: [qdrantdata:/qdrant/storage]
     restart: unless-stopped
 
@@ -91,7 +118,6 @@ services:
       <<: *app-env
       SERVICE_NAME: procurement-core
       SERVICE_PORT: 8001
-    ports: ["8001:8001"]
     volumes: *gcp-credentials
     healthcheck:
       test:
@@ -118,7 +144,6 @@ services:
       <<: *app-env
       SERVICE_NAME: ingestion-api
       SERVICE_PORT: 8003
-    ports: ["8003:8003"]
     volumes: *gcp-credentials
     healthcheck:
       test:
@@ -148,7 +173,6 @@ services:
       MCP_PROCUREMENT_URL: http://mcp-procurement:8101/mcp
       MCP_DOCUMENT_URL: http://mcp-documents:8102/mcp
       MCP_EXTERNAL_URL: http://mcp-external:8103/mcp
-    ports: ["8002:8002"]
     volumes: *gcp-credentials
     healthcheck:
       test:
@@ -180,7 +204,6 @@ services:
       <<: *app-env
       SERVICE_NAME: mcp-procurement
       SERVICE_PORT: 8101
-    ports: ["8101:8101"]
     volumes: *gcp-credentials
     command:
       - uvicorn
@@ -213,7 +236,6 @@ services:
       <<: *app-env
       SERVICE_NAME: mcp-documents
       SERVICE_PORT: 8102
-    ports: ["8102:8102"]
     volumes: *gcp-credentials
     command:
       - uvicorn
@@ -247,7 +269,6 @@ services:
       <<: *app-env
       SERVICE_NAME: mcp-external
       SERVICE_PORT: 8103
-    ports: ["8103:8103"]
     volumes: *gcp-credentials
     command:
       - uvicorn
@@ -388,7 +409,17 @@ services:
       INGESTION_API_URL: http://ingestion-api:8003
       AGENTIC_API_URL: http://agentic-reasoning:8002
       NEXT_PUBLIC_ORGANIZATION_NAME: ${NEXT_PUBLIC_ORGANIZATION_NAME:-Zellovest}
-    ports: ["3000:3000"]
+    networks:
+      - default
+      - proxy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=zellovest-proxy
+      - "traefik.http.routers.zellovest.rule=Host(`${APP_DOMAIN:?Set APP_DOMAIN in backend/.env}`)"
+      - traefik.http.routers.zellovest.entrypoints=websecure
+      - traefik.http.routers.zellovest.tls=true
+      - traefik.http.routers.zellovest.tls.certresolver=letsencrypt
+      - traefik.http.services.zellovest.loadbalancer.server.port=3000
     healthcheck:
       test:
         - CMD
@@ -408,3 +439,8 @@ volumes:
   pgdata:
   qdrantdata:
   beatdata:
+  traefik-certs:
+
+networks:
+  proxy:
+    name: zellovest-proxy
