@@ -70,7 +70,7 @@ build-backend = "uv_build"
 
 [tool.ruff]
 line-length = 100
-target-version = "py313"
+target-version = "py311"
 
 [tool.ruff.lint]
 # B008: Depends() in defaults is the canonical FastAPI DI idiom.
@@ -78,7 +78,7 @@ target-version = "py313"
 ignore = ["B008", "BLE001"]
 
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.11"
 strict = true
 ignore_missing_imports = true
 

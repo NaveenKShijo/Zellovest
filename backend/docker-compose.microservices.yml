@@ -1,7 +1,0 @@
-# Backwards-compatible entry point. The canonical full-stack file is
-# docker-compose.yml; both commands start the same services:
-#
-#   docker compose up --build -d
-#   docker compose -f docker-compose.microservices.yml up --build -d
-include:
-  - docker-compose.yml

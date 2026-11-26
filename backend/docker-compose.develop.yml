@@ -1,0 +1,588 @@
+name: zellovest-develop
+
+# Development stack. Run from backend/ with:
+#   docker pull ghcr.io/astral-sh/uv:0.12.5
+#   docker compose --parallel 1 -f docker-compose.develop.yml up --build
+# Python source is bind-mounted into the app containers. Uvicorn reloads API and
+# MCP processes; the Celery wrapper restarts worker and beat processes when
+# Python files change.
+# This stack uses separate volumes and host ports from docker-compose.yml.
+
+x-app-env: &app-env
+  DATABASE_URL: postgresql+psycopg://zellovest:zellovest@postgres:5432/zellovest
+  ASYNC_DATABASE_URL: postgresql+asyncpg://zellovest:zellovest@postgres:5432/zellovest
+  REDIS_URL: redis://redis:6379/0
+  QDRANT_URL: http://qdrant:6333
+  GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/gcp-sa.json
+  PYTHONPATH: /app/shared/src:/app/services/procurement-core/src:/app/services/ingestion-api/src:/app/services/agentic-reasoning/src:/app/services/mcp-servers/src:/app/services/workers/src
+  WATCHFILES_FORCE_POLLING: "true"
+
+x-shared-source: &shared-source
+  type: bind
+  source: ./shared
+  target: /app/shared
+
+x-services-source: &services-source
+  type: bind
+  source: ./services
+  target: /app/services
+
+x-gcp-credentials: &gcp-credentials
+  type: bind
+  source: ${GOOGLE_APPLICATION_CREDENTIALS_HOST:-./secrets/gcp-sa.json}
+  target: /run/secrets/gcp-sa.json
+  read_only: true
+
+# Use Python's standard library so the worker image does not need extra dev
+# dependencies. CELERY_COMMAND is set separately on each worker/beat service.
+x-celery-reloader-command: &celery-reloader-command
+  - python
+  - -c
+  - |
+    import json
+    import os
+    import shlex
+    import signal
+    import subprocess
+    import time
+    from pathlib import Path
+
+    def log_event(event, **fields):
+        """Write one structured development lifecycle event to stdout."""
+        print(json.dumps({"event": event, **fields}), flush=True)
+
+    def source_snapshot():
+        """Return modification metadata for Python files in mounted source."""
+        roots = (Path("/app/shared/src"), Path("/app/services"))
+        files = []
+        for root in roots:
+            for path in root.rglob("*.py"):
+                try:
+                    stat = path.stat()
+                except FileNotFoundError:
+                    continue
+                files.append((str(path), stat.st_mtime_ns, stat.st_size))
+        return tuple(sorted(files))
+
+    def stop_child(child):
+        """Ask the Celery process to stop, then force-stop after a timeout."""
+        if child.poll() is None:
+            child.terminate()
+            try:
+                child.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait()
+
+    def main():
+        """Run Celery and restart it when mounted Python source changes."""
+        command = shlex.split(os.environ["CELERY_COMMAND"])
+        snapshot = source_snapshot()
+        child = subprocess.Popen(command)
+        stopping = False
+
+        def handle_signal(signum, _frame):
+            """Stop the child when Docker stops this development container."""
+            nonlocal stopping
+            stopping = True
+            log_event("celery_dev_stopping", signal=signum)
+            stop_child(child)
+
+        signal.signal(signal.SIGTERM, handle_signal)
+        signal.signal(signal.SIGINT, handle_signal)
+        log_event("celery_dev_started", command=command)
+
+        try:
+            while not stopping:
+                time.sleep(0.5)
+                updated_snapshot = source_snapshot()
+                if updated_snapshot != snapshot:
+                    snapshot = updated_snapshot
+                    log_event("python_source_changed", action="restart")
+                    stop_child(child)
+                    if not stopping:
+                        child = subprocess.Popen(command)
+                elif child.poll() is not None:
+                    return child.returncode or 1
+        finally:
+            stop_child(child)
+
+        return 0
+
+    raise SystemExit(main())
+
+services:
+  # --- Infrastructure -----------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: zellovest
+      POSTGRES_PASSWORD: zellovest
+      POSTGRES_DB: zellovest
+    ports:
+      - "127.0.0.1:5434:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zellovest -d zellovest"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "127.0.0.1:6335:6333"
+      - "127.0.0.1:6336:6334"
+    volumes:
+      - qdrantdata:/qdrant/storage
+    restart: unless-stopped
+
+  # --- Schema migrations (one-shot) --------------------------------------
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file: [.env]
+    environment:
+      <<: *app-env
+    volumes:
+      - *shared-source
+      - *services-source
+      - type: bind
+        source: ./alembic
+        target: /app/alembic
+      - type: bind
+        source: ./alembic.ini
+        target: /app/alembic.ini
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      postgres: {condition: service_healthy}
+
+  # --- HTTP services ------------------------------------------------------
+  procurement-core:
+    build:
+      context: .
+      dockerfile: services/procurement-core/Dockerfile
+    env_file: [.env]
+    environment:
+      <<: *app-env
+      SERVICE_NAME: procurement-core
+      SERVICE_PORT: 8001
+    volumes:
+      - *shared-source
+      - *services-source
+      - *gcp-credentials
+    ports:
+      - "127.0.0.1:8001:8001"
+    command:
+      - uvicorn
+      - zellovest_procurement.main:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8001"
+      - --reload
+      - --reload-dir
+      - /app/shared/src
+      - --reload-dir
+      - /app/services/procurement-core/src
+      - --reload-delay
+      - "0.5"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/healthz', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+    restart: unless-stopped
+
+  ingestion-api:
+    build:
+      context: .
+      dockerfile: services/ingestion-api/Dockerfile
+    env_file: [.env]
+    environment:
+      <<: *app-env
+      SERVICE_NAME: ingestion-api
+      SERVICE_PORT: 8003
+    volumes:
+      - *shared-source
+      - *services-source
+      - *gcp-credentials
+    ports:
+      - "127.0.0.1:8003:8003"
+    command:
+      - uvicorn
+      - zellovest_ingestion.main:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8003"
+      - --reload
+      - --reload-dir
+      - /app/shared/src
+      - --reload-dir
+      - /app/services/ingestion-api/src
+      - --reload-delay
+      - "0.5"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/healthz', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+    restart: unless-stopped
+
+  agentic-reasoning:
+    build:
+      context: .
+      dockerfile: services/agentic-reasoning/Dockerfile
+    env_file: [.env]
+    environment:
+      <<: *app-env
+      SERVICE_NAME: agentic-reasoning
+      SERVICE_PORT: 8002
+      MCP_PROCUREMENT_URL: http://mcp-procurement:8101/mcp
+      MCP_DOCUMENT_URL: http://mcp-documents:8102/mcp
+      MCP_EXTERNAL_URL: http://mcp-external:8103/mcp
+    volumes:
+      - *shared-source
+      - *services-source
+      - *gcp-credentials
+    ports:
+      - "127.0.0.1:8002:8002"
+    command:
+      - uvicorn
+      - zellovest_agentic.main:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8002"
+      - --reload
+      - --reload-dir
+      - /app/shared/src
+      - --reload-dir
+      - /app/services/agentic-reasoning/src
+      - --reload-delay
+      - "0.5"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/healthz', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      qdrant: {condition: service_started}
+      mcp-procurement: {condition: service_started}
+      mcp-documents: {condition: service_started}
+      mcp-external: {condition: service_started}
+      migrate: {condition: service_completed_successfully}
+    restart: unless-stopped
+
+  # --- MCP servers --------------------------------------------------------
+  mcp-procurement:
+    build:
+      context: .
+      dockerfile: services/mcp-servers/Dockerfile
+    env_file: [.env]
+    environment:
+      <<: *app-env
+      SERVICE_NAME: mcp-procurement
+      SERVICE_PORT: 8101
+    volumes:
+      - *shared-source
+      - *services-source
+      - *gcp-credentials
+    ports:
+      - "127.0.0.1:8101:8101"
+    command:
+      - uvicorn
+      - zellovest_mcp.main_procurement:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8101"
+      - --reload
+      - --reload-dir
+      - /app/shared/src
+      - --reload-dir
+      - /app/services/mcp-servers/src
+      - --reload-delay
+      - "0.5"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8101/healthz', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    depends_on:
+      postgres: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+    restart: unless-stopped
+
+  mcp-documents:
+    build:
+      context: .
+      dockerfile: services/mcp-servers/Dockerfile
+    env_file: [.env]
+    environment:
+      <<: *app-env
+      SERVICE_NAME: mcp-documents
+      SERVICE_PORT: 8102
+    volumes:
+      - *shared-source
+      - *services-source
+      - *gcp-credentials
+    ports:
+      - "127.0.0.1:8102:8102"
+    command:
+      - uvicorn
+      - zellovest_mcp.main_documents:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8102"
+      - --reload
+      - --reload-dir
+      - /app/shared/src
+      - --reload-dir
+      - /app/services/mcp-servers/src
+      - --reload-delay
+      - "0.5"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8102/healthz', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    depends_on:
+      postgres: {condition: service_healthy}
+      qdrant: {condition: service_started}
+      migrate: {condition: service_completed_successfully}
+    restart: unless-stopped
+
+  mcp-external:
+    build:
+      context: .
+      dockerfile: services/mcp-servers/Dockerfile
+    env_file: [.env]
+    environment:
+      <<: *app-env
+      SERVICE_NAME: mcp-external
+      SERVICE_PORT: 8103
+    volumes:
+      - *shared-source
+      - *services-source
+      - *gcp-credentials
+    ports:
+      - "127.0.0.1:8103:8103"
+    command:
+      - uvicorn
+      - zellovest_mcp.main_external:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8103"
+      - --reload
+      - --reload-dir
+      - /app/shared/src
+      - --reload-dir
+      - /app/services/mcp-servers/src
+      - --reload-delay
+      - "0.5"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8103/healthz', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    depends_on:
+      postgres: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+    restart: unless-stopped
+
+  # --- Background workers -------------------------------------------------
+  worker-ingestion:
+    build:
+      context: .
+      dockerfile: services/workers/Dockerfile
+    env_file: [.env]
+    environment:
+      <<: *app-env
+      SERVICE_NAME: worker-ingestion
+      CELERY_COMMAND: >-
+        celery -A zellovest_workers.celery_app.celery_app worker -Q ingestion_tasks
+        --loglevel=info --concurrency=2
+    command: *celery-reloader-command
+    volumes:
+      - *shared-source
+      - *services-source
+      - *gcp-credentials
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+    restart: unless-stopped
+
+  worker-documents:
+    build:
+      context: .
+      dockerfile: services/workers/Dockerfile
+    env_file: [.env]
+    environment:
+      <<: *app-env
+      SERVICE_NAME: worker-documents
+      CELERY_COMMAND: >-
+        celery -A zellovest_workers.celery_app.celery_app worker -Q document_tasks
+        --loglevel=info --concurrency=2
+    command: *celery-reloader-command
+    volumes:
+      - *shared-source
+      - *services-source
+      - *gcp-credentials
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      qdrant: {condition: service_started}
+      migrate: {condition: service_completed_successfully}
+    restart: unless-stopped
+
+  worker-analytics:
+    build:
+      context: .
+      dockerfile: services/workers/Dockerfile
+    env_file: [.env]
+    environment:
+      <<: *app-env
+      SERVICE_NAME: worker-analytics
+      CELERY_COMMAND: >-
+        celery -A zellovest_workers.celery_app.celery_app worker -Q analytics_tasks
+        --loglevel=info --concurrency=2
+    command: *celery-reloader-command
+    volumes:
+      - *shared-source
+      - *services-source
+      - *gcp-credentials
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+    restart: unless-stopped
+
+  # Run one beat process; source edits restart it through the Python wrapper.
+  scheduler-beat:
+    build:
+      context: .
+      dockerfile: services/workers/Dockerfile
+    env_file: [.env]
+    environment:
+      <<: *app-env
+      SERVICE_NAME: scheduler-beat
+      CELERY_COMMAND: >-
+        celery -A zellovest_workers.celery_app.celery_app beat --loglevel=info
+        --schedule /var/run/celery/celerybeat-schedule
+    command: *celery-reloader-command
+    volumes:
+      - *shared-source
+      - *services-source
+      - beatdata:/var/run/celery
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+    deploy:
+      replicas: 1
+    restart: unless-stopped
+
+  # --- Frontend -----------------------------------------------------------
+  frontend:
+    # Development runs next dev directly; the production Dockerfile would
+    # build and export a full .next production image first.
+    image: node:22-bookworm-slim
+    working_dir: /app
+    environment:
+      NODE_ENV: development
+      NEXT_TELEMETRY_DISABLED: "1"
+      WATCHPACK_POLLING: "true"
+      INGESTION_API_URL: http://ingestion-api:8003
+      AGENTIC_API_URL: http://agentic-reasoning:8002
+      NEXT_PUBLIC_ORGANIZATION_NAME: ${NEXT_PUBLIC_ORGANIZATION_NAME:-Zellovest}
+    volumes:
+      - type: bind
+        source: ../frontend
+        target: /app
+      - frontend_node_modules:/app/node_modules
+    command:
+      - sh
+      - -c
+      - npm install --no-audit --no-fund && npm run dev -- --hostname 0.0.0.0
+    ports:
+      - "127.0.0.1:3001:3000"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    depends_on:
+      ingestion-api: {condition: service_healthy}
+      agentic-reasoning: {condition: service_healthy}
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  qdrantdata:
+  beatdata:
+  frontend_node_modules:
