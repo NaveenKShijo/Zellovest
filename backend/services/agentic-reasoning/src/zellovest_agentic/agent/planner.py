@@ -54,6 +54,10 @@ Rules:
    fields you do not need. Dates are ISO ``YYYY-MM-DD``.
 8. If the question is unanswerable without more user input, return an empty
    steps list and put the missing detail in ``needs_clarification``.
+9. For a compound question, split independent document topics into focused
+   search queries, using a separate search step for each topic when needed.
+   Keep explicit vendor and document constraints from the user's context on
+   every applicable search. Do not infer an identifier or broaden a filter.
 
 Return one JSON object:
 {{

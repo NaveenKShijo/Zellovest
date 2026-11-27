@@ -72,6 +72,9 @@ def _paragraphs(text: str, max_chars: int = 900, overlap_chars: int = 120) -> li
     chunks: list[str] = []
     current = ""
     for part in parts:
+        if current and len(part) > max_chars:
+            chunks.append(current)
+            current = ""
         while len(part) > max_chars:
             cut = part.rfind(" ", 0, max_chars)
             cut = cut if cut > max_chars // 2 else max_chars
@@ -89,47 +92,59 @@ def _paragraphs(text: str, max_chars: int = 900, overlap_chars: int = 120) -> li
 
 
 def build_passages(artifact: dict[str, Any], *, document_id: str) -> list[Passage]:
-    """Build stable, page-aware passages from the stored extraction artifact."""
+    """Build bounded, page-specific section parents and smaller children."""
     extraction = artifact.get("extraction") or {}
     pages = extraction.get("pages") or []
     if not pages and extraction.get("full_text"):
         pages = [{"page_number": 1, "text": extraction["full_text"]}]
-    passages: list[Passage] = []
+    groups: list[tuple[str | None, list[tuple[int, str, list[float] | None]]]] = []
+    heading_pattern = re.compile(
+        r"(?m)^[ \t]*((?:\d+(?:\.\d+)*[.)]?[ \t]+)?[A-Z][A-Z\d ,/&()'\u2019-]{3,90})[ \t]*$"
+    )
+    active_section: str | None = None
+
+    def add_block(section: str | None, page: int, text: str, bbox: list[float] | None) -> None:
+        """Group adjacent section content within a bounded parent."""
+        for piece in _paragraphs(text, max_chars=2800, overlap_chars=0):
+            size = sum(len(item[1]) + 2 for item in groups[-1][1]) if groups else 0
+            if (not groups or groups[-1][0] != section or groups[-1][1][-1][0] != page
+                    or size + len(piece) > 3200):
+                groups.append((section, []))
+            groups[-1][1].append((page, piece, bbox))
+
     for page_data in pages:
         page = int(page_data.get("page_number") or 1)
         text = str(page_data.get("text") or "")
-        table_text = []
+        cursor = 0
+        for match in heading_pattern.finditer(text):
+            add_block(active_section, page, text[cursor:match.start()].strip(), None)
+            active_section = match.group(1).strip()
+            cursor = match.end()
+        add_block(active_section, page, text[cursor:].strip(), None)
         for table in page_data.get("tables") or []:
             rows = table.get("data") or []
-            table_text.append("\n".join(" | ".join(str(cell) for cell in row) for row in rows))
-        if table_text:
-            text = f"{text}\n\n" + "\n\n".join(table_text)
-        if not text.strip():
-            continue
-        blocks = page_data.get("text_blocks") or []
-        bbox = blocks[0].get("bbox") if blocks else None
-        headings = re.compile(r"(?m)^\s*((?:\d+(?:\.\d+)*[.)]?\s+)?[A-Z][A-Z\d ,/&()'’-]{3,90})\s*$")
-        matches = list(headings.finditer(text))
-        sections: list[tuple[str | None, str]] = []
-        if matches:
-            cursor = 0
-            active = None
-            for match in matches:
-                if match.start() > cursor:
-                    sections.append((active, text[cursor:match.start()].strip()))
-                active = match.group(1).strip()
-                cursor = match.end()
-            sections.append((active, text[cursor:].strip()))
-        else:
-            sections = [(None, text)]
-        for section, parent_text in sections:
-            if not parent_text:
+            if not rows:
                 continue
-            parent_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{document_id}:{page}:{section}:{parent_text}"))
-            for index, content in enumerate(_paragraphs(parent_text)):
+            header = " | ".join(str(cell or "") for cell in rows[0])
+            for row in rows[1:] or [rows[0]]:
+                row_text = " | ".join(str(cell or "") for cell in row)
+                bbox = table.get("bbox")
+                if not bbox or not any(bbox):
+                    bbox = None
+                add_block(active_section, page, f"{header}\n{row_text}", bbox)
+    passages: list[Passage] = []
+    for section, blocks in groups:
+        parent_text = "\n\n".join(block[1] for block in blocks)
+        parent_id = str(uuid.uuid5(
+            uuid.NAMESPACE_URL, f"{document_id}:{blocks[0][0]}:{section}:{parent_text}"
+        ))
+        index = 0
+        for page, text, bbox in blocks:
+            for content in _paragraphs(text, max_chars=500, overlap_chars=60):
                 digest = hashlib.sha1(content.encode("utf-8")).hexdigest()[:12]
                 point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{parent_id}:{index}:{digest}"))
                 passages.append(Passage(point_id, parent_id, content, parent_text, page, section, bbox))
+                index += 1
     return passages
 
 
@@ -317,6 +332,7 @@ def search_documents(
     *, tenant_id: str, query: str, vendor_id: str | None = None,
     document_type: str | None = None, document_id: str | None = None,
     document_types: Sequence[str] | None = None, limit: int = 10,
+    technique: str = "hybrid", fail_on_missing_collection: bool = False,
 ) -> list[dict[str, Any]]:
     """Search Qdrant with dense and sparse retrieval, then fuse ranks with RRF.
 
@@ -329,10 +345,14 @@ def search_documents(
         document_types: Optional set of document types (for contract +
             amendment searches). Ignored when ``document_type`` is set.
         limit: Maximum number of child passages to return.
+        technique: Dense, sparse, or hybrid retrieval.
+        fail_on_missing_collection: Reject a missing index instead of returning no results.
 
     Returns:
         Payload dictionaries enriched with the fused relevance score.
     """
+    if technique not in {"dense", "sparse", "hybrid"}:
+        raise ValueError("technique must be dense, sparse, or hybrid")
     collection = _rag_settings().qdrant_collection
     must: list[dict[str, Any]] = [{"key": "tenant_id", "match": {"value": tenant_id}}]
     if vendor_id:
@@ -344,21 +364,26 @@ def search_documents(
     elif document_types:
         must.append({"key": "document_type", "match": {"any": list(document_types)}})
     query_filter = {"must": must}
-    dense = _voyage_embeddings([query], input_type="query")[0]
-    sparse = _sparse_query(query)
+    dense = _voyage_embeddings([query], input_type="query")[0] if technique != "sparse" else None
+    sparse = _sparse_query(query) if technique != "dense" else None
     with httpx.Client(timeout=30) as client:
         headers = _qdrant_headers()
         base = f"{_qdrant_url()}/collections/{collection}/points/query"
-        response = client.post(base, headers=headers, json={
-            "prefetch": [
+        if technique == "hybrid":
+            request_body = {"prefetch": [
                 {"query": dense, "using": _DENSE_NAME, "filter": query_filter,
                  "limit": limit * 3},
                 {"query": sparse, "using": _SPARSE_NAME, "filter": query_filter,
                  "limit": limit * 3},
-            ],
-            "query": {"fusion": "rrf"}, "limit": limit, "with_payload": True,
-        })
+            ], "query": {"fusion": "rrf"}, "limit": limit, "with_payload": True}
+        else:
+            request_body = {"query": dense if technique == "dense" else sparse,
+                            "using": _DENSE_NAME if technique == "dense" else _SPARSE_NAME,
+                            "filter": query_filter, "limit": limit, "with_payload": True}
+        response = client.post(base, headers=headers, json=request_body)
         if response.status_code == 404:
+            if fail_on_missing_collection:
+                raise RuntimeError("Qdrant collection does not exist")
             return []
         response.raise_for_status()
         points = (response.json().get("result") or {}).get("points", [])

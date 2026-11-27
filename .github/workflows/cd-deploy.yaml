@@ -35,8 +35,10 @@ jobs:
       id-token: write
     env:
       GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_VM_SERVICE_ACCOUNT: ${{ vars.GCP_VM_SERVICE_ACCOUNT || secrets.GCP_VM_SERVICE_ACCOUNT }}
       GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT || secrets.GCP_SERVICE_ACCOUNT }}
       GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER || secrets.GCP_WIF_PROVIDER }}
+      GCP_VM_WIF_PROVIDER: ${{ vars.GCP_VM_WIF_PROVIDER || secrets.GCP_VM_WIF_PROVIDER }}
       GCP_VM_NAME: ${{ vars.GCP_VM_NAME }}
       GCP_VM_ZONE: ${{ vars.GCP_VM_ZONE }}
       GCP_DEPLOY_DIR: ${{ vars.GCP_DEPLOY_DIR }}
@@ -51,7 +53,7 @@ jobs:
       - name: Validate deployment configuration
         run: |
           set -euo pipefail
-          for value in GCP_PROJECT_ID GCP_SERVICE_ACCOUNT GCP_WIF_PROVIDER GCP_VM_NAME GCP_VM_ZONE GCP_DEPLOY_DIR GCP_ARTIFACT_REGISTRY_LOCATION APP_IMAGE_TAG; do
+          for value in GCP_PROJECT_ID GCP_VM_SERVICE_ACCOUNT GCP_VM_WIF_PROVIDER GCP_VM_NAME GCP_VM_ZONE GCP_DEPLOY_DIR GCP_ARTIFACT_REGISTRY_LOCATION APP_IMAGE_TAG; do
             if [[ -z "${!value}" ]]; then
               echo "Missing GitHub variable or secret: $value" >&2
               exit 1
@@ -69,8 +71,8 @@ jobs:
       - name: Authenticate to Google Cloud with Workload Identity Federation
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ env.GCP_WIF_PROVIDER }}
-          service_account: ${{ env.GCP_SERVICE_ACCOUNT }}
+          workload_identity_provider: ${{ env.GCP_VM_WIF_PROVIDER }}
+          service_account: ${{ env.GCP_VM_SERVICE_ACCOUNT }}
           create_credentials_file: true
 
       - name: Configure Google Cloud CLI
