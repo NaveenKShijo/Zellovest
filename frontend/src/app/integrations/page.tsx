@@ -301,15 +301,12 @@ export default function IntegrationsPage() {
     const providerLabel =
       providerParam === 'okta' ? 'Okta' : providerParam === 'google-drive' ? 'Google Drive' : 'Ramp';
     if (statusParam === 'connected' && providerParam) {
-      const isDrive = providerParam === 'google-drive';
       // Reading the OAuth callback query string is an external-system sync;
       // the notice reflects the one-time redirect result.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setBannerNotice({
         type: 'success',
-        message: isDrive
-          ? `${providerLabel} successfully connected! Click 'Full Load' below to begin ingesting documents.`
-          : `${providerLabel} successfully connected! Your access tokens are securely stored and encrypted.`,
+        message: `${providerLabel} connected! Initial background sync has been queued automatically, and scheduled syncs will keep your workspace up to date.`,
       });
       // Clean up the URL query params without reloading
       window.history.replaceState({}, document.title, window.location.pathname);

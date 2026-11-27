@@ -255,6 +255,18 @@ async def _handle_okta_callback(
         refresh_token_received=bool(tokens.refresh_token),
     )
 
+    try:
+        from zellovest_ingestion.services.sync_dispatcher import dispatch_okta_sync
+
+        await dispatch_okta_sync(session, tenant_id=tenant_id, entities=["users", "apps", "logs"])
+        await session.commit()
+    except Exception as sync_exc:
+        logger.warning(
+            "okta_initial_sync_skipped",
+            tenant_id=tenant_id,
+            error_class=type(sync_exc).__name__,
+        )
+
     if is_browser_request:
         return RedirectResponse(
             url=f"{settings.frontend_url}/integrations?status=connected&provider=okta&tenant_id={tenant_id}",

@@ -2180,6 +2180,22 @@ async def commit_contract_review(
             contract_id=str(contract.id),
             error_class=type(exc).__name__,
         )
+    try:
+        from zellovest_workers.tasks.ap_audit import reconcile_vendor
+
+        reconcile_vendor.delay(tenant_id=upload_tenant_id, vendor_id=str(contract.vendor_id))
+        logger.info(
+            "contract_commit_vendor_reconcile_enqueued",
+            tenant_id=upload_tenant_id,
+            vendor_id=str(contract.vendor_id),
+        )
+    except Exception as exc:
+        logger.warning(
+            "contract_commit_vendor_reconcile_failed",
+            tenant_id=upload_tenant_id,
+            vendor_id=str(contract.vendor_id),
+            error_class=type(exc).__name__,
+        )
     return ContractReviewCommitResponse(
         document_id=document_id,
         contract_id=contract.id,

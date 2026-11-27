@@ -47,6 +47,7 @@ def make_celery(broker_url: str = "redis://localhost:6379/0") -> Celery:
             "zellovest.workers.tasks.forecasting.*": {"queue": QUEUE_ANALYTICS},
             "zellovest.workers.tasks.mlops.*": {"queue": QUEUE_ANALYTICS},
             "zellovest.workers.tasks.renewal_reminders.*": {"queue": QUEUE_ANALYTICS},
+            "zellovest.workers.tasks.decision_packets.*": {"queue": QUEUE_ANALYTICS},
             "zellovest.workers.tasks.maintenance.*": {"queue": QUEUE_INGESTION},
         },
         task_default_queue=QUEUE_INGESTION,
@@ -61,9 +62,24 @@ def make_celery(broker_url: str = "redis://localhost:6379/0") -> Celery:
                 "schedule": 900.0,
                 "options": {"queue": QUEUE_INGESTION},
             },
+            "scheduled-integrations-sync": {
+                "task": "zellovest.workers.tasks.ingestion.scheduled_integrations_sync",
+                "schedule": 3600.0,
+                "options": {"queue": QUEUE_INGESTION},
+            },
+            "renew-expiring-drive-watches": {
+                "task": "zellovest.workers.tasks.ingestion.renew_expiring_drive_watches",
+                "schedule": 43200.0,
+                "options": {"queue": QUEUE_INGESTION},
+            },
             "scan-renewal-notice-deadlines": {
                 "task": "zellovest.workers.tasks.renewal_reminders.scan_renewal_notice_deadlines",
                 "schedule": 86400.0,  # daily scan
+                "options": {"queue": QUEUE_ANALYTICS},
+            },
+            "refresh-decision-packets-hourly": {
+                "task": "zellovest.workers.tasks.decision_packets.refresh_all_tenant_decision_packets",
+                "schedule": 3600.0,
                 "options": {"queue": QUEUE_ANALYTICS},
             },
             "dispatch-seat-forecasts-biweekly": {

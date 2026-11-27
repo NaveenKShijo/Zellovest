@@ -221,6 +221,35 @@ export default function MaverickSpendPage() {
     notify.info('Exception Logged', 'Corporate card charge approved as legitimate standalone exception.');
   };
 
+  const handleMarkMigrated = async (alertId: string) => {
+    try {
+      await api.maverick.updateStatus(alertId, 'migrated');
+      setAlerts((prev) =>
+        prev.map((a) => (a.id === alertId ? { ...a, status: 'migrated' as const } : a))
+      );
+      invalidateMaverickFeeds(cacheScopeId);
+      notify.success('Consolidated & Staged', 'Subscription marked consolidated and annual savings staged in the ledger.');
+    } catch {
+      notify.error('Update Failed', 'Could not mark subscription as consolidated.');
+    }
+  };
+
+  const handleCreateTask = async (alert: MaverickAlertItem) => {
+    try {
+      const target = alert.overlap?.approvedAlternative || 'approved enterprise software';
+      await api.workflows.create({
+        workflow_type: 'human_review',
+        title: `Consolidate ${alert.merchantName} → ${target}`,
+        description: `Review ${alert.employeeName}'s recurring $${alert.amount}/mo ${alert.merchantName} charge and provision ${target}.`,
+        reference_id: alert.id,
+        reference_type: 'maverick_alert',
+      });
+      notify.success('Consolidation Task Created', 'Added to your in-app Active Workflows queue on the Overview briefing.');
+    } catch {
+      notify.error('Task Failed', 'Could not create the in-app consolidation task.');
+    }
+  };
+
   const handleViewContract = (contractId: string) => {
     router.push(`/vendors?contract=${contractId}`);
   };
@@ -234,7 +263,7 @@ export default function MaverickSpendPage() {
             Decentralized Spend & Semantic Overlap
           </h1>
           <p style={{ color: 'var(--text-secondary)', fontSize: '13.5px', marginTop: '3px' }}>
-            TypeSafe AI (Jev System One) detects unmanaged recurring subscriptions on corporate cards and maps semantic overlap to active procurement contract products.
+            Automatically detects unmanaged recurring SaaS on corporate cards and maps overlap against active contracts—ready for in-app consolidation.
           </p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -322,6 +351,8 @@ export default function MaverickSpendPage() {
       ) : (
         <MaverickAlertFeed
           alerts={filteredAlerts}
+          onMarkMigrated={handleMarkMigrated}
+          onCreateTask={handleCreateTask}
           onDismiss={handleDismiss}
           onViewContract={handleViewContract}
         />

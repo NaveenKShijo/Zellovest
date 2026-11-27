@@ -243,3 +243,116 @@ export interface RenewalReminderItem {
   status: string;
   urgency: string;
 }
+
+// 5. Unified Pre-Computed Decision Packets & In-App Workflows
+export type DecisionPacketType = 'ap_investigation' | 'renewal_dossier' | 'maverick_review';
+export type DecisionPacketStatus = 'pending_review' | 'actioned' | 'dismissed';
+
+export interface DecisionPacketCitation {
+  tool?: string;
+  source_id?: string | null;
+  document_id?: string | null;
+  page?: number | null;
+  section?: string | null;
+  excerpt?: string | null;
+}
+
+export interface DecisionPacketFinding {
+  statement: string;
+  citations?: DecisionPacketCitation[];
+}
+
+export interface DecisionPacketItem {
+  id: string;
+  tenant_id: string;
+  packet_type: DecisionPacketType | string;
+  entity_type: string;
+  entity_id: string;
+  vendor_id?: string | null;
+  title: string;
+  summary: string;
+  recommended_action?: string | null;
+  financial_impact?: number | null;
+  currency: string;
+  urgency_date?: string | null;
+  source_hash: string;
+  payload: {
+    summary?: string;
+    confirmed_facts?: DecisionPacketFinding[];
+    calculated_values?: DecisionPacketFinding[];
+    possible_explanations?: DecisionPacketFinding[];
+    needs_human_review?: DecisionPacketFinding[];
+    citations?: DecisionPacketCitation[];
+    vendor_name?: string;
+    contract_number?: string;
+    invoice_number?: string;
+    rule_type?: string;
+    severity?: string;
+    days_until_notice_deadline?: number;
+    merchant_name?: string;
+    monthly_amount?: number;
+    annual_run_rate?: number;
+    employee_name?: string;
+    department?: string;
+    overlap_score?: number;
+    approved_alternative?: string | null;
+    approved_vendor_name?: string | null;
+    prep?: RenewalPreparationResponse;
+    brief?: NegotiationBriefResponse;
+    [key: string]: unknown;
+  };
+  status: DecisionPacketStatus | string;
+  actioned_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DecisionFeedSummary {
+  pending_count: number;
+  total_financial_impact: number;
+  ap_count: number;
+  renewal_count: number;
+  maverick_count: number;
+  documents_review_needed: number;
+  unreconciled_invoices_count: number;
+  active_workflows_count: number;
+  potential_savings_total: number;
+  last_sync_at?: string | null;
+}
+
+export interface DecisionFeedResponse {
+  items: DecisionPacketItem[];
+  summary: DecisionFeedSummary;
+}
+
+export interface DecisionPacketActionResponse {
+  packet: DecisionPacketItem;
+  workflow_id?: string | null;
+  savings_entry_id?: string | null;
+  message: string;
+}
+
+export interface DecisionFeedRefreshResponse {
+  tenant_id: string;
+  ap_investigation: number;
+  renewal_dossier: number;
+  maverick_review: number;
+}
+
+export interface WorkflowItem {
+  id: string;
+  tenant_id: string;
+  workflow_type: string;
+  title: string;
+  description?: string | null;
+  status: string;
+  reference_id?: string | null;
+  reference_type?: string | null;
+  assignee_id?: string | null;
+  current_step: number;
+  total_steps: number;
+  metadata?: Record<string, unknown> | null;
+  created_at: string;
+  updated_at: string;
+  completed_at?: string | null;
+}

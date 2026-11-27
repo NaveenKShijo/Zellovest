@@ -215,6 +215,20 @@ export default function CompliancePage() {
     notify.success('Invoice Discrepancy Acknowledged', 'Status updated to Acknowledged in audit log.');
   };
 
+  const handleResolve = async (itemId: string) => {
+    try {
+      await api.compliance.updateStatus(itemId, 'resolved');
+      setItems((prev) =>
+        prev.map((it) => (it.id === itemId ? { ...it, status: 'resolved' as const } : it))
+      );
+      setIsModalOpen(false);
+      notify.success('Exception Resolved', 'Resolved and staged hard-cash recovery in the savings ledger.');
+      void fetchData();
+    } catch {
+      notify.error('Resolution Failed', 'Could not resolve the selected reconciliation exception.');
+    }
+  };
+
   const handlePurgeOrphans = async () => {
     try {
       const res = await api.compliance.purgeOrphans();
@@ -293,6 +307,7 @@ export default function CompliancePage() {
         onClose={() => setIsModalOpen(false)}
         onLaunchInvestigation={handleLaunchInvestigation}
         onAcknowledge={handleAcknowledge}
+        onResolve={handleResolve}
       />
     </div>
   );

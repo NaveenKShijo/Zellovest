@@ -29,7 +29,7 @@ type HeaderAction = {
   title: string;
   detail: string;
   href: string;
-  kind: 'renewal' | 'forecast';
+  kind: 'renewal' | 'forecast' | 'decision';
   urgency: number;
 };
 
@@ -115,17 +115,40 @@ export function Header() {
   const loadActions = useCallback(async () => {
     setIsLoadingActions(true);
     setActionError('');
-    const [renewalResult, forecastResult] = await Promise.allSettled([
+    const [feedResult, renewalResult, forecastResult] = await Promise.allSettled([
+      api.decisionFeed.get({ status: 'pending_review', limit: 6, auto_hydrate: false }),
       api.negotiation.upcomingRenewals({ days_ahead: 120 }),
       api.negotiation.seatForecasts(),
     ]);
     const nextActions: HeaderAction[] = [];
+    if (feedResult.status === 'fulfilled') {
+      feedResult.value.items.slice(0, 5).forEach((packet, idx) => {
+        const href =
+          packet.packet_type === 'renewal_dossier'
+            ? `/renewals?search=${encodeURIComponent(String(packet.payload?.vendor_name || ''))}&contract=${encodeURIComponent(packet.entity_id)}`
+            : packet.packet_type === 'maverick_review'
+              ? '/maverick-spend'
+              : '/compliance';
+        nextActions.push({
+          id: `packet:${packet.id}`,
+          title: packet.title,
+          detail: packet.recommended_action || packet.summary,
+          href,
+          kind: 'decision',
+          urgency: idx - 50,
+        });
+      });
+    }
     if (renewalResult.status === 'fulfilled') {
       renewalResult.value
         .filter((renewal) => renewal.daysUntilRenewal <= 30 || renewal.isNoticeWindowActive)
         .sort((a, b) => Math.min(a.daysUntilRenewal, a.daysUntilNoticeDeadline) - Math.min(b.daysUntilRenewal, b.daysUntilNoticeDeadline))
         .slice(0, 5)
-        .forEach((renewal) => nextActions.push(renewalAction(renewal)));
+        .forEach((renewal) => {
+          if (!nextActions.some((a) => a.id.includes(renewal.contractId))) {
+            nextActions.push(renewalAction(renewal));
+          }
+        });
     }
     if (forecastResult.status === 'fulfilled') {
       latestForecasts(forecastResult.value)
@@ -136,9 +159,13 @@ export function Header() {
     }
     nextActions.sort((a, b) => a.urgency - b.urgency);
     setActions(nextActions.slice(0, 8));
-    setActionError(renewalResult.status === 'rejected' && forecastResult.status === 'rejected'
-      ? 'Could not load renewals or forecasts. Try again.'
-      : '');
+    setActionError(
+      feedResult.status === 'rejected' &&
+        renewalResult.status === 'rejected' &&
+        forecastResult.status === 'rejected'
+        ? 'Could not load procurement actions. Try again.'
+        : ''
+    );
     setActionsLoaded(true);
     setIsLoadingActions(false);
   }, [api]);
@@ -250,7 +277,7 @@ export function Header() {
             {!isLoadingActions && actionError && <div className={styles.panelMessage} role="alert">{actionError}<button className={styles.retryLink} onClick={() => void loadActions()}>Try again</button></div>}
             {!isLoadingActions && !actionError && actions.length === 0 && <div className={styles.emptyActions}><span className={styles.emptyCheck}>✓</span><strong>You’re up to date</strong><p>No urgent renewals or seat reduction recommendations were found in the current data.</p></div>}
             {!isLoadingActions && actions.length > 0 && <div className={styles.actionList}>{actions.map((action) => <button key={action.id} className={styles.actionItem} onClick={() => navigate(action.href)}>
-              <span className={`${styles.actionMark} ${action.kind === 'renewal' ? styles.renewalMark : styles.forecastMark}`}><Icon name={action.kind === 'renewal' ? 'calendar' : 'users'} /></span><span className={styles.actionCopy}><strong>{action.title}</strong><small>{action.detail}</small><em>{action.kind === 'renewal' ? 'Review renewal' : 'Review forecast'} <Icon name="arrow" /></em></span>
+              <span className={`${styles.actionMark} ${action.kind === 'renewal' ? styles.renewalMark : styles.forecastMark}`}><Icon name={action.kind === 'renewal' ? 'calendar' : action.kind === 'decision' ? 'bell' : 'users'} /></span><span className={styles.actionCopy}><strong>{action.title}</strong><small>{action.detail}</small><em>{action.kind === 'renewal' ? 'Review renewal' : action.kind === 'decision' ? 'Review decision' : 'Review forecast'} <Icon name="arrow" /></em></span>
             </button>)}</div>}
             <button className={styles.viewActions} onClick={() => navigate('/renewals')}>View renewals <Icon name="arrow" /></button>
           </div>}

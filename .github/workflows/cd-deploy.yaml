@@ -125,14 +125,14 @@ jobs:
           for attempt in {1..36}; do
             healthy=true
             for service in postgres redis procurement-core ingestion-api agentic-reasoning mcp-procurement mcp-documents mcp-external frontend; do
-              container_id=$("\${compose[@]}" ps -q "$service")
-              status=$(sudo docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container_id" 2>/dev/null || true)
-              if [[ "$status" != healthy ]]; then healthy=false; break; fi
+              container_id=\$("\${compose[@]}" ps -q "\$service")
+              status=\$(sudo docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "\$container_id" 2>/dev/null || true)
+              if [[ "\$status" != healthy ]]; then healthy=false; break; fi
             done
-            if [[ "$healthy" == true ]]; then break; fi
+            if [[ "\$healthy" == true ]]; then break; fi
             sleep 5
           done
-          if [[ "$healthy" != true ]]; then
+          if [[ "\$healthy" != true ]]; then
             "\${compose[@]}" ps
             if [[ -f .env.release.previous ]]; then
               mv .env.release.previous .env.release

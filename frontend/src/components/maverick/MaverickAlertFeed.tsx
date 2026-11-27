@@ -6,14 +6,16 @@ import { SemanticOverlapCard } from './SemanticOverlapCard';
 
 interface MaverickAlertFeedProps {
   alerts: MaverickAlertItem[];
-  onNotifyEmployee?: (alertId: string) => void;
+  onMarkMigrated?: (alertId: string) => void;
+  onCreateTask?: (alert: MaverickAlertItem) => void;
   onDismiss: (alertId: string) => void;
   onViewContract: (contractId: string) => void;
 }
 
 export function MaverickAlertFeed({
   alerts,
-  onNotifyEmployee,
+  onMarkMigrated,
+  onCreateTask,
   onDismiss,
   onViewContract,
 }: MaverickAlertFeedProps) {
@@ -46,7 +48,8 @@ export function MaverickAlertFeed({
         <SemanticOverlapCard
           key={alert.id}
           alert={alert}
-          onNotifyEmployee={onNotifyEmployee}
+          onMarkMigrated={onMarkMigrated}
+          onCreateTask={onCreateTask}
           onDismiss={onDismiss}
           onViewContract={onViewContract}
         />

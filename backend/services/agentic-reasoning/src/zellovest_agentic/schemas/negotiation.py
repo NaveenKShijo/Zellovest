@@ -90,7 +90,7 @@ class UpcomingRenewalResponse(BaseModel):
     notice_deadline_date: str
     days_until_notice_deadline: int
     is_notice_window_active: bool
-    utilization_pct: float
+    utilization_pct: float | None = None
     assigned_owner: str
     status: str
     key_leverage_points: list[str]

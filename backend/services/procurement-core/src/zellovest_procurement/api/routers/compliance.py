@@ -381,6 +381,60 @@ async def update_exception_status(
         if inv:
             inv.status = "approved"
 
+    # Sync linked decision packet and auto-stage potential recovery on resolution
+    from zellovest_shared.db.intelligence import (
+        DecisionPacket,
+        SavingsKind,
+        SavingsLedgerEntry,
+        SavingsStatus,
+    )
+    from zellovest_shared.decision_packets import ENTITY_EXCEPTION, STATUS_ACTIONED, STATUS_DISMISSED, STATUS_PENDING_REVIEW
+    from zellovest_shared.pricing import to_decimal
+
+    packet = await session.scalar(
+        select(DecisionPacket).where(
+            DecisionPacket.tenant_id == active_tenant,
+            DecisionPacket.entity_type == ENTITY_EXCEPTION,
+            DecisionPacket.entity_id == exception_record.id,
+        )
+    )
+    if packet is not None:
+        packet.status = (
+            STATUS_DISMISSED
+            if body.status == "dismissed"
+            else STATUS_ACTIONED
+            if body.status in {"acknowledged", "resolved"}
+            else STATUS_PENDING_REVIEW
+        )
+        packet.actioned_by_user_id = user.id if user else None
+        packet.actioned_at = datetime.now(UTC) if body.status != "open" else None
+
+    if body.status == "resolved" and exception_record.variance_amount:
+        variance_val = abs(to_decimal(exception_record.variance_amount))
+        if variance_val > Decimal("0"):
+            existing_saving = await session.scalar(
+                select(SavingsLedgerEntry).where(
+                    SavingsLedgerEntry.tenant_id == active_tenant,
+                    SavingsLedgerEntry.source_type == "overbill",
+                    SavingsLedgerEntry.source_id == exception_record.id,
+                )
+            )
+            if existing_saving is None:
+                inv_row = await session.get(InvoiceRow, exception_record.invoice_id)
+                session.add(
+                    SavingsLedgerEntry(
+                        tenant_id=active_tenant,
+                        vendor_id=inv_row.vendor_id if inv_row else None,
+                        source_type="overbill",
+                        source_id=exception_record.id,
+                        amount=variance_val.quantize(Decimal("0.01")),
+                        currency=inv_row.currency if inv_row else "USD",
+                        kind=SavingsKind.HARD_CASH,
+                        status=SavingsStatus.POTENTIAL,
+                        notes="Auto-staged upon AP audit exception resolution.",
+                    )
+                )
+
     await session.commit()
     logger.info("exception_status_updated", exception_id=str(exception_id), new_status=body.status)
     return {"status": "ok", "exception_id": str(exception_id), "new_status": body.status}

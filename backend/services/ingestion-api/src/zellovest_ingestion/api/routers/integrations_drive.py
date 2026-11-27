@@ -232,6 +232,18 @@ async def callback(
         webhook_token=settings.google_drive_webhook_token or None,
     )
 
+    try:
+        from zellovest_ingestion.services.sync_dispatcher import dispatch_drive_sync
+
+        await dispatch_drive_sync(session, tenant_id=tenant_id, full_sync=True)
+        await session.commit()
+    except Exception as sync_exc:
+        logger.warning(
+            "drive_initial_sync_skipped",
+            tenant_id=tenant_id,
+            error_class=type(sync_exc).__name__,
+        )
+
     if is_browser_request:
         return RedirectResponse(
             url=f"{settings.frontend_url}/integrations?status=connected&provider=google-drive&tenant_id={tenant_id}",

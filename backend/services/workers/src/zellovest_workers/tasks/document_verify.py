@@ -1441,6 +1441,31 @@ def verify_and_upsert(
                     reconcile_invoice(tenant_id, str(entity_id))
                 except Exception as sync_exc:
                     logger.error("invoice_sync_reconciliation_failed", error=str(sync_exc))
+        elif document_type in ("contract", "amendment"):
+            try:
+                from zellovest_workers.tasks.maverick_spend import (
+                    sync_contract_products_to_qdrant,
+                )
+
+                sync_contract_products_to_qdrant.delay(tenant_id=tenant_id)
+            except Exception as exc:
+                logger.warning(
+                    "contract_product_sync_enqueue_failed",
+                    tenant_id=tenant_id,
+                    error_class=type(exc).__name__,
+                )
+            if vendor_id is not None:
+                try:
+                    from zellovest_workers.tasks.ap_audit import reconcile_vendor
+
+                    reconcile_vendor.delay(tenant_id=tenant_id, vendor_id=str(vendor_id))
+                except Exception as exc:
+                    logger.warning(
+                        "contract_vendor_reconcile_enqueue_failed",
+                        tenant_id=tenant_id,
+                        vendor_id=str(vendor_id),
+                        error_class=type(exc).__name__,
+                    )
 
         logger.info(
             "document_upserted",

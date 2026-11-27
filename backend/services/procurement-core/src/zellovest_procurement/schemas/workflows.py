@@ -15,6 +15,7 @@ class WorkflowType(str, Enum):
     VENDOR_ONBOARDING = "vendor_onboarding"
     PURCHASE_ORDER_APPROVAL = "purchase_order_approval"
     RENEWAL_NEGOTIATION = "renewal_negotiation"
+    HUMAN_REVIEW = "human_review"
 
 
 class WorkflowStatus(str, Enum):

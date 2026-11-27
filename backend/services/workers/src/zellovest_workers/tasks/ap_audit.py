@@ -277,6 +277,22 @@ def reconcile_invoice(
 
         # Clear existing exceptions on force re-reconciliation
         if force:
+            old_exc_ids = session.execute(
+                select(ReconciliationException.id).where(
+                    ReconciliationException.tenant_id == tenant_id,
+                    ReconciliationException.invoice_id == invoice.id,
+                )
+            ).scalars().all()
+            if old_exc_ids:
+                from zellovest_shared.db.intelligence import DecisionPacket
+
+                session.execute(
+                    delete(DecisionPacket).where(
+                        DecisionPacket.tenant_id == tenant_id,
+                        DecisionPacket.entity_type == "reconciliation_exception",
+                        DecisionPacket.entity_id.in_(old_exc_ids),
+                    )
+                )
             session.execute(
                 delete(ReconciliationException).where(
                     ReconciliationException.tenant_id == tenant_id,
@@ -777,6 +793,25 @@ def reconcile_invoice(
         metadata["total_discrepancy_amount"] = float(total_discrepancy)
         invoice.extra = metadata
         session.commit()
+
+        if exceptions:
+            try:
+                from zellovest_workers.tasks.decision_packets import (
+                    precompute_ap_investigation_packet,
+                )
+
+                for exc_row in exceptions:
+                    precompute_ap_investigation_packet.delay(
+                        tenant_id=tenant_id,
+                        exception_id=str(exc_row.id),
+                    )
+            except Exception as pkt_exc:
+                logger.warning(
+                    "ap_investigation_packet_enqueue_failed",
+                    tenant_id=tenant_id,
+                    invoice_id=invoice_id,
+                    error_class=type(pkt_exc).__name__,
+                )
 
         logger.info(
             "reconcile_completed",

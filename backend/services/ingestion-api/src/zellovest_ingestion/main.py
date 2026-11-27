@@ -21,7 +21,10 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from zellovest_procurement.api.routers.compliance import router as compliance_router
+from zellovest_procurement.api.routers.decision_feed import router as decision_feed_router
 from zellovest_procurement.api.routers.maverick import router as maverick_router
+from zellovest_procurement.api.routers.savings import router as savings_router
+from zellovest_procurement.api.routers.workflows import router as workflows_router
 from zellovest_shared.logging_conf import configure_logging, get_logger
 
 from zellovest_ingestion.api.routers import (
@@ -105,6 +108,9 @@ def create_app(settings=None) -> FastAPI:
     # procurement-core maverick-spend router is mounted here too (same pattern
     # as ``compliance``). Without it ``POST /maverick-spend/trigger`` 404s.
     app.include_router(maverick_router, prefix=prefix, tags=["maverick-spend"])
+    app.include_router(decision_feed_router, prefix=prefix, tags=["decision-feed"])
+    app.include_router(workflows_router, prefix=prefix, tags=["workflows"])
+    app.include_router(savings_router, prefix=prefix, tags=["savings-ledger"])
     app.include_router(sync.router, prefix=prefix, tags=["sync"])
 
     @app.get("/healthz", tags=["ops"])

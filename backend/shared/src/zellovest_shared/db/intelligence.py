@@ -637,3 +637,49 @@ class AuditEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class DecisionPacket(Base):
+    """Pre-computed, evidence-backed decision packet surfaced directly in-app."""
+
+    __tablename__ = "decision_packets"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "packet_type",
+            "entity_id",
+            name="uq_decision_packet_tenant_type_entity",
+        ),
+        Index("ix_dp_tenant_status", "tenant_id", "status"),
+        Index("ix_dp_tenant_type", "tenant_id", "packet_type"),
+        Index("ix_dp_tenant_urgency", "tenant_id", "urgency_date"),
+        Index("ix_dp_tenant_vendor", "tenant_id", "vendor_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    packet_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    vendor_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    title: Mapped[str] = mapped_column(String(256), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    recommended_action: Mapped[str | None] = mapped_column(Text, nullable=True)
+    financial_impact: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
+    currency: Mapped[str] = mapped_column(String(8), nullable=False, default="USD")
+    urgency_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    source_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="pending_review", server_default="pending_review"
+    )
+    actioned_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    actioned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )

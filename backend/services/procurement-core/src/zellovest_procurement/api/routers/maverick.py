@@ -211,6 +211,65 @@ async def update_maverick_alert_status(
         raise HTTPException(status_code=404, detail="Maverick alert not found")
 
     alert.status = AlertStatus(payload.status)
+
+    from datetime import UTC, datetime
+    from decimal import Decimal
+    from zellovest_shared.db.intelligence import (
+        DecisionPacket,
+        SavingsKind,
+        SavingsLedgerEntry,
+        SavingsStatus,
+    )
+    from zellovest_shared.decision_packets import (
+        ENTITY_MAVERICK_ALERT,
+        STATUS_ACTIONED,
+        STATUS_DISMISSED,
+        STATUS_PENDING_REVIEW,
+    )
+    from zellovest_shared.pricing import to_decimal
+
+    packet = await session.scalar(
+        select(DecisionPacket).where(
+            DecisionPacket.tenant_id == tenant_id,
+            DecisionPacket.entity_type == ENTITY_MAVERICK_ALERT,
+            DecisionPacket.entity_id == alert.id,
+        )
+    )
+    if packet is not None:
+        packet.status = (
+            STATUS_DISMISSED
+            if alert.status == AlertStatus.DISMISSED
+            else STATUS_ACTIONED
+            if alert.status == AlertStatus.MIGRATED
+            else STATUS_PENDING_REVIEW
+        )
+        packet.actioned_at = datetime.now(UTC) if alert.status != AlertStatus.OPEN else None
+
+    if alert.status == AlertStatus.MIGRATED:
+        txn = await session.get(CardTransaction, alert.transaction_id)
+        if txn is not None and txn.is_recurring and to_decimal(txn.amount) > Decimal("0"):
+            existing_saving = await session.scalar(
+                select(SavingsLedgerEntry).where(
+                    SavingsLedgerEntry.tenant_id == tenant_id,
+                    SavingsLedgerEntry.source_type == "maverick_consolidation",
+                    SavingsLedgerEntry.source_id == alert.id,
+                )
+            )
+            if existing_saving is None:
+                session.add(
+                    SavingsLedgerEntry(
+                        tenant_id=tenant_id,
+                        vendor_id=txn.vendor_id,
+                        source_type="maverick_consolidation",
+                        source_id=alert.id,
+                        amount=(to_decimal(txn.amount) * Decimal("12")).quantize(Decimal("0.01")),
+                        currency=txn.currency or "USD",
+                        kind=SavingsKind.AVOIDANCE,
+                        status=SavingsStatus.POTENTIAL,
+                        notes=f"Auto-staged upon consolidating {alert.merchant_name}.",
+                    )
+                )
+
     await session.commit()
     logger.info("maverick_alert_status_updated", alert_id=alert_id, status=payload.status)
 

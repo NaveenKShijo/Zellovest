@@ -21,6 +21,7 @@ from zellovest_shared.db.models import (
     ConnectionStatus,
     EntityType,
     IngestionSyncCheckpoint,
+    SyncMode,
     SyncStatus,
     TenantIntegration,
     is_integration_token_expired,
@@ -2094,3 +2095,247 @@ def sync_drive_changes(
         sync_id=sync_id,
         page_size=min(max(int(page_size or 100), 1), 1000),
     )
+
+
+def _create_scheduled_checkpoint_sync(
+    session: Any,
+    *,
+    tenant_id: str,
+    entity_type: EntityType,
+    mode: SyncMode,
+) -> IngestionSyncCheckpoint | None:
+    """Create a pending sync checkpoint unless an active run already exists."""
+    active = session.execute(
+        select(IngestionSyncCheckpoint).where(
+            IngestionSyncCheckpoint.tenant_id == tenant_id,
+            IngestionSyncCheckpoint.entity_type == entity_type,
+            IngestionSyncCheckpoint.status.in_([SyncStatus.PENDING, SyncStatus.RUNNING]),
+        )
+    ).scalar_one_or_none()
+    if active is not None:
+        return None
+
+    last_cursor = session.execute(
+        select(IngestionSyncCheckpoint.last_success_cursor)
+        .where(
+            IngestionSyncCheckpoint.tenant_id == tenant_id,
+            IngestionSyncCheckpoint.entity_type == entity_type,
+            IngestionSyncCheckpoint.status == SyncStatus.SUCCESS,
+            IngestionSyncCheckpoint.last_success_cursor.is_not(None),
+        )
+        .order_by(IngestionSyncCheckpoint.finished_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+    checkpoint = IngestionSyncCheckpoint(
+        sync_id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        entity_type=entity_type,
+        mode=mode,
+        status=SyncStatus.PENDING,
+        cursor_token=last_cursor,
+    )
+    session.add(checkpoint)
+    session.commit()
+    return checkpoint
+
+
+@celery_app.task(
+    name="zellovest.workers.tasks.ingestion.scheduled_integrations_sync",
+    queue=QUEUE_INGESTION,
+    max_retries=2,
+)
+def scheduled_integrations_sync() -> dict[str, Any]:
+    """Celery Beat safety-net: incrementally sync active Ramp, Okta, and Drive integrations."""
+    from zellovest_shared.db.models import SyncMode
+
+    factory = get_session_factory()
+    session = factory()
+    dispatched: dict[str, int] = {"ramp": 0, "okta": 0, "google_drive": 0}
+    try:
+        integrations = session.execute(
+            select(TenantIntegration).where(
+                TenantIntegration.connection_status == ConnectionStatus.ACTIVE
+            )
+        ).scalars().all()
+
+        for row in integrations:
+            try:
+                if row.provider == "ramp":
+                    for entity_type, task_fn in (
+                        (EntityType.CARD_TRANSACTIONS, sync_ramp_card_transactions),
+                        (EntityType.BILLS, sync_ramp_bills),
+                    ):
+                        cp = _create_scheduled_checkpoint_sync(
+                            session,
+                            tenant_id=row.tenant_id,
+                            entity_type=entity_type,
+                            mode=SyncMode.SCHEDULED,
+                        )
+                        if cp is not None:
+                            task_fn.delay(
+                                tenant_id=row.tenant_id,
+                                cursor=cp.cursor_token,
+                                sync_id=str(cp.sync_id),
+                            )
+                            dispatched["ramp"] += 1
+                elif row.provider == "okta":
+                    cp = _create_scheduled_checkpoint_sync(
+                        session,
+                        tenant_id=row.tenant_id,
+                        entity_type=EntityType.EVENTS,
+                        mode=SyncMode.SCHEDULED,
+                    )
+                    if cp is not None:
+                        sync_okta_batch.delay(
+                            tenant_id=row.tenant_id,
+                            cursor=cp.cursor_token,
+                            sync_id=str(cp.sync_id),
+                        )
+                        dispatched["okta"] += 1
+                elif row.provider == _DRIVE_PROVIDER:
+                    cp = _create_scheduled_checkpoint_sync(
+                        session,
+                        tenant_id=row.tenant_id,
+                        entity_type=EntityType.DOCUMENTS,
+                        mode=SyncMode.SCHEDULED,
+                    )
+                    if cp is not None:
+                        sync_drive_changes.delay(
+                            tenant_id=row.tenant_id,
+                            cursor=cp.cursor_token,
+                            sync_id=str(cp.sync_id),
+                        )
+                        dispatched["google_drive"] += 1
+            except Exception as exc:
+                session.rollback()
+                logger.warning(
+                    "scheduled_integration_dispatch_failed",
+                    tenant_id=row.tenant_id,
+                    provider=row.provider,
+                    error_class=type(exc).__name__,
+                )
+        logger.info("scheduled_integrations_sync_complete", **dispatched)
+        return dispatched
+    finally:
+        session.close()
+
+
+@celery_app.task(
+    name="zellovest.workers.tasks.ingestion.renew_expiring_drive_watches",
+    queue=QUEUE_INGESTION,
+    max_retries=2,
+)
+def renew_expiring_drive_watches() -> dict[str, Any]:
+    """Celery Beat task: renew Google Drive push channels expiring within 48 hours."""
+    import json as _json
+    import os
+
+    import redis as _redis
+
+    settings = _settings()
+    webhook_callback = os.getenv("GOOGLE_DRIVE_WEBHOOK_CALLBACK_URL", "")
+    webhook_token = os.getenv("GOOGLE_DRIVE_WEBHOOK_TOKEN", "")
+    if not webhook_callback or not settings:
+        return {"renewed": 0, "skipped": "no_callback_configured"}
+
+    factory = get_session_factory()
+    session = factory()
+    redis_client = _redis.Redis.from_url(
+        getattr(settings, "redis_url", os.getenv("REDIS_URL", "redis://localhost:6379/0")),
+        decode_responses=False,
+    )
+    renewed = 0
+    try:
+        rows = session.execute(
+            select(TenantIntegration).where(
+                TenantIntegration.provider == _DRIVE_PROVIDER,
+                TenantIntegration.connection_status == ConnectionStatus.ACTIVE,
+            )
+        ).scalars().all()
+        now_ms = int(time.time() * 1000)
+        threshold_ms = now_ms + (48 * 3600 * 1000)
+
+        for row in rows:
+            try:
+                raw_watch = redis_client.get(f"drive:channel:{row.tenant_id}")
+                needs_renewal = raw_watch is None
+                if raw_watch is not None:
+                    watch_str = (
+                        raw_watch.decode("utf-8")
+                        if isinstance(raw_watch, bytes)
+                        else str(raw_watch)
+                    )
+                    watch_data = _json.loads(watch_str)
+                    exp_ms = int(watch_data.get("expiration") or 0)
+                    needs_renewal = exp_ms <= threshold_ms
+                if not needs_renewal:
+                    continue
+
+                token = decrypt_token(
+                    row.encrypted_access_token,
+                    row.access_nonce,
+                    settings.credentials_encryption_key,
+                )
+                if is_integration_token_expired(row.token_expires_at) and row.encrypted_refresh_token:
+                    refresh_tok = decrypt_token(
+                        row.encrypted_refresh_token,
+                        row.refresh_nonce,
+                        settings.credentials_encryption_key,
+                    )
+                    if refresh_tok:
+                        refreshed = refresh_drive_access_token(
+                            settings.google_drive_token_url,
+                            client_id=settings.google_drive_client_id,
+                            client_secret=settings.google_drive_client_secret,
+                            refresh_token=refresh_tok,
+                        )
+                        token = refreshed.access_token
+                        access_nonce = generate_nonce()
+                        access_ct, _ = encrypt_token(
+                            token, settings.credentials_encryption_key, access_nonce
+                        )
+                        row.encrypted_access_token = access_ct
+                        row.access_nonce = access_nonce
+                        if refreshed.expires_in:
+                            row.token_expires_at = datetime.now(UTC) + timedelta(
+                                seconds=refreshed.expires_in
+                            )
+                        session.commit()
+
+                client = GoogleDriveClient(access_token=token)
+                try:
+                    start_token = client.get_start_page_token()
+                    channel_id = uuid.uuid4().hex
+                    exp_str = str(now_ms + (7 * 24 * 3600 * 1000))
+                    watch_res = client.watch_changes(
+                        page_token=start_token,
+                        channel_id=channel_id,
+                        address=webhook_callback,
+                        token=webhook_token or None,
+                        expiration_ms=int(exp_str),
+                    )
+                    payload = {
+                        "channel_id": channel_id,
+                        "resource_id": watch_res.get("resourceId"),
+                        "expiration": watch_res.get("expiration") or exp_str,
+                    }
+                    redis_client.set(f"drive:watch:{channel_id}", row.tenant_id, ex=30 * 24 * 3600)
+                    redis_client.set(
+                        f"drive:channel:{row.tenant_id}",
+                        _json.dumps(payload),
+                        ex=30 * 24 * 3600,
+                    )
+                    renewed += 1
+                finally:
+                    client.close()
+            except Exception as exc:
+                session.rollback()
+                logger.warning(
+                    "drive_watch_renewal_failed",
+                    tenant_id=row.tenant_id,
+                    error_class=type(exc).__name__,
+                )
+        return {"renewed": renewed}
+    finally:
+        session.close()

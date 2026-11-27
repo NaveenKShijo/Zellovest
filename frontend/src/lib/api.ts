@@ -40,6 +40,11 @@ import {
   RenewalReminderItem,
   MaverickAlertItem,
   MaverickSpendKPIs,
+  DecisionFeedResponse,
+  DecisionPacketItem,
+  DecisionPacketActionResponse,
+  DecisionFeedRefreshResponse,
+  WorkflowItem,
 } from '@/types';
 import {
   getMockAnswer,
@@ -754,6 +759,63 @@ export function useApi() {
             sync_id: options?.syncId,
             run_inline: options?.runInline,
           }),
+        }),
+    },
+    decisionFeed: {
+      get: (params?: { packet_type?: string; status?: string; limit?: number; auto_hydrate?: boolean }) => {
+        const searchParams = new URLSearchParams();
+        if (params?.packet_type && params.packet_type !== 'all') searchParams.set('packet_type', params.packet_type);
+        if (params?.status) searchParams.set('status', params.status);
+        if (params?.limit) searchParams.set('limit', String(params.limit));
+        if (params?.auto_hydrate !== undefined) searchParams.set('auto_hydrate', String(params.auto_hydrate));
+        const qs = searchParams.toString();
+        return request<DecisionFeedResponse>(`/v1/decision-feed${qs ? `?${qs}` : ''}`);
+      },
+      byEntity: (entityType: string, entityId: string) =>
+        request<DecisionPacketItem>(
+          `/v1/decision-feed/by-entity?entity_type=${encodeURIComponent(entityType)}&entity_id=${encodeURIComponent(entityId)}`
+        ),
+      refresh: () =>
+        request<DecisionFeedRefreshResponse>('/v1/decision-feed/refresh', { method: 'POST' }),
+      executeAction: (
+        packetId: string,
+        action: 'acknowledge' | 'resolve' | 'dismiss' | 'mark_migrated' | 'create_workflow',
+        notes?: string
+      ) =>
+        request<DecisionPacketActionResponse>(`/v1/decision-feed/${encodeURIComponent(packetId)}/action`, {
+          method: 'POST',
+          body: JSON.stringify({ action, notes }),
+        }),
+    },
+    workflows: {
+      list: (params?: { workflow_type?: string; status?: string; page?: number; page_size?: number }) => {
+        const searchParams = new URLSearchParams();
+        if (params?.workflow_type) searchParams.set('workflow_type', params.workflow_type);
+        if (params?.status) searchParams.set('status', params.status);
+        if (params?.page) searchParams.set('page', String(params.page));
+        if (params?.page_size) searchParams.set('page_size', String(params.page_size));
+        const qs = searchParams.toString();
+        return request<{ workflows: WorkflowItem[]; total: number; page: number; page_size: number }>(
+          `/v1/workflows${qs ? `?${qs}` : ''}`
+        );
+      },
+      create: (data: {
+        tenant_id?: string;
+        workflow_type: 'invoice_approval' | 'contract_review' | 'vendor_onboarding' | 'purchase_order_approval' | 'renewal_negotiation' | 'human_review';
+        title: string;
+        description?: string;
+        reference_id?: string;
+        reference_type?: string;
+        metadata?: Record<string, unknown>;
+      }) =>
+        request<WorkflowItem>('/v1/workflows', {
+          method: 'POST',
+          body: JSON.stringify({ tenant_id: data.tenant_id || 'default-org', ...data }),
+        }),
+      action: (workflowId: string, action: 'submit' | 'approve' | 'reject' | 'request_changes' | 'cancel', comment?: string) =>
+        request<WorkflowItem>(`/v1/workflows/${encodeURIComponent(workflowId)}/action`, {
+          method: 'POST',
+          body: JSON.stringify({ action, comment }),
         }),
     },
   }), [request, upload, getValidAccessToken]);

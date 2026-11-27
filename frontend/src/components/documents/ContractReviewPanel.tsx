@@ -346,7 +346,7 @@ export function ContractReviewPanel({
                         Verified and committed to ledger
                     </h2>
                     <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '13px' }}>
-                        A reviewer confirmed this contract’s commercial terms. The verified values are now available in the operational ledger.
+                        A reviewer confirmed this contract’s commercial terms. The verified values are now in the operational ledger, and AP invoice reconciliation plus approved-software matching have been automatically queued.
                     </p>
                     {review?.reviewed_at && (
                         <p style={{ margin: '8px 0 0', color: 'var(--text-muted)', fontSize: '11px' }}>

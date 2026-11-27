@@ -23,15 +23,13 @@ export default function RenewalsPage() {
   const cacheScopeId = useMemo(() => user?.id ?? 'anonymous', [user]);
 
   // Filters state
-  const [searchQuery, setSearchQuery] = useState('');
-  useEffect(() => {
-    const search = new URLSearchParams(window.location.search).get('search');
-    if (search) {
-      // Handoff from a forecast narrows the timeline to its vendor.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setSearchQuery(search);
-    }
-  }, []);
+  const [searchQuery, setSearchQuery] = useState(() =>
+    typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('search') ?? '' : ''
+  );
+  const [deepLinkContractId] = useState<string | null>(() =>
+    typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('contract') : null
+  );
+  const [deepLinkDismissed, setDeepLinkDismissed] = useState(false);
   const [selectedBadge, setSelectedBadge] = useState<RenewalBadgeUrgency | 'all'>('all');
   const [autoRenewOnly, setAutoRenewOnly] = useState(false);
 
@@ -156,6 +154,13 @@ export default function RenewalsPage() {
     setIsModalOpen(true);
   };
 
+  const activeModalRenewal =
+    (isModalOpen ? selectedRenewal : null) ??
+    (!deepLinkDismissed && deepLinkContractId
+      ? renewals.find((r) => r.contractId === deepLinkContractId) ?? null
+      : null);
+  const isDossierOpen = activeModalRenewal !== null;
+
   const handleLaunchRenewalAgent = (renewal: UpcomingRenewal) => {
     const prompt = encodeURIComponent(
       `Help me prepare for the ${renewal.vendorName} renewal for contract ${renewal.contractNumber}. Review the notice deadline, utilization, invoice discrepancies and contractual price escalation terms, and cite supporting evidence.`
@@ -263,11 +268,15 @@ export default function RenewalsPage() {
       </div>
 
       {/* 4. Negotiation Leverage Modal */}
-      {isModalOpen && selectedRenewal && <RenewalLeverageModal
-        key={selectedRenewal.contractId}
-        renewal={selectedRenewal}
-        isOpen={isModalOpen}
-        onClose={() => setIsModalOpen(false)}
+      {isDossierOpen && activeModalRenewal && <RenewalLeverageModal
+        key={activeModalRenewal.contractId}
+        renewal={activeModalRenewal}
+        isOpen={isDossierOpen}
+        onClose={() => {
+          setIsModalOpen(false);
+          setSelectedRenewal(null);
+          setDeepLinkDismissed(true);
+        }}
         onLaunchRenewalAgent={handleLaunchRenewalAgent}
       />}
     </div>

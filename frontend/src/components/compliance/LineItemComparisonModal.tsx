@@ -1,7 +1,9 @@
 'use client';
 
-import React from 'react';
-import { ReconciliationItem } from '@/types';
+import React, { useEffect, useState } from 'react';
+import Link from 'next/link';
+import { DecisionPacketItem, ReconciliationItem } from '@/types';
+import { useApi } from '@/lib/api';
 
 interface LineItemComparisonModalProps {
   item: ReconciliationItem | null;
@@ -9,6 +11,7 @@ interface LineItemComparisonModalProps {
   onClose: () => void;
   onLaunchInvestigation: (item: ReconciliationItem) => void;
   onAcknowledge: (itemId: string) => void;
+  onResolve?: (itemId: string) => void;
 }
 
 export function LineItemComparisonModal({
@@ -17,8 +20,35 @@ export function LineItemComparisonModal({
   onClose,
   onLaunchInvestigation,
   onAcknowledge,
+  onResolve,
 }: LineItemComparisonModalProps) {
+  const api = useApi();
+  const [packetState, setPacketState] = useState<{
+    exceptionId: string;
+    packet: DecisionPacketItem | null;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!isOpen || !item?.id) return;
+    let active = true;
+    const targetId = item.id;
+    api.decisionFeed
+      .byEntity('reconciliation_exception', targetId)
+      .then((res) => {
+        if (active) setPacketState({ exceptionId: targetId, packet: res });
+      })
+      .catch(() => {
+        if (active) setPacketState({ exceptionId: targetId, packet: null });
+      });
+    return () => {
+      active = false;
+    };
+  }, [api, isOpen, item?.id]);
+
   if (!isOpen || !item) return null;
+
+  const loadingPacket = !packetState || packetState.exceptionId !== item.id;
+  const packet = packetState?.exceptionId === item.id ? packetState.packet : null;
 
   const formatCurrency = (amount: number, currency = 'USD') => {
     return new Intl.NumberFormat('en-US', {
@@ -147,7 +177,7 @@ export function LineItemComparisonModal({
             <p style={{ fontSize: '13.5px', color: 'var(--text-primary)', lineHeight: 1.5 }}>
               {item.investigationReason}
             </p>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: '6px', borderTop: '1px solid rgba(243, 195, 200, 0.6)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: '6px', borderTop: '1px solid rgba(243, 195, 200, 0.6)', gap: '10px', flexWrap: 'wrap' }}>
               <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
                 Total Invoice Discrepancy: <strong style={{ color: 'var(--color-danger)', fontSize: '13px' }}>{formatCurrency(item.discrepancyAmount, item.currency)}</strong>
               </span>
@@ -157,19 +187,103 @@ export function LineItemComparisonModal({
                   display: 'flex',
                   alignItems: 'center',
                   gap: '6px',
-                  backgroundColor: 'var(--color-brand)',
-                  color: '#FFFFFF',
-                  padding: '6px 14px',
+                  backgroundColor: '#FFFFFF',
+                  color: 'var(--color-brand)',
+                  border: '1px solid var(--border-strong)',
+                  padding: '5px 12px',
                   borderRadius: 'var(--radius-sm)',
-                  fontSize: '12.5px',
+                  fontSize: '12px',
                   fontWeight: 600,
                   cursor: 'pointer',
                 }}
               >
                 <span>✨</span>
-                Launch Investigation Agent (Ask AI)
+                Ask Follow-up in Ask AI
               </button>
             </div>
+          </div>
+
+          {/* 1b. Pre-Computed Investigation Diagnosis & Citations */}
+          <div
+            style={{
+              backgroundColor: 'var(--bg-app)',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: 'var(--radius-md)',
+              padding: '16px 20px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '10px',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+              <h3 style={{ fontSize: '14px', fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
+                Pre-Computed Investigation Findings
+              </h3>
+              <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--color-brand)', textTransform: 'uppercase' }}>
+                {loadingPacket ? 'Loading analysis…' : packet ? 'Ready' : 'Standard Audit'}
+              </span>
+            </div>
+            {loadingPacket ? (
+              <p style={{ fontSize: '12.5px', color: 'var(--text-muted)', margin: 0 }}>
+                Loading evidence, prior invoice history, and contract citations…
+              </p>
+            ) : packet ? (
+              <>
+                {packet.recommended_action && (
+                  <div style={{ fontSize: '13px', color: 'var(--text-primary)', backgroundColor: '#FFFFFF', padding: '10px 12px', borderRadius: '6px', borderLeft: '3px solid var(--color-brand)' }}>
+                    <strong style={{ color: 'var(--color-brand)' }}>Recommended next step:</strong> {packet.recommended_action}
+                  </div>
+                )}
+                {(packet.payload?.confirmed_facts?.length ?? 0) > 0 && (
+                  <div style={{ fontSize: '12.5px' }}>
+                    <strong style={{ color: 'var(--text-secondary)', fontSize: '11px', textTransform: 'uppercase' }}>Confirmed Facts</strong>
+                    <ul style={{ margin: '4px 0 0', paddingLeft: '18px', color: 'var(--text-primary)' }}>
+                      {packet.payload.confirmed_facts?.map((f, idx) => (
+                        <li key={idx}>{f.statement}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {(packet.payload?.possible_explanations?.length ?? 0) > 0 && (
+                  <div style={{ fontSize: '12.5px' }}>
+                    <strong style={{ color: 'var(--text-secondary)', fontSize: '11px', textTransform: 'uppercase' }}>Contract &amp; Amendment Context</strong>
+                    <ul style={{ margin: '4px 0 0', paddingLeft: '18px', color: 'var(--text-primary)' }}>
+                      {packet.payload.possible_explanations?.map((f, idx) => (
+                        <li key={idx}>{f.statement}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {(packet.payload?.citations?.some((c) => c.document_id) ?? false) && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '4px' }}>
+                    {packet.payload.citations
+                      ?.filter((c) => c.document_id)
+                      .map((c, idx) => (
+                        <Link
+                          key={idx}
+                          href={`/documents/${encodeURIComponent(c.document_id!)}`}
+                          style={{
+                            fontSize: '11.5px',
+                            fontWeight: 600,
+                            padding: '4px 10px',
+                            borderRadius: '999px',
+                            border: '1px solid var(--border-strong)',
+                            backgroundColor: '#FFFFFF',
+                            color: 'var(--color-brand)',
+                            textDecoration: 'none',
+                          }}
+                        >
+                          Source: {c.section || 'Document'}{c.page ? ` (p.${c.page})` : ''} ↗
+                        </Link>
+                      ))}
+                  </div>
+                )}
+              </>
+            ) : (
+              <p style={{ fontSize: '12.5px', color: 'var(--text-secondary)', margin: 0 }}>
+                Deterministic variance details are shown below. Use Ask AI if you need an ad-hoc cross-vendor query.
+              </p>
+            )}
           </div>
 
           {/* 2. Line Items Comparison Table */}
@@ -345,21 +459,23 @@ export function LineItemComparisonModal({
             </button>
           )}
 
-          <button
-            onClick={() => onLaunchInvestigation(item)}
-            style={{
-              padding: '8px 20px',
-              borderRadius: 'var(--radius-sm)',
-              backgroundColor: 'var(--color-brand)',
-              color: '#FFFFFF',
-              fontSize: '13px',
-              fontWeight: 600,
-              cursor: 'pointer',
-              boxShadow: 'var(--shadow-sm)',
-            }}
-          >
-            Draft Vendor Credit Dispute
-          </button>
+          {(item.status === 'open' || item.status === 'acknowledged') && onResolve && (
+            <button
+              onClick={() => onResolve(item.id)}
+              style={{
+                padding: '8px 20px',
+                borderRadius: 'var(--radius-sm)',
+                backgroundColor: 'var(--color-brand)',
+                color: '#FFFFFF',
+                fontSize: '13px',
+                fontWeight: 600,
+                cursor: 'pointer',
+                boxShadow: 'var(--shadow-sm)',
+              }}
+            >
+              Resolve &amp; Stage Recovery
+            </button>
+          )}
         </div>
       </div>
     </div>

@@ -102,6 +102,21 @@ def detect_maverick_spend_for_transaction(
             tenant_id=tenant_id,
             transaction_id=transaction_id,
         )
+        if result.get("status") == "alert_created" and result.get("alert_id"):
+            try:
+                from zellovest_workers.tasks.decision_packets import precompute_maverick_packet
+
+                precompute_maverick_packet.delay(
+                    tenant_id=tenant_id,
+                    alert_id=str(result["alert_id"]),
+                )
+            except Exception as pkt_exc:
+                logger.warning(
+                    "maverick_packet_enqueue_failed",
+                    tenant_id=tenant_id,
+                    alert_id=str(result.get("alert_id")),
+                    error_class=type(pkt_exc).__name__,
+                )
         logger.info(
             "maverick_single_detect_completed",
             tenant_id=tenant_id,
@@ -164,6 +179,20 @@ def detect_maverick_spend(
                 scored += 1
                 if res.get("status") == "alert_created":
                     flagged += 1
+                    if res.get("alert_id"):
+                        try:
+                            import uuid as _uuid
+
+                            from zellovest_shared.decision_packets import (
+                                build_maverick_review_packet_sync,
+                            )
+
+                            build_maverick_review_packet_sync(
+                                session, tenant_id, _uuid.UUID(str(res["alert_id"]))
+                            )
+                            session.commit()
+                        except Exception:
+                            session.rollback()
             except Exception as item_exc:
                 logger.warning(
                     "maverick_item_process_error",
@@ -382,6 +411,20 @@ def scan_maverick_spend_from_gcs(
                     statuses[status] = statuses.get(status, 0) + 1
                     if status == "alert_created":
                         flagged += 1
+                        if result.get("alert_id"):
+                            try:
+                                import uuid as _uuid
+
+                                from zellovest_shared.decision_packets import (
+                                    build_maverick_review_packet_sync,
+                                )
+
+                                build_maverick_review_packet_sync(
+                                    session, tenant_id, _uuid.UUID(str(result["alert_id"]))
+                                )
+                                session.commit()
+                            except Exception:
+                                session.rollback()
                 except Exception as item_exc:
                     logger.warning(
                         "maverick_gcs_item_detect_failed",

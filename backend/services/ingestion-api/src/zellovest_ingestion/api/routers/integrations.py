@@ -156,6 +156,19 @@ async def callback(
         refresh_token_received=bool(tokens.refresh_token),
     )
 
+    try:
+        from zellovest_ingestion.services.sync_dispatcher import dispatch_sync_task
+
+        for entity in ("card_transactions", "bills"):
+            await dispatch_sync_task(session, tenant_id=tenant_id, source="ramp", entity=entity)
+        await session.commit()
+    except Exception as sync_exc:
+        logger.warning(
+            "ramp_initial_sync_skipped",
+            tenant_id=tenant_id,
+            error_class=type(sync_exc).__name__,
+        )
+
     if is_browser_request:
         return RedirectResponse(
             url=f"{settings.frontend_url}/integrations?status=connected&provider=ramp&tenant_id={tenant_id}",

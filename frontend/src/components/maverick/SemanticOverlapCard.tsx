@@ -5,14 +5,18 @@ import { MaverickAlertItem } from '@/types';
 
 interface SemanticOverlapCardProps {
   alert: MaverickAlertItem;
-  onNotifyEmployee?: (alertId: string) => void;
+  onMarkMigrated?: (alertId: string) => void;
+  onCreateTask?: (alert: MaverickAlertItem) => void;
   onDismiss: (alertId: string) => void;
   onViewContract: (contractId: string) => void;
 }
 
 export function SemanticOverlapCard({
   alert,
+  onMarkMigrated,
+  onCreateTask,
   onDismiss,
+  onViewContract,
 }: SemanticOverlapCardProps) {
   const { overlap, jevScores } = alert;
   const isHighMatch = (overlap?.cosineSimilarity ?? 0) >= 0.85;
@@ -216,43 +220,76 @@ export function SemanticOverlapCard({
           <span>{overlap?.recommendedAction || 'Procurement review recommended.'}</span>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
           {alert.status === 'open' && (
-            <button
-              onClick={() => onDismiss(alert.id)}
-              style={{
-                padding: '7px 14px',
-                borderRadius: 'var(--radius-sm)',
-                border: '1px solid var(--border-strong)',
-                backgroundColor: '#FFFFFF',
-                fontSize: '12px',
-                fontWeight: 600,
-                color: 'var(--text-secondary)',
-                cursor: 'pointer',
-              }}
-            >
-              Approve Exception
-            </button>
-          )}
-
-          {alert.status === 'notified' && (
-            <span
-              style={{
-                padding: '7px 14px',
-                borderRadius: 'var(--radius-sm)',
-                backgroundColor: 'var(--color-info-subtle)',
-                color: 'var(--color-info)',
-                fontSize: '12px',
-                fontWeight: 600,
-                border: '1px solid var(--color-info-border)',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-              }}
-            >
-              <span>📨</span>
-              Employee Notified via Slack (MCP-3)
-            </span>
+            <>
+              {onMarkMigrated && (
+                <button
+                  onClick={() => onMarkMigrated(alert.id)}
+                  style={{
+                    padding: '7px 14px',
+                    borderRadius: 'var(--radius-sm)',
+                    border: 'none',
+                    backgroundColor: 'var(--color-brand)',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    color: '#FFFFFF',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Mark Consolidated &amp; Stage Savings
+                </button>
+              )}
+              {onCreateTask && (
+                <button
+                  onClick={() => onCreateTask(alert)}
+                  style={{
+                    padding: '7px 14px',
+                    borderRadius: 'var(--radius-sm)',
+                    border: '1px solid var(--border-strong)',
+                    backgroundColor: '#FFFFFF',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    color: 'var(--text-primary)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Create Consolidation Task
+                </button>
+              )}
+              {overlap?.approvedContractId && (
+                <button
+                  onClick={() => onViewContract(overlap.approvedContractId)}
+                  style={{
+                    padding: '7px 14px',
+                    borderRadius: 'var(--radius-sm)',
+                    border: '1px solid var(--border-strong)',
+                    backgroundColor: '#FFFFFF',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    color: 'var(--color-brand)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  View Approved Contract
+                </button>
+              )}
+              <button
+                onClick={() => onDismiss(alert.id)}
+                style={{
+                  padding: '7px 14px',
+                  borderRadius: 'var(--radius-sm)',
+                  border: '1px solid var(--border-strong)',
+                  backgroundColor: '#FFFFFF',
+                  fontSize: '12px',
+                  fontWeight: 600,
+                  color: 'var(--text-secondary)',
+                  cursor: 'pointer',
+                }}
+              >
+                Approve Exception
+              </button>
+            </>
           )}
 
           {alert.status === 'migrated' && (
@@ -271,7 +308,23 @@ export function SemanticOverlapCard({
               }}
             >
               <span>✓</span>
-              Migrated to Enterprise Seat
+              Consolidated to Enterprise Seat
+            </span>
+          )}
+
+          {alert.status === 'dismissed' && (
+            <span
+              style={{
+                padding: '7px 14px',
+                borderRadius: 'var(--radius-sm)',
+                backgroundColor: 'var(--bg-app)',
+                color: 'var(--text-muted)',
+                fontSize: '12px',
+                fontWeight: 600,
+                border: '1px solid var(--border-subtle)',
+              }}
+            >
+              Approved Standalone Exception
             </span>
           )}
         </div>

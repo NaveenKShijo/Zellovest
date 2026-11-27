@@ -25,6 +25,7 @@ from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from zellovest_shared.db.core import Vendor
 from zellovest_shared.db.intelligence import (
+    DecisionPacket,
     ExceptionStatus,
     LicenseAssignment,
     MLDriftReport,
@@ -34,6 +35,10 @@ from zellovest_shared.db.intelligence import (
     Workflow,
     WorkflowStatus,
     WorkflowType,
+)
+from zellovest_shared.decision_packets import (
+    PACKET_RENEWAL_DOSSIER,
+    acompute_vendor_utilization,
 )
 from zellovest_shared.db.models import ExtractionArtifact, Upload, User
 from zellovest_shared.db.transact import (
@@ -460,28 +465,24 @@ async def list_upcoming_renewals(
             if contract.termination_clause:
                 leverage_points.append(f"Termination: {contract.termination_clause[:110]}...")
 
-            # 4. Utilization & Owner assignment
-            util_map = {
-                "Salesforce Inc.": 88.0,
-                "Datadog Inc.": 74.0,
-                "Adobe Inc.": 61.0,
-                "Slack Technologies": 95.0,
-                "Figma Inc.": 92.0,
-                "Zoom Video Communications": 82.0,
-                "Snowflake Inc.": 89.0,
-            }
-            utilization_pct = util_map.get(vendor_name, 82.0)
+            # 4. Live Utilization & Owner assignment (no hardcoded stubs)
+            util = await acompute_vendor_utilization(session, resolved_tenant, contract.vendor_id)
+            utilization_pct = util["utilization_pct"]
+            if util["has_forecast"] and util["forecast_recommended_seats"] < util["forecast_current_seats"]:
+                seat_cut = util["forecast_current_seats"] - util["forecast_recommended_seats"]
+                leverage_points.append(
+                    f"Seat forecast recommends {util['forecast_recommended_seats']} seats (-{seat_cut} vs current {util['forecast_current_seats']}), saving ~${util['forecast_savings_estimate']:,.0f}/yr"
+                )
+            elif util["idle_seats"] > 0:
+                leverage_points.append(
+                    f"Telemetry shows {util['idle_seats']} unused seats across {util['purchased_seats']} assigned"
+                )
 
-            owner_map = {
-                "Adobe Inc.": "Sarah Jenkins (Lead Procurement Mgr)",
-                "Salesforce Inc.": "Marcus Vance (Procurement Dir)",
-                "Datadog Inc.": "Alex Rivera (IT Category Mgr)",
-                "Slack Technologies": "Sarah Jenkins (Lead Procurement Mgr)",
-                "Figma Inc.": "Elena Rostova (SaaS Specialist)",
-                "Zoom Video Communications": "Alex Rivera (IT Category Mgr)",
-                "Snowflake Inc.": "Marcus Vance (Procurement Dir)",
-            }
-            assigned_owner = owner_map.get(vendor_name, "Procurement Team")
+            assigned_owner = (
+                vendor.contact_name
+                if vendor and getattr(vendor, "contact_name", None)
+                else "Procurement Team"
+            )
 
             # Determine workflow status based on countdown
             if days_to_notice <= 0:
@@ -590,6 +591,27 @@ async def prepare_negotiation_brief(
             )
 
         if contract_row:
+            if not body.objectives:
+                cached_packet = await session.scalar(
+                    select(DecisionPacket).where(
+                        DecisionPacket.tenant_id == resolved_tenant,
+                        DecisionPacket.packet_type == PACKET_RENEWAL_DOSSIER,
+                        DecisionPacket.entity_id == contract_row.id,
+                    )
+                )
+                cached_brief = (
+                    (cached_packet.payload or {}).get("brief")
+                    if cached_packet and isinstance(cached_packet.payload, dict)
+                    else None
+                )
+                if isinstance(cached_brief, dict) and cached_brief.get("leverage_points"):
+                    logger.info(
+                        "negotiation_brief_served_from_precomputed_packet",
+                        tenant_id=resolved_tenant,
+                        contract_id=str(contract_row.id),
+                    )
+                    return NegotiationBriefResponse.model_validate(cached_brief)
+
             terms_stmt = select(func.sum(ContractTermsVersion.unit_price * func.coalesce(ContractTermsVersion.qty_min, 1))).where(
                 ContractTermsVersion.contract_id == contract_row.id
             )
@@ -598,6 +620,21 @@ async def prepare_negotiation_brief(
                 annual_spend = Decimal(str(round(float(terms_val), 2)))
     except Exception:
         pass
+
+    live_util: dict[str, Any] = {
+        "utilization_pct": None,
+        "active_users_30d": 0,
+        "purchased_seats": 0,
+        "idle_seats": 0,
+        "forecast_savings_estimate": 0.0,
+        "has_telemetry": False,
+        "has_forecast": False,
+    }
+    if vendor_uuid:
+        try:
+            live_util = await acompute_vendor_utilization(session, resolved_tenant, vendor_uuid)
+        except Exception:
+            pass
 
     # 3. Retrieve RAG document passages for legal clauses
     passages: list[dict[str, Any]] = []
@@ -675,10 +712,24 @@ async def prepare_negotiation_brief(
         logger.info("llm_synthesis_skipped_or_failed", reason=str(exc))
 
     notice_days = contract_row.notice_period_days if contract_row else 30
+    util_pct_display = (
+        f"{live_util['utilization_pct']}%"
+        if live_util.get("utilization_pct") is not None
+        else "unverified"
+    )
+    est_waste_usd = float(live_util.get("forecast_savings_estimate") or 0.0)
+    if est_waste_usd <= 0.0 and live_util.get("utilization_pct") is not None and live_util["utilization_pct"] < 100:
+        est_waste_usd = float(annual_spend) * max(0.0, 1.0 - live_util["utilization_pct"] / 100.0)
+
     default_leverage_points = [
-        f"Okta login activity shows 23% unused/idle licenses over 90 days; reducing commitments saves ~${float(annual_spend) * 0.18:,.0f}/yr.",
+        (
+            f"Live Okta telemetry shows {live_util['idle_seats']} unused seats "
+            f"({util_pct_display} utilization); right-sizing could save ~${est_waste_usd:,.0f}/yr."
+            if live_util.get("has_telemetry") or live_util.get("has_forecast")
+            else "Connect Okta usage telemetry to quantify idle license reclamation before renewal."
+        ),
         f"Contractual {notice_days}-day notice window provides active leverage if non-renewal option is signaled before cutoff.",
-        "Historical spend increased YoY; benchmark market alternatives to resist vendor price increases.",
+        "Benchmark market alternatives to resist automatic price escalations.",
     ]
     if exceptions_count > 0:
         default_leverage_points.append(
@@ -686,14 +737,14 @@ async def prepare_negotiation_brief(
         )
 
     default_recommended_actions = [
-        "1. Transmit formal confirmation of notice timeline to retain contractual termination rights.",
-        "2. Propose reducing committed seat tier by 15-20% based on observed login abandonment.",
-        "3. Offer a 2-year commitment in exchange for freezing current unit prices with 0% escalation.",
-        "4. Request credit for past billing anomalies identified during automated AP audit.",
+        "1. Record formal notice decision ahead of the contractual termination cutoff.",
+        "2. Align renewal seat commitment to forecasted department demand.",
+        "3. Request a 0% price-escalation cap or multi-year rate freeze.",
+        "4. Require credit resolution for open AP audit billing discrepancies.",
     ]
 
     default_talking_points = [
-        f"\"Our internal audit indicates our team is utilizing only 75% of provisioned {vendor_name} seats.\"",
+        f"\"Our telemetry shows {util_pct_display} seat utilization for {vendor_name}; we are aligning our renewal commitment to active demand.\"",
         "\"Under our current budget framework, any renewal requiring price escalation cannot be approved without tier restructuring.\"",
         "\"We are evaluating alternative platforms that provide multi-year price locks and flexible seat licensing.\"",
     ]
@@ -725,11 +776,11 @@ async def prepare_negotiation_brief(
             "payment_terms": "net_30",
         },
         utilization_data={
-            "overall_utilization_pct": 68.5,
-            "active_users": 137,
-            "purchased_seats": 200,
-            "idle_seats_90d": 46,
-            "estimated_annual_waste_usd": float(annual_spend) * 0.23,
+            "overall_utilization_pct": live_util.get("utilization_pct"),
+            "active_users": live_util.get("active_users_30d", 0),
+            "purchased_seats": live_util.get("purchased_seats", 0),
+            "idle_seats_90d": live_util.get("idle_seats", 0),
+            "estimated_annual_waste_usd": round(est_waste_usd, 2),
         },
         leverage_points=leverage_points,
         recommended_actions=recommended_actions,
@@ -779,6 +830,21 @@ async def prepare_renewal(
     if body.contract_id:
         try:
             cid = uuid.UUID(body.contract_id)
+            cached_packet = await session.scalar(
+                select(DecisionPacket).where(
+                    DecisionPacket.tenant_id == resolved_tenant,
+                    DecisionPacket.packet_type == PACKET_RENEWAL_DOSSIER,
+                    DecisionPacket.entity_id == cid,
+                )
+            )
+            cached_prep = (
+                (cached_packet.payload or {}).get("prep")
+                if cached_packet and isinstance(cached_packet.payload, dict)
+                else None
+            )
+            if isinstance(cached_prep, dict) and cached_prep.get("vendor_name"):
+                return RenewalPreparationResponse.model_validate(cached_prep)
+
             c_row = await session.scalar(select(Contract).where(Contract.id == cid, Contract.tenant_id == resolved_tenant))
             if c_row:
                 if c_row.notice_period_days is not None:
@@ -789,6 +855,39 @@ async def prepare_renewal(
         except Exception:
             pass
 
+    live_util: dict[str, Any] = {
+        "utilization_pct": None,
+        "idle_seats": 0,
+        "forecast_savings_estimate": 0.0,
+        "has_forecast": False,
+    }
+    try:
+        if body.vendor_id:
+            live_util = await acompute_vendor_utilization(
+                session, resolved_tenant, uuid.UUID(body.vendor_id)
+            )
+    except Exception:
+        pass
+    util_rate = (
+        round(live_util["utilization_pct"] / 100.0, 4)
+        if live_util.get("utilization_pct") is not None
+        else 0.0
+    )
+    unused_seats = int(live_util.get("idle_seats") or 0)
+    pot_savings = Decimal(str(round(float(live_util.get("forecast_savings_estimate") or 0.0), 2)))
+    if pot_savings <= Decimal("0") and live_util.get("utilization_pct") is not None and live_util["utilization_pct"] < 85.0:
+        pot_savings = (annual_spend * Decimal(str(max(0.0, 1.0 - util_rate)))).quantize(Decimal("0.01"))
+
+    levers = []
+    if live_util.get("has_forecast") and live_util["forecast_recommended_seats"] < live_util["forecast_current_seats"]:
+        levers.append(
+            f"ML forecast recommends {live_util['forecast_recommended_seats']} seats (vs {live_util['forecast_current_seats']} current) saving ~${float(pot_savings):,.0f}/yr."
+        )
+    elif unused_seats > 0:
+        levers.append(f"{unused_seats} unused/idle licenses identified via Okta usage telemetry.")
+    else:
+        levers.append("Confirm active seat demand against department headcount before renewal.")
+
     return RenewalPreparationResponse(
         vendor_id=body.vendor_id,
         vendor_name=vendor_name,
@@ -796,17 +895,16 @@ async def prepare_renewal(
         renewal_date=renewal_target,
         notice_period_days=notice_days,
         auto_renewal=auto_renew,
-        utilization_rate=0.74,
-        unused_licenses=46,
-        potential_savings=Decimal(str(round(float(annual_spend) * 0.18, 2))),
+        utilization_rate=util_rate,
+        unused_licenses=unused_seats,
+        potential_savings=pot_savings,
         contract_constraints=[
-            f"Auto-renewal notice requires {notice_days} days advance written notification.",
-            "Price increase capped at CPI or 3.5% per annum.",
+            f"Auto-renewal notice requires {notice_days} days advance written notification."
+            if auto_renew
+            else "Manual renewal contract — no auto-renewal lock-in.",
+            "Verify price-escalation caps and true-down rights in source contract passages.",
         ],
-        negotiation_levers=[
-            "23% unassigned / idle licenses identified across teams.",
-            "Benchmarked market alternatives with 15-20% lower baseline rates.",
-        ],
+        negotiation_levers=levers,
         generated_at=now,
     )
 
