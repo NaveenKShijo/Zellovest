@@ -24,6 +24,7 @@ from zellovest_shared.logging_conf import get_logger
 from zellovest_shared.workers.gcs_writer import make_storage_client
 
 from zellovest_workers.celery_app import QUEUE_ANALYTICS, celery_app
+from zellovest_workers.ml.evaluation import build_prediction_log_rows, log_seat_predictions
 from zellovest_workers.ml.optimizer import optimize_commitment
 from zellovest_workers.ml.train_vertex import (
     FEATURE_COLUMNS,
@@ -58,7 +59,7 @@ class ActiveSeat:
 
 @dataclass(frozen=True, slots=True)
 class ForecastRecord:
-    """Database-ready output for one vendor and department cohort."""
+    """Database-ready output for one vendor, department, and horizon cohort."""
 
     tenant_id: str
     vendor_id: uuid.UUID
@@ -73,6 +74,9 @@ class ForecastRecord:
     trueup_risk_amount: float
     savings_estimate: float
     model_version: str
+    horizon_days: int = 90
+    renewal_date: date | None = None
+    headcount_growth_seats: int = 0
 
     def to_orm(self) -> SeatForecast:
         """Create the canonical immutable ORM record."""
@@ -82,8 +86,11 @@ class ForecastRecord:
             department_id=self.department_id,
             department=self.department,
             forecast_date=self.forecast_date,
+            horizon_days=self.horizon_days,
+            renewal_date=self.renewal_date,
             current_seats=self.current_seats,
             recommended_seats=self.recommended_seats,
+            headcount_growth_seats=self.headcount_growth_seats,
             retention_curve=self.retention_curve,
             confidence=self.confidence,
             shelfware_amount=self.shelfware_amount,
@@ -101,25 +108,38 @@ class LightGBMPredictor:
         model_path: Path,
         calibration: CalibrationParameters,
         model_version: str,
+        feature_columns: Sequence[str] | None = None,
     ) -> None:
-        """Load a booster from disk and retain its calibration metadata."""
+        """Load a booster from disk and retain its calibration and schema metadata."""
         import lightgbm as lgb
 
         self._booster = lgb.Booster(model_file=str(model_path))
         self._calibration = calibration
         self.model_version = model_version
+        expected_count = int(self._booster.num_feature())
+        resolved_columns = list(feature_columns or FEATURE_COLUMNS)
+        if len(resolved_columns) != expected_count:
+            resolved_columns = list(FEATURE_COLUMNS[:expected_count])
+        self.feature_columns = tuple(resolved_columns)
 
-    def predict(self, feature_rows: Sequence[Mapping[str, Any]]) -> np.ndarray:
-        """Predict calibrated retention probabilities in stable feature order."""
+    def predict_with_raw(
+        self, feature_rows: Sequence[Mapping[str, Any]]
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Return ``(raw_probabilities, calibrated_probabilities)`` in stable order."""
         matrix: np.ndarray[Any, np.dtype[np.float64]] = np.asarray(
             [
-                [float(row.get(column, 0.0) or 0.0) for column in FEATURE_COLUMNS]
+                [float(row.get(column, 0.0) or 0.0) for column in self.feature_columns]
                 for row in feature_rows
             ],
             dtype=np.float64,
         )
         raw = np.asarray(self._booster.predict(matrix), dtype=np.float64)
-        return apply_calibration(raw, self._calibration)
+        return raw, apply_calibration(raw, self._calibration)
+
+    def predict(self, feature_rows: Sequence[Mapping[str, Any]]) -> np.ndarray:
+        """Predict calibrated retention probabilities in stable feature order."""
+        _, calibrated = self.predict_with_raw(feature_rows)
+        return calibrated
 
 
 def _sha256(path: Path) -> str:
@@ -192,6 +212,18 @@ def load_latest_model(settings: Settings | None = None) -> LightGBMPredictor:
     calibration_blob = bucket.blob("models/latest/calibration.json")
     calibration_data = json.loads(calibration_blob.download_as_bytes().decode("utf-8"))
     calibration = CalibrationParameters(**calibration_data)
+
+    feature_columns: list[str] | None = None
+    schema_blob = bucket.blob("models/latest/feature_schema.json")
+    try:
+        if schema_blob.exists():
+            schema_data = json.loads(schema_blob.download_as_bytes().decode("utf-8"))
+            cols = schema_data.get("feature_columns")
+            if isinstance(cols, list) and cols:
+                feature_columns = [str(col) for col in cols]
+    except Exception:
+        feature_columns = None
+
     _atomic_write(
         manifest_path,
         json.dumps(
@@ -209,7 +241,12 @@ def load_latest_model(settings: Settings | None = None) -> LightGBMPredictor:
         generation=generation,
         cache_hit=cache_valid,
     )
-    return LightGBMPredictor(model_path, calibration, model_version)
+    return LightGBMPredictor(
+        model_path,
+        calibration,
+        model_version,
+        feature_columns=feature_columns,
+    )
 
 
 def _feature_table(settings: Settings) -> str:
@@ -327,7 +364,21 @@ def load_active_seats(
     return seats
 
 
-def build_forecast_records(
+def _parse_renewal_date(value: Any) -> date | None:
+    """Coerce a date, datetime, or ISO date string into ``datetime.date``."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return date.fromisoformat(value.strip()[:10])
+        except ValueError:
+            return None
+    return None
+
+
+def _score_and_build(
     *,
     tenant_id: str,
     horizon_days: int,
@@ -338,12 +389,13 @@ def build_forecast_records(
     penalty_rate_override: float | None = None,
     default_penalty_rate: float = 0.25,
     forecast_on: date | None = None,
-) -> list[ForecastRecord]:
-    """Join features to seats, score individuals, and optimize each department."""
+    growth_attach_rate: float = 1.0,
+) -> tuple[list[ForecastRecord], list[dict[str, Any]]]:
+    """Score active seats, optimize cohorts, and construct prediction logs."""
     if horizon_days not in ALLOWED_HORIZONS:
         raise ValueError(f"horizon_days must be one of {sorted(ALLOWED_HORIZONS)}")
     if not active_seats:
-        return []
+        return [], []
     feature_index = {
         (str(row.get("employee_id")), str(row.get("vendor_id"))): row for row in feature_rows
     }
@@ -362,7 +414,12 @@ def build_forecast_records(
         )
 
     scored_features = [feature_index[(seat.employee_id, seat.vendor_id)] for seat in selected_seats]
-    probabilities = predictor.predict(scored_features)
+    if hasattr(predictor, "predict_with_raw"):
+        raw_probabilities, probabilities = predictor.predict_with_raw(scored_features)
+    else:
+        probabilities = predictor.predict(scored_features)
+        raw_probabilities = probabilities
+
     if len(probabilities) != len(selected_seats):
         raise RuntimeError("predictor returned a different number of probabilities than seats")
     if np.any(~np.isfinite(probabilities)) or np.any((probabilities < 0) | (probabilities > 1)):
@@ -376,7 +433,9 @@ def build_forecast_records(
         expanded = grouped.setdefault(key, [])
         expanded.extend((float(probability), features) for _ in range(seat.seats))
 
+    resolved_forecast_date = forecast_on or datetime.now(UTC).date()
     records: list[ForecastRecord] = []
+    cohort_recommendations: dict[tuple[str, str], tuple[int, int]] = {}
     for (vendor_id, department_id, department), values in grouped.items():
         group_probabilities = [value[0] for value in values]
         sample_features = values[0][1]
@@ -397,16 +456,22 @@ def build_forecast_records(
             raise ValueError(f"annual seat cost is missing for vendor {vendor_id}")
         if penalty_value is None:
             raise ValueError(f"true-up penalty rate is missing for vendor {vendor_id}")
+
+        dept_growth_rate = float(sample_features.get("department_growth_rate") or 0.0)
         optimization = optimize_commitment(
             group_probabilities,
             float(annual_cost_value),
             float(penalty_value),
             departments=[department] * len(group_probabilities),
             horizon_days=horizon_days,
+            expected_growth_rate=dept_growth_rate,
+            growth_attach_rate=growth_attach_rate,
         )
         retention_curve = {
             "horizon_days": horizon_days,
             "expected_demand": optimization.expected_demand,
+            "expected_retained_seats": optimization.expected_retained_seats,
+            "expected_growth_seats": optimization.expected_growth_seats,
             "critical_fractile": optimization.critical_fractile,
             "expected_shelfware_seats": optimization.expected_shelfware_seats,
             "expected_trueup_seats": optimization.expected_trueup_seats,
@@ -416,15 +481,23 @@ def build_forecast_records(
             vendor_uuid = uuid.UUID(vendor_id)
         except ValueError as exc:
             raise ValueError(f"Gold feature vendor_id is not a UUID: {vendor_id!r}") from exc
+
+        cohort_recommendations[(vendor_id, department)] = (
+            optimization.recommended_seats,
+            optimization.current_seats,
+        )
         records.append(
             ForecastRecord(
                 tenant_id=tenant_id,
                 vendor_id=vendor_uuid,
                 department_id=department_id,
                 department=department,
-                forecast_date=forecast_on or datetime.now(UTC).date(),
+                forecast_date=resolved_forecast_date,
+                horizon_days=horizon_days,
+                renewal_date=_parse_renewal_date(sample_features.get("renewal_date")),
                 current_seats=optimization.current_seats,
                 recommended_seats=optimization.recommended_seats,
+                headcount_growth_seats=round(optimization.expected_growth_seats),
                 retention_curve=retention_curve,
                 confidence=optimization.commitment_confidence,
                 shelfware_amount=optimization.shelfware_amount,
@@ -433,11 +506,49 @@ def build_forecast_records(
                 model_version=predictor.model_version,
             )
         )
+
+    prediction_logs = build_prediction_log_rows(
+        tenant_id=tenant_id,
+        horizon_days=horizon_days,
+        forecast_date=resolved_forecast_date,
+        model_version=predictor.model_version,
+        feature_rows=scored_features,
+        raw_probabilities=[float(p) for p in raw_probabilities],
+        calibrated_probabilities=[float(p) for p in probabilities],
+        cohort_recommendations=cohort_recommendations,
+    )
+    return records, prediction_logs
+
+
+def build_forecast_records(
+    *,
+    tenant_id: str,
+    horizon_days: int,
+    active_seats: Sequence[ActiveSeat],
+    feature_rows: Sequence[Mapping[str, Any]],
+    predictor: RetentionPredictor,
+    annual_seat_cost_override: float | None = None,
+    penalty_rate_override: float | None = None,
+    default_penalty_rate: float = 0.25,
+    forecast_on: date | None = None,
+) -> list[ForecastRecord]:
+    """Join features to seats, score individuals, and optimize each department."""
+    records, _ = _score_and_build(
+        tenant_id=tenant_id,
+        horizon_days=horizon_days,
+        active_seats=active_seats,
+        feature_rows=feature_rows,
+        predictor=predictor,
+        annual_seat_cost_override=annual_seat_cost_override,
+        penalty_rate_override=penalty_rate_override,
+        default_penalty_rate=default_penalty_rate,
+        forecast_on=forecast_on,
+    )
     return records
 
 
 def persist_forecasts(session: Session, records: Sequence[ForecastRecord]) -> list[uuid.UUID]:
-    """Insert forecasts idempotently using the canonical uniqueness key."""
+    """Insert forecasts idempotently using tenant, vendor, department, date, and horizon."""
     inserted: list[uuid.UUID] = []
     for record in records:
         existing_id = session.scalar(
@@ -446,6 +557,7 @@ def persist_forecasts(session: Session, records: Sequence[ForecastRecord]) -> li
                 SeatForecast.vendor_id == record.vendor_id,
                 SeatForecast.department == record.department,
                 SeatForecast.forecast_date == record.forecast_date,
+                SeatForecast.horizon_days == record.horizon_days,
             )
         )
         if existing_id is not None:
@@ -474,7 +586,7 @@ def run_seat_forecast(
     annual_seat_cost: float | None = None,
     trueup_penalty_rate: float | None = None,
 ) -> dict[str, Any]:
-    """Score active seats for a tenant/horizon and sync optimized forecasts."""
+    """Score active seats for a tenant/horizon, sync forecasts, and log predictions."""
     if not tenant_id.strip():
         raise ValueError("tenant_id is required")
     if horizon_days not in ALLOWED_HORIZONS:
@@ -509,7 +621,7 @@ def run_seat_forecast(
     try:
         active_seats = load_active_seats(session, tenant_id, vendor_id=vendor_id)
         predictor = load_latest_model(settings)
-        records = build_forecast_records(
+        records, prediction_logs = _score_and_build(
             tenant_id=tenant_id,
             horizon_days=horizon_days,
             active_seats=active_seats,
@@ -534,11 +646,23 @@ def run_seat_forecast(
     finally:
         session.close()
 
+    logged_predictions = 0
+    try:
+        logged_predictions = log_seat_predictions(prediction_logs, settings=settings)
+    except Exception as exc:
+        logger.warning(
+            "seat_prediction_log_failed",
+            tenant_id=tenant_id,
+            horizon_days=horizon_days,
+            error=str(exc),
+        )
+
     result = {
         "tenant_id": tenant_id,
         "horizon_days": horizon_days,
         "status": "completed",
         "forecasts_written": len(forecast_ids),
+        "predictions_logged": logged_predictions,
         "forecast_ids": [str(value) for value in forecast_ids],
         "model_version": predictor.model_version,
     }

@@ -85,6 +85,9 @@ class Settings(BaseSettings):
     bigquery_seat_features_table: str = Field(
         default="gold_seat_features", alias="BIGQUERY_SEAT_FEATURES_TABLE"
     )
+    bigquery_seat_prediction_logs_table: str = Field(
+        default="gold_seat_prediction_logs", alias="BIGQUERY_SEAT_PREDICTION_LOGS_TABLE"
+    )
     vertex_ai_region: str = Field(default="us-central1", alias="VERTEX_AI_REGION")
     vertex_training_image_uri: str = Field(default="", alias="VERTEX_TRAINING_IMAGE_URI")
     vertex_model_serving_image_uri: str = Field(default="", alias="VERTEX_MODEL_SERVING_IMAGE_URI")
@@ -92,6 +95,13 @@ class Settings(BaseSettings):
     seat_default_trueup_penalty_rate: float = Field(
         default=0.25, alias="SEAT_DEFAULT_TRUEUP_PENALTY_RATE"
     )
+    ml_auto_retrain_enabled: bool = Field(default=False, alias="ML_AUTO_RETRAIN_ENABLED")
+    ml_psi_warning_threshold: float = Field(default=0.10, alias="ML_PSI_WARNING_THRESHOLD")
+    ml_psi_critical_threshold: float = Field(default=0.25, alias="ML_PSI_CRITICAL_THRESHOLD")
+    ml_online_brier_threshold: float = Field(default=0.08, alias="ML_ONLINE_BRIER_THRESHOLD")
+    ml_online_ece_threshold: float = Field(default=0.06, alias="ML_ONLINE_ECE_THRESHOLD")
+    ml_min_retrain_labels: int = Field(default=500, alias="ML_MIN_RETRAIN_LABELS")
+    ml_retrain_cadence_days: int = Field(default=30, alias="ML_RETRAIN_CADENCE_DAYS")
     gcs_signed_url_expiry_secs: int = Field(default=900, alias="GCS_SIGNED_URL_EXPIRY_SECS")
     gcs_max_upload_bytes: int = Field(default=52428800, alias="GCS_MAX_UPLOAD_BYTES")
     google_application_credentials: str | None = Field(
@@ -109,6 +119,11 @@ class Settings(BaseSettings):
     qdrant_url: str = Field(default="http://localhost:6333", alias="QDRANT_URL")
     qdrant_collection: str = Field(
         default="zellovest_documents", alias="QDRANT_COLLECTION"
+    )
+    qdrant_mirror_collection: str = Field(default="", alias="QDRANT_MIRROR_COLLECTION")
+    rag_rerank_model: str = Field(default="", alias="RAG_RERANK_MODEL")
+    rag_rerank_url: str = Field(
+        default="https://api.voyageai.com/v1/rerank", alias="RAG_RERANK_URL"
     )
     qdrant_software_catalog_collection: str = Field(
         default="software_capabilities", alias="QDRANT_SOFTWARE_CATALOG_COLLECTION"
@@ -228,6 +243,9 @@ class MLRuntimeSettings(BaseSettings):
     bigquery_seat_features_table: str = Field(
         default="gold_seat_features", alias="BIGQUERY_SEAT_FEATURES_TABLE"
     )
+    bigquery_seat_prediction_logs_table: str = Field(
+        default="gold_seat_prediction_logs", alias="BIGQUERY_SEAT_PREDICTION_LOGS_TABLE"
+    )
     vertex_ai_region: str = Field(default="us-central1", alias="VERTEX_AI_REGION")
     vertex_training_image_uri: str = Field(default="", alias="VERTEX_TRAINING_IMAGE_URI")
     vertex_model_serving_image_uri: str = Field(
@@ -236,6 +254,13 @@ class MLRuntimeSettings(BaseSettings):
     seat_default_trueup_penalty_rate: float = Field(
         default=0.25, alias="SEAT_DEFAULT_TRUEUP_PENALTY_RATE"
     )
+    ml_auto_retrain_enabled: bool = Field(default=False, alias="ML_AUTO_RETRAIN_ENABLED")
+    ml_psi_warning_threshold: float = Field(default=0.10, alias="ML_PSI_WARNING_THRESHOLD")
+    ml_psi_critical_threshold: float = Field(default=0.25, alias="ML_PSI_CRITICAL_THRESHOLD")
+    ml_online_brier_threshold: float = Field(default=0.08, alias="ML_ONLINE_BRIER_THRESHOLD")
+    ml_online_ece_threshold: float = Field(default=0.06, alias="ML_ONLINE_ECE_THRESHOLD")
+    ml_min_retrain_labels: int = Field(default=500, alias="ML_MIN_RETRAIN_LABELS")
+    ml_retrain_cadence_days: int = Field(default=30, alias="ML_RETRAIN_CADENCE_DAYS")
 
 
 @lru_cache

@@ -1,7 +1,6 @@
 """Regression tests for section chunking and labeled retrieval metrics."""
 
 import pytest
-
 from zellovest_shared.rag import _paragraphs, build_passages
 from zellovest_shared.rag_benchmark import benchmark_retrieval
 
@@ -55,3 +54,17 @@ def test_benchmark_uses_unique_document_labels_and_paired_queries() -> None:
     with pytest.raises(ValueError):
         benchmark_retrieval([{"query": "q", "relevant_document_ids": []}], retrieve,
                             tenant_id="t")
+
+
+def test_page_labels_measure_the_evidence_page() -> None:
+    """Finding the right document on the wrong page does not score as a page hit."""
+    def retrieve(**kwargs):
+        """Return the correct document on a different page."""
+        return [{"document_id": "a", "page": 2}]
+
+    cases = [{"query": "notice", "relevant_document_ids": ["a"],
+              "relevant_pages": [{"document_id": "a", "page": 7}]}]
+    scores = benchmark_retrieval(cases, retrieve, tenant_id="t")["techniques"]["hybrid"]
+    assert scores["recall_at_k"] == 1
+    assert scores["page_recall_at_k"] == 0
+    assert scores["page_mrr_at_k"] == 0

@@ -561,6 +561,10 @@ _DOCUMENT_TOOLS: tuple[ToolContract, ...] = (
             {
                 "query": {"type": "string", "minLength": 1, "maxLength": 2000},
                 "vendor_id": _UUID,
+                "vendor_name": {"type": "string", "minLength": 1, "maxLength": 256},
+                "document_id": _UUID,
+                "date_from": {"type": "string", "format": "date"},
+                "date_to": {"type": "string", "format": "date"},
                 "document_type": {
                     "enum": [
                         "contract",
@@ -596,6 +600,10 @@ _DOCUMENT_TOOLS: tuple[ToolContract, ...] = (
             {
                 "query": {"type": "string", "minLength": 1, "maxLength": 2000},
                 "vendor_id": _UUID,
+                "vendor_name": {"type": "string", "minLength": 1, "maxLength": 256},
+                "document_id": _UUID,
+                "date_from": {"type": "string", "format": "date"},
+                "date_to": {"type": "string", "format": "date"},
                 "include_amendments": {"type": "boolean", "default": True},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 8},
             },
@@ -619,6 +627,10 @@ _DOCUMENT_TOOLS: tuple[ToolContract, ...] = (
             {
                 "query": {"type": "string", "minLength": 1, "maxLength": 2000},
                 "vendor_id": _UUID,
+                "vendor_name": {"type": "string", "minLength": 1, "maxLength": 256},
+                "document_id": _UUID,
+                "date_from": {"type": "string", "format": "date"},
+                "date_to": {"type": "string", "format": "date"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 8},
             },
             ("query",),
@@ -641,6 +653,10 @@ _DOCUMENT_TOOLS: tuple[ToolContract, ...] = (
             {
                 "query": {"type": "string", "minLength": 1, "maxLength": 2000},
                 "vendor_id": _UUID,
+                "vendor_name": {"type": "string", "minLength": 1, "maxLength": 256},
+                "document_id": _UUID,
+                "date_from": {"type": "string", "format": "date"},
+                "date_to": {"type": "string", "format": "date"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 20, "default": 8},
             },
             ("query",),
@@ -666,7 +682,10 @@ _DOCUMENT_TOOLS: tuple[ToolContract, ...] = (
             {
                 "query": {"type": "string", "minLength": 1, "maxLength": 2000},
                 "vendor_id": _UUID,
+                "vendor_name": {"type": "string", "minLength": 1, "maxLength": 256},
                 "document_id": _UUID,
+                "date_from": {"type": "string", "format": "date"},
+                "date_to": {"type": "string", "format": "date"},
                 "document_type": {"type": "string", "maxLength": 32},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
                 "offset": {"type": "integer", "minimum": 0, "default": 0},

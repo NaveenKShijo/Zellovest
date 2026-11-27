@@ -143,13 +143,23 @@ with its 40-character image commit SHA.
 
 Configure repository variables `GCP_PROJECT_ID`,
 `GCP_ARTIFACT_REGISTRY_LOCATION`, `GCP_ARTIFACT_REGISTRY_REPOSITORY`,
-`GCP_VM_NAME`, `GCP_VM_ZONE`, and `GCP_DEPLOY_DIR`; configure
-`GCP_WIF_PROVIDER` and `GCP_SERVICE_ACCOUNT` as variables or secrets. Add a
-required reviewer to the `production` GitHub environment. The GitHub service
-account needs Artifact Registry Writer and IAP/OS Login access. The VM needs
-Docker Compose and `gcloud`, its production `backend/.env`, the GCP credential
-file used by the app services, and an attached service account with Artifact
-Registry Reader access. Set the registry values in the VM's `.env`
+`GCP_VM_NAME`, `GCP_VM_ZONE`, and `GCP_DEPLOY_DIR`. The image publishing
+workflow uses `GCP_WIF_PROVIDER` and `GCP_SERVICE_ACCOUNT`; that service account
+needs Artifact Registry Writer. The deployment workflow separately uses
+`GCP_VM_WIF_PROVIDER` and `GCP_VM_SERVICE_ACCOUNT`; this is the GitHub deployer
+identity, not the service account attached to the VM. Grant it Compute OS Admin
+Login at the project level, IAP-secured Tunnel User on the VM (or project), and
+Service Account User on the VM's attached service account. Add a required
+reviewer to the `production` GitHub environment.
+
+The VM's attached service account supplies credentials to Docker when it pulls
+the release images and to app code that calls Google Cloud APIs. Grant it
+Artifact Registry Reader plus the runtime roles your services need. If you use
+`GCP_SERVICE_ACCOUNT` for both image publishing and the VM runtime, it must
+carry both publisher and runtime permissions; a separate runtime identity gives
+the VM narrower access. The VM also needs Docker Compose, `gcloud`, its
+production `backend/.env`, and the GCP credential file used by app services.
+Set the registry values in the VM's `.env`
 as shown in `backend/.env.example`; the workflow maintains `.env.release` with
 the active image SHA.
 

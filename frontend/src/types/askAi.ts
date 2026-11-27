@@ -7,6 +7,9 @@ export interface AskAICitation {
   source_id: string;
   description: string;
   excerpt?: string | null;
+  evidence_id?: string | null;
+  page?: number | null;
+  bbox?: number[] | null;
 }
 
 export interface EvidenceItem {

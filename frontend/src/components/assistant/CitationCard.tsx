@@ -31,9 +31,9 @@ export const CitationCard: React.FC<CitationCardProps> = ({
   onOpenDocument,
 }) => {
   const documentId = evidenceItem?.document_id || citation.source_id;
-  const page = evidenceItem?.page ?? 1;
+  const page = evidenceItem?.page ?? citation.page ?? 1;
   const section = evidenceItem?.section;
-  const bbox = evidenceItem?.bbox;
+  const bbox = evidenceItem?.bbox ?? citation.bbox;
   const excerpt = evidenceItem?.excerpt || citation.excerpt;
   const isDocument = citation.source_type === 'document' || evidenceItem?.kind === 'document';
 

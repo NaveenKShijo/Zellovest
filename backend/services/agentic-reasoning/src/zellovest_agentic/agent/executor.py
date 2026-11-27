@@ -44,6 +44,7 @@ _DOCUMENT_SEARCH_TOOLS = frozenset(
 )
 
 _MAX_EVIDENCE_PER_CALL = 8
+_MAX_ADJACENT_EVIDENCE_PER_CALL = 4
 _MAX_EXCERPT_CHARS = 1200
 
 
@@ -111,16 +112,17 @@ def _document_evidence(
     chunks = data.get("chunks")
     if not isinstance(chunks, list):
         return items
-    for offset, chunk in enumerate(chunks[:_MAX_EVIDENCE_PER_CALL]):
+    neighbor_items: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for chunk in chunks[:_MAX_EVIDENCE_PER_CALL]:
         if not isinstance(chunk, dict):
             continue
         filename = chunk.get("filename") or "Document"
         page = chunk.get("page")
         section = chunk.get("section")
-        title = str(chunk.get("citation") or filename)
+        title = str(filename)
         items.append(
             EvidenceItem(
-                evidence_id=f"ev-{start_index + offset}",
+                evidence_id=f"ev-{start_index + len(items)}",
                 kind="document",
                 title=title,
                 tool=tool,
@@ -131,9 +133,38 @@ def _document_evidence(
                 section=str(section) if section else None,
                 bbox=chunk.get("bbox") if isinstance(chunk.get("bbox"), list) else None,
                 excerpt=_excerpt(chunk.get("content") or chunk.get("parent_content"), 1500),
+                source_context=_excerpt(chunk.get("parent_content") or chunk.get("content"), 3200),
+                source_parent_id=str(chunk.get("parent_id") or "") or None,
                 as_of=str(chunk.get("as_of") or "") or None,
             )
         )
+        neighbors = chunk.get("adjacent_context")
+        if isinstance(neighbors, list):
+            neighbor_items.extend((chunk, neighbor) for neighbor in neighbors
+                                  if isinstance(neighbor, dict))
+    seen_parents = {(item.document_id, item.source_parent_id) for item in items
+                    if item.source_parent_id}
+    for chunk, neighbor in neighbor_items:
+        if len(items) >= _MAX_EVIDENCE_PER_CALL + _MAX_ADJACENT_EVIDENCE_PER_CALL:
+            break
+        page = neighbor.get("page")
+        content = neighbor.get("content")
+        if not isinstance(page, int) or not content:
+            continue
+        key = (str(chunk.get("document_id") or "") or None,
+               str(neighbor.get("parent_id") or "") or None)
+        if key[1] and key in seen_parents:
+            continue
+        if key[1]:
+            seen_parents.add(key)
+        items.append(EvidenceItem(
+            evidence_id=f"ev-{start_index + len(items)}", kind="document",
+            title=str(chunk.get("filename") or "Document"), tool=tool, server=server,
+            document_id=str(chunk.get("document_id") or "") or None, page=page,
+            section=str(neighbor.get("section") or "") or None,
+            excerpt=_excerpt(content, 1000), source_context=_excerpt(content, 3200),
+            source_parent_id=str(neighbor.get("parent_id") or "") or None,
+        ))
     return items
 
 
@@ -197,6 +228,7 @@ class PlanExecutor:
         result = ExecutionResult()
         registry = self.pool.registry_for(identity.role)
         evidence_index = 0
+        seen_document_parents: set[tuple[str, str]] = set()
 
         for step in plan.steps:
             contract = registry.get(step.tool)
@@ -256,6 +288,16 @@ class PlanExecutor:
             data = outcome.data or {}
             if step.tool in _DOCUMENT_SEARCH_TOOLS:
                 items = _document_evidence(step.tool, contract.server, data, evidence_index)
+                unique_items: list[EvidenceItem] = []
+                for item in items:
+                    key = (item.document_id or "", item.source_parent_id or item.chunk_id or "")
+                    if key[1] and key in seen_document_parents:
+                        continue
+                    if key[1]:
+                        seen_document_parents.add(key)
+                    item.evidence_id = f"ev-{evidence_index + len(unique_items)}"
+                    unique_items.append(item)
+                items = unique_items
                 if not items and int(data.get("count") or 0) == 0:
                     result.data_gaps.append(
                         DataGap(

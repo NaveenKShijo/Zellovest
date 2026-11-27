@@ -1,9 +1,10 @@
 """RAG schemas."""
 
+from datetime import date
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class DocumentSearchRequest(BaseModel):
@@ -11,14 +12,22 @@ class DocumentSearchRequest(BaseModel):
 
     tenant_id: str | None = Field(default=None, min_length=1, max_length=128)
     query: str = Field(..., min_length=1, max_length=500)
-    vendor_id: str | None = None
+    vendor_id: UUID | None = None
+    document_id: UUID | None = None
     document_type: str | None = Field(
         default=None,
         pattern=r"^(contract|amendment|invoice|purchase_order|po|policy|other)$",
     )
-    date_from: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
-    date_to: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    date_from: date | None = Field(default=None, description="Inclusive UTC date added")
+    date_to: date | None = Field(default=None, description="Inclusive UTC date added")
     limit: int = Field(default=10, ge=1, le=50)
+
+    @model_validator(mode="after")
+    def validate_date_range(self) -> "DocumentSearchRequest":
+        """Reject inverted date-added ranges."""
+        if self.date_from and self.date_to and self.date_from > self.date_to:
+            raise ValueError("date_from must be on or before date_to")
+        return self
 
 
 class DocumentChunk(BaseModel):

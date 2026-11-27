@@ -24,6 +24,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -399,7 +400,7 @@ class MaverickAlert(Base):
 
 
 class SeatForecast(Base):
-    """ML seat-commitment forecast per vendor+department (optimizer output)."""
+    """ML seat-commitment forecast per vendor+department+horizon (optimizer output)."""
 
     __tablename__ = "seat_forecasts"
     __table_args__ = (
@@ -408,7 +409,8 @@ class SeatForecast(Base):
             "vendor_id",
             "department",
             "forecast_date",
-            name="uq_forecast_tenant_vendor_dept_date",
+            "horizon_days",
+            name="uq_forecast_tenant_vendor_dept_date_horizon",
         ),
     )
 
@@ -422,14 +424,86 @@ class SeatForecast(Base):
     )
     department: Mapped[str | None] = mapped_column(String(128), nullable=True)
     forecast_date: Mapped[date] = mapped_column(Date, nullable=False)
+    horizon_days: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=90, server_default="90"
+    )
+    renewal_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     current_seats: Mapped[int] = mapped_column(Integer, nullable=False)
     recommended_seats: Mapped[int] = mapped_column(Integer, nullable=False)
+    headcount_growth_seats: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     retention_curve: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     confidence: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
     shelfware_amount: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
     trueup_risk_amount: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
     savings_estimate: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
     model_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class MLModelMetric(Base):
+    """Delayed ground-truth ML and financial-regret evaluation metrics."""
+
+    __tablename__ = "ml_model_metrics"
+    __table_args__ = (
+        Index("ix_ml_metrics_tenant_time", "tenant_id", "evaluated_at"),
+        Index("ix_ml_metrics_version_seg", "tenant_id", "model_version", "segment_type"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    model_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    horizon_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    segment_type: Mapped[str] = mapped_column(String(32), nullable=False, default="overall")
+    segment_value: Mapped[str] = mapped_column(String(128), nullable=False, default="all")
+    evaluated_seats: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cohort_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    roc_auc: Mapped[float | None] = mapped_column(Float, nullable=True)
+    log_loss: Mapped[float | None] = mapped_column(Float, nullable=True)
+    brier_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ece: Mapped[float | None] = mapped_column(Float, nullable=True)
+    f1: Mapped[float | None] = mapped_column(Float, nullable=True)
+    realized_cost: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
+    naive_baseline_cost: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
+    oracle_cost: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
+    realized_savings_vs_naive: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
+    financial_regret: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
+    trueup_incident_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    evaluation_window_start: Mapped[date | None] = mapped_column(Date, nullable=True)
+    evaluation_window_end: Mapped[date | None] = mapped_column(Date, nullable=True)
+    evaluated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class MLDriftReport(Base):
+    """Scheduled data-drift, score-drift, and continuous-training trigger log."""
+
+    __tablename__ = "ml_drift_reports"
+    __table_args__ = (
+        Index("ix_ml_drift_tenant_time", "tenant_id", "created_at"),
+        Index("ix_ml_drift_tenant_sev", "tenant_id", "severity"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    model_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    baseline_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    reference_date: Mapped[date] = mapped_column(Date, nullable=False)
+    sample_size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_psi: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    score_psi: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    max_sentinel_delta: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False, default="healthy")
+    drifted_features: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    feature_metrics: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    retrain_recommended: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    retrain_triggered: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    trigger_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    training_job_uri: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

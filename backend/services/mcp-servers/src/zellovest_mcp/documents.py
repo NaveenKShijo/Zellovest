@@ -15,18 +15,20 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time
 from typing import Any
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from zellovest_shared.config import get_settings
+from zellovest_shared.db.core import Vendor
 from zellovest_shared.db.models import ExtractionArtifact
 from zellovest_shared.db.session import async_session_context
 from zellovest_shared.db.transact import Document, ExtractionProvenance
 from zellovest_shared.logging_conf import get_logger
 from zellovest_shared.mcp_contracts import MCP_DOCUMENTS
+from zellovest_shared.rag import hydrate_parent_passages, retain_existing_documents
 from zellovest_shared.rag import search_documents as rag_search_documents
 from zellovest_shared.workers.gcs_client import GcsStorageReader
 
@@ -99,7 +101,10 @@ async def _qdrant_scroll(
     base = settings.qdrant_url.rstrip("/")
     url = f"{base}/collections/{settings.qdrant_collection}/points/scroll"
     payload = {
-        "filter": {"must": must},
+        "filter": {"must": must, "must_not": [
+            {"key": "index_state", "match": {"value": "staged"}},
+            {"key": "record_type", "match": {"value": "parent"}},
+        ]},
         "limit": fetch_limit,
         "with_payload": True,
         "with_vector": False,
@@ -110,7 +115,8 @@ async def _qdrant_scroll(
             return []
         response.raise_for_status()
         points = (response.json().get("result") or {}).get("points", [])
-    return [(point.get("payload") or {}) for point in points[offset : offset + limit]]
+    rows = [(point.get("payload") or {}) for point in points[offset : offset + limit]]
+    return await asyncio.to_thread(hydrate_parent_passages, rows, tenant_id=tenant_id)
 
 
 def _chunk_payload(payload: dict[str, Any], *, score: float | None = None) -> dict[str, Any]:
@@ -135,6 +141,7 @@ def _chunk_payload(payload: dict[str, Any], *, score: float | None = None) -> di
         "bbox": payload.get("bbox"),
         "content": payload.get("content"),
         "parent_content": payload.get("parent_content"),
+        "adjacent_context": payload.get("adjacent_context") or [],
         "content_type": "source_extraction",
         "citation": _citation(payload),
     }
@@ -161,12 +168,63 @@ async def _semantic_search(
     *,
     query: str,
     vendor_id: str | None,
+    vendor_name: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
     document_type: str | None = None,
     document_types: list[str] | None = None,
     document_id: str | None = None,
     limit: int,
 ) -> list[dict[str, Any]]:
     """Run hybrid retrieval off the event loop and shape the citations."""
+    if not vendor_id and vendor_name:
+        # A named vendor is a hard constraint, never a hint that can silently
+        # broaden to all vendors if entity resolution is ambiguous or fails.
+        async with async_session_context() as session:
+            name = vendor_name.strip()
+            if not name:
+                raise invalid("vendor name must not be blank")
+            statement = select(Vendor).where(Vendor.tenant_id == context.tenant_id)
+            exact = (await session.scalars(
+                statement.where(func.lower(Vendor.name) == name.lower()).limit(2)
+            )).all()
+            if len(exact) == 1:
+                vendor_id = str(exact[0].id)
+            elif len(exact) > 1:
+                raise invalid("vendor name is ambiguous; select a vendor")
+            else:
+                escaped = name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                matches = (await session.scalars(
+                    statement.where(Vendor.name.ilike(f"%{escaped}%", escape="\\")).limit(2)
+                )).all()
+                if len(matches) != 1:
+                    raise invalid("vendor name is ambiguous or unavailable; select a vendor")
+                vendor_id = str(matches[0].id)
+    document_ids: list[str] | None = None
+    if date_from or date_to:
+        try:
+            start = date.fromisoformat(date_from) if date_from else None
+            end = date.fromisoformat(date_to) if date_to else None
+        except ValueError as exc:
+            raise invalid("date filters must be valid ISO dates") from exc
+        if start and end and start > end:
+            raise invalid("date_from must be on or before date_to")
+        async with async_session_context() as session:
+            statement = select(Document.id).where(Document.tenant_id == context.tenant_id)
+            if start:
+                statement = statement.where(
+                    Document.created_at >= datetime.combine(start, time.min, UTC)
+                )
+            if end:
+                statement = statement.where(
+                    Document.created_at <= datetime.combine(end, time.max, UTC)
+                )
+            if document_id:
+                try:
+                    statement = statement.where(Document.id == uuid.UUID(document_id))
+                except ValueError as exc:
+                    raise invalid("document_id must be a UUID") from exc
+            document_ids = [str(item) for item in (await session.scalars(statement)).all()]
     try:
         passages = await asyncio.to_thread(
             rag_search_documents,
@@ -176,8 +234,14 @@ async def _semantic_search(
             document_type=document_type,
             document_types=document_types,
             document_id=document_id,
-            limit=limit,
+            document_ids=document_ids,
+            limit=min(200, limit * 2),
         )
+        if passages:
+            async with async_session_context() as session:
+                passages = await retain_existing_documents(
+                    session, tenant_id=context.tenant_id, rows=passages
+                )
     except Exception as exc:
         logger.error(
             "mcp_document_search_failed",
@@ -189,7 +253,7 @@ async def _semantic_search(
             "document index is temporarily unavailable",
             retryable=True,
         ) from exc
-    return [_chunk_payload(payload, score=payload.get("score")) for payload in passages]
+    return [_chunk_payload(payload, score=payload.get("score")) for payload in passages[:limit]]
 
 
 async def _document_row(
@@ -278,6 +342,9 @@ async def search_documents(context, arguments: dict[str, Any]) -> dict[str, Any]
         context,
         query=arguments["query"],
         vendor_id=arguments.get("vendor_id"),
+        vendor_name=arguments.get("vendor_name"),
+        date_from=arguments.get("date_from"), date_to=arguments.get("date_to"),
+        document_id=arguments.get("document_id"),
         document_type=arguments.get("document_type"),
         limit=int(arguments.get("limit") or 8),
     )
@@ -301,6 +368,9 @@ async def search_contracts(context, arguments: dict[str, Any]) -> dict[str, Any]
             context,
             query=arguments["query"],
             vendor_id=arguments.get("vendor_id"),
+            vendor_name=arguments.get("vendor_name"),
+            date_from=arguments.get("date_from"), date_to=arguments.get("date_to"),
+            document_id=arguments.get("document_id"),
             document_types=["contract", "amendment"],
             limit=int(arguments.get("limit") or 8),
         )
@@ -309,6 +379,9 @@ async def search_contracts(context, arguments: dict[str, Any]) -> dict[str, Any]
             context,
             query=arguments["query"],
             vendor_id=arguments.get("vendor_id"),
+            vendor_name=arguments.get("vendor_name"),
+            date_from=arguments.get("date_from"), date_to=arguments.get("date_to"),
+            document_id=arguments.get("document_id"),
             document_type="contract",
             limit=int(arguments.get("limit") or 8),
         )
@@ -327,6 +400,9 @@ async def search_invoices(context, arguments: dict[str, Any]) -> dict[str, Any]:
         context,
         query=arguments["query"],
         vendor_id=arguments.get("vendor_id"),
+        vendor_name=arguments.get("vendor_name"),
+        date_from=arguments.get("date_from"), date_to=arguments.get("date_to"),
+        document_id=arguments.get("document_id"),
         document_type="invoice",
         limit=int(arguments.get("limit") or 8),
     )
@@ -345,6 +421,9 @@ async def search_vendor_policies(context, arguments: dict[str, Any]) -> dict[str
         context,
         query=arguments["query"],
         vendor_id=arguments.get("vendor_id"),
+        vendor_name=arguments.get("vendor_name"),
+        date_from=arguments.get("date_from"), date_to=arguments.get("date_to"),
+        document_id=arguments.get("document_id"),
         document_types=["policy", "other"],
         limit=int(arguments.get("limit") or 8),
     )
@@ -359,16 +438,21 @@ async def search_vendor_policies(context, arguments: dict[str, Any]) -> dict[str
 @documents.tool("search_document_chunks")
 async def search_document_chunks(context, arguments: dict[str, Any]) -> dict[str, Any]:
     """Search passages with optional document, vendor, and type filters."""
+    offset = int(arguments.get("offset") or 0)
+    limit = int(arguments.get("limit") or 10)
+    if offset + limit > 200:
+        raise invalid("offset plus limit must not exceed 200")
     chunks = await _semantic_search(
         context,
         query=arguments["query"],
         vendor_id=arguments.get("vendor_id"),
+        vendor_name=arguments.get("vendor_name"),
+        date_from=arguments.get("date_from"), date_to=arguments.get("date_to"),
         document_id=arguments.get("document_id"),
         document_type=arguments.get("document_type"),
-        limit=int(arguments.get("limit") or 10),
+        limit=offset + limit,
     )
-    offset = int(arguments.get("offset") or 0)
-    sliced = chunks[offset:]
+    sliced = chunks[offset:offset + limit]
     return {
         "chunks": sliced,
         "count": len(sliced),
@@ -579,6 +663,8 @@ async def get_source_provenance(context, arguments: dict[str, Any]) -> dict[str,
                     "status": document.status.value,
                     "vendor_id": str(document.vendor_id) if document.vendor_id else None,
                 }
+    if document_meta is None:
+        raise not_found("document")
     return {
         "chunk_id": chunk_id,
         "document_id": document_id,

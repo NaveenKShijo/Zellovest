@@ -553,20 +553,6 @@ function AssistantContent() {
                     >
                       <div className={styles.messageLabel}>
                         <span>{isUser ? 'You' : 'Ask AI Procurement Agent'}</span>
-                        {!isUser && message.confidence !== undefined && (
-                          <span
-                            style={{
-                              fontSize: '10px',
-                              backgroundColor: '#e8f5e9',
-                              color: '#2e7d32',
-                              padding: '1px 5px',
-                              borderRadius: '4px',
-                              fontWeight: 700,
-                            }}
-                          >
-                            {Math.round(message.confidence * 100)}% Confidence
-                          </span>
-                        )}
                       </div>
 
                       {/* Assistant Telemetry Chips */}
@@ -602,12 +588,16 @@ function AssistantContent() {
                       {!isUser && message.citations && message.citations.length > 0 && (
                         <div className={styles.citations}>
                           <div className={styles.citationsHeading}>
-                            Evidence Sources · {message.citations.length} Verified
+                            Evidence sources · {message.citations.length}
                           </div>
                           {message.citations.map((citation, cIdx) => {
-                            const evidenceItem = message.evidence?.find(
-                              (e) => e.document_id === citation.source_id || e.source_id === citation.source_id
-                            );
+                            const evidenceItem = citation.evidence_id
+                              ? message.evidence?.find((e) => e.evidence_id === citation.evidence_id)
+                              : message.evidence?.find(
+                                  (e) =>
+                                    (e.document_id === citation.source_id || e.source_id === citation.source_id) &&
+                                    (citation.page == null || e.page === citation.page)
+                                );
                             return (
                               <CitationCard
                                 key={`${citation.source_id}-${cIdx}`}

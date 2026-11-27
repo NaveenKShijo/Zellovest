@@ -18,10 +18,10 @@ DELETE is idempotent, so Beat redelivery and task retries are safe.
 from typing import Any
 
 from sqlalchemy import text
-
 from zellovest_shared.db.session import get_sync_engine
 from zellovest_shared.logging_conf import get_logger
 from zellovest_shared.workers.gcs_client import GcsStorageReader
+
 from zellovest_workers.celery_app import QUEUE_INGESTION, celery_app
 
 logger = get_logger(__name__)
@@ -244,6 +244,10 @@ def purge_document_artifacts(
         deleted_vectors=deleted_vectors,
         failed_vectors=failed_vectors,
     )
+    if failed_blobs or failed_vectors:
+        # The operation is idempotent: Celery can retry the whole batch safely.
+        # Never report a cleanup as complete while an index still contains data.
+        raise RuntimeError("document artifact cleanup incomplete; retry required")
     return {
         "status": "completed",
         "deleted_blobs": deleted_blobs,

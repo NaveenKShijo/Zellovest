@@ -45,6 +45,7 @@ def make_celery(broker_url: str = "redis://localhost:6379/0") -> Celery:
             "zellovest.workers.tasks.maverick_spend.*": {"queue": QUEUE_ANALYTICS},
             "zellovest.workers.tasks.zombie_license.*": {"queue": QUEUE_ANALYTICS},
             "zellovest.workers.tasks.forecasting.*": {"queue": QUEUE_ANALYTICS},
+            "zellovest.workers.tasks.mlops.*": {"queue": QUEUE_ANALYTICS},
             "zellovest.workers.tasks.renewal_reminders.*": {"queue": QUEUE_ANALYTICS},
             "zellovest.workers.tasks.maintenance.*": {"queue": QUEUE_INGESTION},
         },
@@ -68,6 +69,11 @@ def make_celery(broker_url: str = "redis://localhost:6379/0") -> Celery:
             "dispatch-seat-forecasts-biweekly": {
                 "task": "zellovest.workers.tasks.forecasting.dispatch_seat_forecasts",
                 "schedule": 1296000.0,  # every 15 days
+                "options": {"queue": QUEUE_ANALYTICS},
+            },
+            "run-ml-drift-monitoring-weekly": {
+                "task": "zellovest.workers.tasks.mlops.run_drift_monitoring",
+                "schedule": 604800.0,  # weekly MLOps drift & evaluation check
                 "options": {"queue": QUEUE_ANALYTICS},
             },
         },

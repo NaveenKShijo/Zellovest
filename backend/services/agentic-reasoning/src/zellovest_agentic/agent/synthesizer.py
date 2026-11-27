@@ -19,7 +19,7 @@ from typing import Any
 
 from zellovest_shared.logging_conf import get_logger
 
-from zellovest_agentic.agent.executor import ExecutionResult
+from zellovest_agentic.agent.executor import _DOCUMENT_SEARCH_TOOLS, ExecutionResult
 from zellovest_agentic.agent.llm import AgentLLMError, complete_json
 from zellovest_agentic.agent.planner import Plan
 from zellovest_agentic.config import AgenticReasoningSettings
@@ -48,6 +48,8 @@ Hard rules:
    Never treat unavailable data as zero or as "none exists".
 5. Cite only evidence ids from the supplied evidence list. Do not invent ids.
 6. Quote source passages sparingly and attribute filename/page/section.
+   For document evidence, the passage is source context on the cited page;
+   the excerpt is the matching child. Never attribute a different page to it.
 7. Be concise and specific. Use short markdown paragraphs or bullets. Money keeps its currency.
 8. If the evidence cannot answer the question, say what is missing and what tool or document
    would be needed.
@@ -90,8 +92,15 @@ def _evidence_payload(
     execution: ExecutionResult, budget: int
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     """Build the evidence, gaps, and action payload for the synthesis prompt."""
-    evidence_items = [
-        {
+    evidence_items: list[dict[str, Any]] = []
+    remaining = max(1000, budget)
+    for index, item in enumerate(execution.evidence):
+        if remaining <= 0:
+            break
+        fair_share = remaining // (len(execution.evidence) - index)
+        excerpt_budget = min(500, max(0, fair_share // 4))
+        passage_budget = min(3200, max(0, fair_share - excerpt_budget - 350))
+        evidence = {
             "evidence_id": item.evidence_id,
             "kind": item.kind,
             "title": item.title,
@@ -99,11 +108,12 @@ def _evidence_payload(
             "chunk_id": item.chunk_id,
             "page": item.page,
             "section": item.section,
-            "excerpt": (item.excerpt or "")[:1500],
+            "excerpt": (item.excerpt or "")[:excerpt_budget],
+            "passage": (item.source_context or "")[:passage_budget] or None,
             "as_of": item.as_of,
         }
-        for item in execution.evidence
-    ]
+        remaining -= len(json.dumps(evidence, default=str, ensure_ascii=False))
+        evidence_items.append(evidence)
     gaps = [gap.model_dump() for gap in execution.data_gaps]
     actions = [
         {
@@ -117,9 +127,8 @@ def _evidence_payload(
     ]
 
     observations: list[dict[str, Any]] = []
-    remaining = max(1000, budget)
     for outcome in execution.outcomes:
-        if not outcome.success:
+        if not outcome.success or outcome.tool in _DOCUMENT_SEARCH_TOOLS or remaining <= 0:
             continue
         text = _bounded_json(outcome.data, min(remaining, 2500))
         remaining -= len(text)
@@ -165,6 +174,9 @@ def _citation_for(item: EvidenceItem) -> Citation:
         source_id=str(source_id),
         description=description[:500],
         excerpt=(item.excerpt or "")[:1000] or None,
+        evidence_id=item.evidence_id,
+        page=item.page,
+        bbox=item.bbox,
     )
 
 
@@ -205,7 +217,7 @@ class AnswerSynthesizer:
                 source="clarification",
             )
 
-        if not execution.evidence and not execution.outcomes:
+        if not execution.evidence:
             return self._deterministic(
                 question=question,
                 plan=plan,
@@ -246,10 +258,13 @@ class AnswerSynthesizer:
                 reason="answer synthesis is temporarily unavailable",
             )
 
-        return self._from_candidate(candidate, execution)
+        allowed_ids = {str(item["evidence_id"]) for item in observations
+                       if item.get("evidence_id")}
+        return self._from_candidate(candidate, execution, allowed_ids=allowed_ids)
 
     def _from_candidate(
-        self, candidate: dict[str, Any], execution: ExecutionResult
+        self, candidate: dict[str, Any], execution: ExecutionResult,
+        *, allowed_ids: set[str] | None = None,
     ) -> SynthesizedAnswer:
         """Validate an LLM answer against the evidence actually collected."""
         answer = str(candidate.get("answer") or "").strip()
@@ -268,9 +283,16 @@ class AnswerSynthesizer:
         if isinstance(raw_citations, list):
             for raw in raw_citations:
                 evidence_id = str(raw)
-                if evidence_id in by_id and evidence_id not in seen:
+                if (evidence_id in by_id and evidence_id not in seen
+                        and (allowed_ids is None or evidence_id in allowed_ids)):
                     seen.add(evidence_id)
                     citations.append(_citation_for(by_id[evidence_id]))
+
+        if execution.evidence and not citations:
+            return self._deterministic(
+                question="", plan=Plan(intent="general_question"), execution=execution,
+                reason="the answer did not cite available evidence",
+            )
 
         def string_list(key: str) -> list[str]:
             """Return a bounded list of strings from the model response."""

@@ -1,6 +1,10 @@
 """Database package exports."""
 
 from zellovest_shared.db.base import Base
+from zellovest_shared.db.conversations import (
+    AskAiConversation,
+    AskAiMessage,
+)
 from zellovest_shared.db.core import (
     BusinessEntity,
     Department,
@@ -13,10 +17,6 @@ from zellovest_shared.db.core import (
     Tenant,
     Vendor,
 )
-from zellovest_shared.db.conversations import (
-    AskAiConversation,
-    AskAiMessage,
-)
 from zellovest_shared.db.intelligence import (
     AlertStatus,
     AuditEvent,
@@ -25,6 +25,8 @@ from zellovest_shared.db.intelligence import (
     ExceptionStatus,
     LicenseAssignment,
     MaverickAlert,
+    MLDriftReport,
+    MLModelMetric,
     OktaApp,
     OktaGroup,
     OktaGroupMembership,
@@ -96,15 +98,17 @@ from zellovest_shared.db.transact import (
 
 __all__ = [
     "AlertStatus",
+    "AskAiConversation",
+    "AskAiMessage",
     "AuditEvent",
     "Base",
     "BusinessEntity",
     "CardTransaction",
     "ConnectionStatus",
-    "ContractProductProfile",
     "Contract",
     "ContractChangeType",
     "ContractLine",
+    "ContractProductProfile",
     "ContractStatus",
     "ContractTermsVersion",
     "ContractVersion",
@@ -124,6 +128,8 @@ __all__ = [
     "InvoiceStatus",
     "LicenseAssignment",
     "Location",
+    "MLDriftReport",
+    "MLModelMetric",
     "MaverickAlert",
     "Merchant",
     "MerchantProfile",

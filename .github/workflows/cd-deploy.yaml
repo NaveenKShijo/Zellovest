@@ -35,9 +35,9 @@ jobs:
       id-token: write
     env:
       GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      # GitHub impersonates this deployment identity to reach the VM.
+      # It is not the service account attached to the VM at runtime.
       GCP_VM_SERVICE_ACCOUNT: ${{ vars.GCP_VM_SERVICE_ACCOUNT || secrets.GCP_VM_SERVICE_ACCOUNT }}
-      GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT || secrets.GCP_SERVICE_ACCOUNT }}
-      GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER || secrets.GCP_WIF_PROVIDER }}
       GCP_VM_WIF_PROVIDER: ${{ vars.GCP_VM_WIF_PROVIDER || secrets.GCP_VM_WIF_PROVIDER }}
       GCP_VM_NAME: ${{ vars.GCP_VM_NAME }}
       GCP_VM_ZONE: ${{ vars.GCP_VM_ZONE }}
@@ -87,12 +87,14 @@ jobs:
             --project "$GCP_PROJECT_ID" \
             --zone "$GCP_VM_ZONE" \
             --tunnel-through-iap \
+            --quiet \
             --command "mkdir -p '$GCP_DEPLOY_DIR'"
           gcloud compute scp backend/docker-compose.yml \
             "$GCP_VM_NAME:$GCP_DEPLOY_DIR/docker-compose.yml" \
             --project "$GCP_PROJECT_ID" \
             --zone "$GCP_VM_ZONE" \
-            --tunnel-through-iap
+            --tunnel-through-iap \
+            --quiet
 
       - name: Pull, migrate, restart, and verify the release
         run: |
@@ -106,6 +108,7 @@ jobs:
           fi
           command -v docker >/dev/null
           command -v gcloud >/dev/null
+          # Docker pulls authenticate with the service account attached to the VM.
           sudo gcloud auth configure-docker '$GCP_ARTIFACT_REGISTRY_LOCATION-docker.pkg.dev' --quiet
           if [[ -f .env.release ]]; then cp .env.release .env.release.previous; fi
           printf 'APP_IMAGE_TAG=%s\\n' '$APP_IMAGE_TAG' > .env.release.tmp
@@ -146,4 +149,5 @@ jobs:
             --project "$GCP_PROJECT_ID" \
             --zone "$GCP_VM_ZONE" \
             --tunnel-through-iap \
+            --quiet \
             --command "$remote_command"

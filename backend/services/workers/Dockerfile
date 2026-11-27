@@ -15,6 +15,7 @@ RUN apt-get update \
 COPY pyproject.toml uv.lock /app/
 COPY shared/ /app/shared/
 COPY services/ /app/services/
+COPY benchmark_rag.py rag_reindex.py /app/
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --no-editable --package zellovest-workers

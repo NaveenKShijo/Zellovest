@@ -6,13 +6,21 @@ import os
 import time
 from uuid import UUID, uuid4
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
+from zellovest_shared.db.models import RAGEvaluationRecord, User
+from zellovest_shared.logging_conf import get_logger
+from zellovest_shared.rag import retain_existing_documents, sample_indexed_contexts
+from zellovest_shared.rag import search_documents as retrieve_documents
 
-from zellovest_agentic.api.deps import get_current_user, get_db_session, normalize_tenant_id
-from zellovest_agentic.services.rag_llm import answer_question, generate_questions, judge_answer
-from zellovest_agentic.services.tracing import trace_span
+from zellovest_agentic.api.deps import (
+    build_mcp_identity,
+    get_current_user,
+    get_db_session,
+    normalize_tenant_id,
+)
+from zellovest_agentic.api.routers.tools import _pool
+from zellovest_agentic.mcp import McpHostError
 from zellovest_agentic.schemas.rag import (
     DocumentChunk,
     DocumentSearchRequest,
@@ -22,9 +30,8 @@ from zellovest_agentic.schemas.rag import (
     RAGEvaluationRequest,
     RAGEvaluationResult,
 )
-from zellovest_shared.db.models import RAGEvaluationRecord, User
-from zellovest_shared.logging_conf import get_logger
-from zellovest_shared.rag import sample_indexed_contexts, search_documents as retrieve_documents
+from zellovest_agentic.services.rag_llm import answer_question, generate_questions, judge_answer
+from zellovest_agentic.services.tracing import trace_span
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/rag", tags=["rag"])
@@ -42,31 +49,50 @@ async def search_documents(
     tenant_id = normalize_tenant_id(current_user.tenant_id)
     if body.tenant_id and normalize_tenant_id(body.tenant_id) != tenant_id:
         raise HTTPException(status_code=403, detail="tenant context mismatch")
-    if body.date_from or body.date_to:
-        raise HTTPException(status_code=422, detail="date filtering is not supported for indexed passages yet")
     started = time.perf_counter()
     request_id = request.state.request_id
     try:
+        arguments: dict[str, object] = {"query": body.query, "limit": body.limit}
+        if body.vendor_id:
+            arguments["vendor_id"] = str(body.vendor_id)
+        if body.document_id:
+            arguments["document_id"] = str(body.document_id)
+        if body.document_type:
+            arguments["document_type"] = (
+                "purchase_order" if body.document_type == "po" else body.document_type
+            )
+        if body.date_from:
+            arguments["date_from"] = body.date_from.isoformat()
+        if body.date_to:
+            arguments["date_to"] = body.date_to.isoformat()
         with trace_span("rag.hybrid_search", {"request_id": request_id,
                                               "tenant_id": tenant_id,
                                               "vendor_filter": bool(body.vendor_id),
                                               "document_type": body.document_type,
                                               "limit": body.limit}) as span:
-            rows = await asyncio.to_thread(
-                retrieve_documents, tenant_id=tenant_id, query=body.query,
-                vendor_id=body.vendor_id,
-                document_type=(
-                    "purchase_order" if body.document_type == "po" else body.document_type
-                ),
-                limit=body.limit,
+            result = await _pool(request).call_tool(
+                "search_document_chunks", arguments, build_mcp_identity(current_user, request_id),
+                purpose="tenant-scoped document passage search",
             )
+            rows = result.data.get("chunks") or []
             if span:
                 span.update(metadata={"result_count": len(rows),
                                       "latency_ms": int((time.perf_counter() - started) * 1000)})
+    except McpHostError as exc:
+        if exc.code in {"invalid_arguments", "forbidden"}:
+            raise HTTPException(status_code=422 if exc.code == "invalid_arguments" else 403,
+                                detail=exc.message) from exc
+        logger.error("rag_search_unavailable", request_id=request_id, tenant_id=tenant_id,
+                     error_class=type(exc).__name__)
+        raise HTTPException(
+            status_code=503, detail="document search is temporarily unavailable"
+        ) from exc
     except Exception as exc:
         logger.error("rag_search_unavailable", request_id=request_id, tenant_id=tenant_id,
                      error_class=type(exc).__name__)
-        raise HTTPException(status_code=503, detail="document search is temporarily unavailable") from exc
+        raise HTTPException(
+            status_code=503, detail="document search is temporarily unavailable"
+        ) from exc
     logger.info("document_search_completed", request_id=request_id, tenant_id=tenant_id,
                 result_count=len(rows),
                 elapsed_ms=int((time.perf_counter() - started) * 1000))
@@ -95,7 +121,8 @@ async def upload_document(
 ) -> DocumentUploadResponse:
     """Reject direct content upload; documents must use the audited upload pipeline."""
     del session
-    if body.tenant_id and normalize_tenant_id(body.tenant_id) != normalize_tenant_id(current_user.tenant_id):
+    if (body.tenant_id
+            and normalize_tenant_id(body.tenant_id) != normalize_tenant_id(current_user.tenant_id)):
         raise HTTPException(status_code=403, detail="tenant context mismatch")
     raise HTTPException(status_code=status.HTTP_410_GONE,
                          detail="Use the document upload pipeline to preserve provenance")
@@ -124,7 +151,9 @@ async def get_document_page(
 ) -> DocumentChunk | None:
     """Return not found for unavailable page-level detail."""
     del current_user, session
-    raise HTTPException(status_code=404, detail=f"Document {document_id} page {page_number} not found")
+    raise HTTPException(
+        status_code=404, detail=f"Document {document_id} page {page_number} not found"
+    )
 
 
 @router.post("/evaluate", response_model=RAGEvaluationResult)
@@ -141,6 +170,7 @@ async def evaluate_rag(
         contexts = await asyncio.to_thread(sample_indexed_contexts,
                                            tenant_id=tenant_id, limit=body.sample_size,
                                            vendor_id=body.vendor_id)
+        contexts = await retain_existing_documents(session, tenant_id=tenant_id, rows=contexts)
         if not contexts:
             raise HTTPException(status_code=409, detail="no indexed contract passages to evaluate")
         results: list[dict[str, object]] = []
@@ -153,6 +183,9 @@ async def evaluate_rag(
                     retrieve_documents, tenant_id=tenant_id, query=question,
                     vendor_id=body.vendor_id,
                     document_type=str(context.get("document_type") or "contract"), limit=6,
+                )
+                retrieved = await retain_existing_documents(
+                    session, tenant_id=tenant_id, rows=retrieved
                 )
                 generated = await asyncio.to_thread(answer_question, question, retrieved)
                 with trace_span("rag.llm_judge", {"tenant_id": tenant_id,
@@ -176,7 +209,9 @@ async def evaluate_rag(
     except Exception as exc:
         logger.error("rag_evaluation_failed", tenant_id=tenant_id,
                      error_class=type(exc).__name__)
-        raise HTTPException(status_code=503, detail="RAG evaluation is temporarily unavailable") from exc
+        raise HTTPException(
+            status_code=503, detail="RAG evaluation is temporarily unavailable"
+        ) from exc
     count = len(results)
     from zellovest_agentic.config import get_agentic_reasoning_settings
 

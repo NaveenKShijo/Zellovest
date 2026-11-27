@@ -6,6 +6,9 @@ import os
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from sqlalchemy.orm import Session
+from zellovest_shared.db.session import get_sync_engine
+from zellovest_shared.rag import retain_existing_documents_sync
 from zellovest_shared.rag import search_documents as retrieve_documents
 
 mcp = FastMCP("zellovest-document-knowledge")
@@ -28,13 +31,18 @@ def search_document_chunks(
 ) -> list[dict[str, Any]]:
     """Search indexed contract passages and return source provenance."""
     safe_limit = max(1, min(int(limit), 20))
-    return retrieve_documents(
-        tenant_id=_deployment_tenant(),
+    tenant_id = _deployment_tenant()
+    rows = retrieve_documents(
+        tenant_id=tenant_id,
         query=query,
         vendor_id=vendor_id,
         document_type=document_type,
-        limit=safe_limit,
+        limit=safe_limit * 2,
     )
+    if not rows:
+        return []
+    with Session(get_sync_engine()) as session:
+        return retain_existing_documents_sync(session, tenant_id=tenant_id, rows=rows)[:safe_limit]
 
 
 @mcp.tool()

@@ -85,7 +85,6 @@ results. The forecast API recognizes `default_org` and the application's
 exactly; the browser cannot choose a different organization.
 
 The preparation uses a synthetic renewal date equal to today plus the chosen
-horizon, so the corresponding features are as of today. Do not run all four
-horizons on the same day: the current PostgreSQL uniqueness key cannot store
-multiple horizons for the same vendor and department on a forecast date.
+horizon, so the corresponding features are as of today. Multi-horizon forecasts
+for the same vendor, department, and forecast date are keyed by ``horizon_days``.
 This synthetic data and its predictions are for development only.

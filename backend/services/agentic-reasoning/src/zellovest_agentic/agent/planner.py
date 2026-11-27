@@ -14,6 +14,7 @@ a short, validated tool plan. The LLM proposes; the host disposes:
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -58,6 +59,12 @@ Rules:
    search queries, using a separate search step for each topic when needed.
    Keep explicit vendor and document constraints from the user's context on
    every applicable search. Do not infer an identifier or broaden a filter.
+10. When a user names a vendor without supplying its ID, pass the explicitly
+    named vendor as vendor_name to document searches. The document service
+    resolves it within the tenant and rejects ambiguous names.
+11. Document date_from and date_to filter the date added to Zellovest, not
+    contract effective dates or other business dates. Use them only when the
+    question or explicit context requests the date the document was added.
 
 Return one JSON object:
 {{
@@ -111,6 +118,17 @@ def _sanitize_arguments(arguments: Any) -> dict[str, Any]:
     return {key: value for key, value in arguments.items() if key not in _IDENTITY_KEYS}
 
 
+def _document_queries(question: str) -> list[str]:
+    """Split clearly independent questions without guessing at entity boundaries."""
+    parts = [part.strip(" ;") for part in re.split(
+        r"(?<=[?;])\s+|\b(?:and|also)\s+(?=(?:what|when|where|which|how|"
+        r"does|do|is|are|can)\b)", question, flags=re.IGNORECASE,
+    ) if part.strip(" ;")]
+    if len(parts) < 2 or any(len(part) < 8 for part in parts):
+        return [question[:2000]]
+    return [part[:2000] for part in parts[:3]]
+
+
 class AgentPlanner:
     """Plan tool usage with an LLM, falling back to deterministic routing."""
 
@@ -146,7 +164,8 @@ class AgentPlanner:
         """
         context = context or {}
         fallback = self.heuristic_plan(
-            question=question, context=context, registry=registry, source="heuristic"
+            question=question, context=context, registry=registry, source="heuristic",
+            max_steps=self.max_steps,
         )
         if not self.enabled:
             return fallback
@@ -190,6 +209,16 @@ class AgentPlanner:
                 if not tool or contract is None:
                     notes.append(f"step {index} ignored: unavailable tool")
                     continue
+                if (contract.operation == "read" and context.get("vendor_id")
+                        and "vendor_id" in contract.input_schema.get("properties", {})):
+                    arguments["vendor_id"] = str(context["vendor_id"])
+                if tool in {"search_documents", "search_contracts", "search_invoices",
+                            "search_vendor_policies", "search_document_chunks"}:
+                    for key in ("vendor_id", "document_id", "date_from", "date_to"):
+                        if context.get(key):
+                            arguments[key] = str(context[key])
+                    if context.get("vendor_id"):
+                        arguments.pop("vendor_name", None)
                 if contract.operation == "write":
                     # The planner reviews parameters, not transport metadata.
                     # The executor derives the real tenant/conversation-scoped
@@ -235,6 +264,7 @@ class AgentPlanner:
         context: dict[str, Any],
         registry: ToolRegistry,
         source: str = "heuristic",
+        max_steps: int = 6,
     ) -> Plan:
         """Route common procurement question shapes without a model.
 
@@ -248,8 +278,13 @@ class AgentPlanner:
 
         def add(tool: str, arguments: dict[str, Any], purpose: str) -> None:
             """Add a step when the role can use the tool and it validates."""
-            if registry.get(tool) is None:
+            contract = registry.get(tool)
+            if contract is None or len(steps) >= max_steps:
                 return
+            arguments = dict(arguments)
+            if (contract.operation == "read" and vendor_id
+                    and "vendor_id" in contract.input_schema.get("properties", {})):
+                arguments["vendor_id"] = str(vendor_id)
             try:
                 validated = registry.validate(tool, arguments)
             except ToolValidationError:
@@ -297,6 +332,10 @@ class AgentPlanner:
                 "dpa",
                 "quotation",
                 "document",
+                "notice period",
+                "termination",
+                "auto-renew",
+                "auto renew",
             )
         )
 
@@ -348,17 +387,32 @@ class AgentPlanner:
             doc_args: dict[str, Any] = {"query": question[:2000], "limit": 8}
             if vendor_id:
                 doc_args["vendor_id"] = vendor_id
+            if context.get("document_id"):
+                doc_args["document_id"] = str(context["document_id"])
+            for key in ("date_from", "date_to"):
+                if context.get(key):
+                    doc_args[key] = str(context[key])
             tool = (
                 "search_contracts"
                 if "contract" in text or "clause" in text
                 else "search_documents"
             )
-            add(tool, doc_args, "source passages with page provenance")
+            for subquery in _document_queries(question):
+                add(tool, {**doc_args, "query": subquery},
+                    "source passages with page provenance")
 
         if not steps:
+            fallback_args: dict[str, Any] = {"query": question[:2000], "limit": 8}
+            if vendor_id:
+                fallback_args["vendor_id"] = vendor_id
+            if context.get("document_id"):
+                fallback_args["document_id"] = str(context["document_id"])
+            for key in ("date_from", "date_to"):
+                if context.get(key):
+                    fallback_args[key] = str(context[key])
             add(
                 "search_documents",
-                {"query": question[:2000], "limit": 8},
+                fallback_args,
                 "source passages with page provenance",
             )
 

@@ -12,36 +12,23 @@ Provides:
 - GET /reminders: List scheduled renewal notice deadline reminders.
 """
 
-from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal
+import asyncio
 import hashlib
 import json
 import uuid
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-
-from zellovest_agentic.api.deps import get_current_user, get_optional_user, get_db_session, normalize_tenant_id
-from zellovest_agentic.schemas.negotiation import (
-    ClauseCitation,
-    NegotiationBriefRequest,
-    NegotiationBriefResponse,
-    RenewalPreparationRequest,
-    RenewalPreparationResponse,
-    RenewalReminderItem,
-    RenewalReminderRequest,
-    RenewalReminderResponse,
-    UpcomingRenewalResponse,
-)
-from zellovest_agentic.services.rag_llm import _completion, _json_object
-from zellovest_agentic.services.renewal_seeder import seed_tenant_renewal_contracts
-from zellovest_agentic.services.tracing import trace_span
 from zellovest_shared.db.core import Vendor
 from zellovest_shared.db.intelligence import (
     ExceptionStatus,
     LicenseAssignment,
+    MLDriftReport,
+    MLModelMetric,
     ReconciliationException,
     SeatForecast,
     Workflow,
@@ -62,7 +49,28 @@ from zellovest_shared.db.transact import (
     PurchaseOrder,
 )
 from zellovest_shared.logging_conf import get_logger
-from zellovest_shared.rag import search_documents
+from zellovest_shared.rag import retain_existing_documents, search_documents
+
+from zellovest_agentic.api.deps import (
+    get_current_user,
+    get_db_session,
+    get_optional_user,
+    normalize_tenant_id,
+)
+from zellovest_agentic.schemas.negotiation import (
+    ClauseCitation,
+    NegotiationBriefRequest,
+    NegotiationBriefResponse,
+    RenewalPreparationRequest,
+    RenewalPreparationResponse,
+    RenewalReminderItem,
+    RenewalReminderRequest,
+    RenewalReminderResponse,
+    UpcomingRenewalResponse,
+)
+from zellovest_agentic.services.rag_llm import _completion, _json_object
+from zellovest_agentic.services.renewal_seeder import seed_tenant_renewal_contracts
+from zellovest_agentic.services.tracing import trace_span
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/negotiation", tags=["negotiation"])
@@ -100,9 +108,15 @@ async def list_seat_forecasts(
                 "vendor_name": name or f"Vendor {forecast.vendor_id}",
                 "department": forecast.department,
                 "forecast_date": forecast.forecast_date.isoformat(),
+                "horizon_days": getattr(
+                    forecast,
+                    "horizon_days",
+                    (forecast.retention_curve or {}).get("horizon_days"),
+                ),
                 "created_at": forecast.created_at.isoformat(),
                 "current_seats": forecast.current_seats,
                 "recommended_seats": forecast.recommended_seats,
+                "headcount_growth_seats": getattr(forecast, "headcount_growth_seats", 0),
                 "retention_curve": forecast.retention_curve,
                 "confidence": forecast.confidence,
                 "shelfware_amount": forecast.shelfware_amount,
@@ -117,6 +131,87 @@ async def list_seat_forecasts(
     except Exception as exc:
         logger.warning("seat_forecasts_list_failed", tenant_id=tenant_id, error=str(exc))
         raise HTTPException(status_code=503, detail="Unable to load seat forecasts") from exc
+
+
+@router.get("/mlops/health")
+async def get_seat_mlops_health(
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """Return latest seat-forecasting drift report and online ground-truth metrics."""
+    tenant_id = normalize_tenant_id(current_user.tenant_id)
+    tenant_ids = (
+        ("default-org", "default_org")
+        if tenant_id in ("default-org", "default_org")
+        else (tenant_id,)
+    )
+    try:
+        latest_drift = await session.scalar(
+            select(MLDriftReport)
+            .where(MLDriftReport.tenant_id.in_(tenant_ids))
+            .order_by(MLDriftReport.created_at.desc())
+            .limit(1)
+        )
+        metric_rows = (
+            await session.scalars(
+                select(MLModelMetric)
+                .where(MLModelMetric.tenant_id.in_(tenant_ids))
+                .order_by(MLModelMetric.evaluated_at.desc())
+                .limit(20)
+            )
+        ).all()
+        return {
+            "tenant_id": tenant_id,
+            "latest_drift": (
+                {
+                    "model_version": latest_drift.model_version,
+                    "baseline_version": latest_drift.baseline_version,
+                    "reference_date": latest_drift.reference_date.isoformat(),
+                    "sample_size": latest_drift.sample_size,
+                    "max_psi": latest_drift.max_psi,
+                    "score_psi": latest_drift.score_psi,
+                    "max_sentinel_delta": latest_drift.max_sentinel_delta,
+                    "severity": latest_drift.severity,
+                    "drifted_features": latest_drift.drifted_features or [],
+                    "retrain_recommended": latest_drift.retrain_recommended,
+                    "retrain_triggered": latest_drift.retrain_triggered,
+                    "trigger_reason": latest_drift.trigger_reason,
+                    "created_at": latest_drift.created_at.isoformat(),
+                }
+                if latest_drift
+                else None
+            ),
+            "online_metrics": [
+                {
+                    "model_version": row.model_version,
+                    "horizon_days": row.horizon_days,
+                    "segment_type": row.segment_type,
+                    "segment_value": row.segment_value,
+                    "evaluated_seats": row.evaluated_seats,
+                    "cohort_count": row.cohort_count,
+                    "roc_auc": row.roc_auc,
+                    "brier_score": row.brier_score,
+                    "ece": row.ece,
+                    "f1": row.f1,
+                    "realized_savings_vs_naive": (
+                        float(row.realized_savings_vs_naive)
+                        if row.realized_savings_vs_naive is not None
+                        else None
+                    ),
+                    "financial_regret": (
+                        float(row.financial_regret)
+                        if row.financial_regret is not None
+                        else None
+                    ),
+                    "trueup_incident_rate": row.trueup_incident_rate,
+                    "evaluated_at": row.evaluated_at.isoformat(),
+                }
+                for row in metric_rows
+            ],
+        }
+    except Exception as exc:
+        logger.warning("seat_mlops_health_failed", tenant_id=tenant_id, error=str(exc))
+        raise HTTPException(status_code=503, detail="Unable to load MLOps health") from exc
 
 
 @router.get("/brief/source-version")
@@ -205,13 +300,15 @@ async def negotiation_source_version(
             snapshot.append(sorted(
                 json.dumps(dict(row), sort_keys=True, default=str) for row in rows
             ))
-        passages = search_documents(
+        passages = await asyncio.to_thread(
+            search_documents,
             tenant_id=tenant_id,
             query=f"{vendor.name} renewal termination notice price escalation increase discount",
             vendor_id=str(vendor_id),
             document_type="contract",
             limit=4,
         )
+        passages = await retain_existing_documents(session, tenant_id=tenant_id, rows=passages)
         snapshot.append([json.dumps({
             key: passage.get(key) for key in
             ("document_id", "filename", "page", "section", "content")
@@ -505,13 +602,15 @@ async def prepare_negotiation_brief(
     # 3. Retrieve RAG document passages for legal clauses
     passages: list[dict[str, Any]] = []
     try:
-        passages = search_documents(
+        passages = await asyncio.to_thread(
+            search_documents,
             tenant_id=resolved_tenant,
             query=f"{vendor_name} renewal termination notice price escalation increase discount",
             vendor_id=body.vendor_id if vendor_uuid else None,
             document_type="contract",
             limit=4,
         )
+        passages = await retain_existing_documents(session, tenant_id=resolved_tenant, rows=passages)
     except Exception as exc:
         logger.warning("negotiation_rag_search_failed", error=str(exc))
 

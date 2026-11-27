@@ -1,5 +1,10 @@
 # RAG Query and Ask AI Execution Flow
 
+> Historical implementation notes: the indexing and Ask AI details below
+> predate the current MCP agent, staged indexing, separate parent records,
+> date-added filters, and optional reranking. For current behavior and rollout
+> instructions, see [RAG operations](./rag-operations.md) and the source code.
+
 This document explains how a user question moves through the Zellovest
 application when the user asks about procurement documents. It covers both
 RAG experiences currently rendered by the frontend:

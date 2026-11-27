@@ -42,6 +42,9 @@ class Citation(BaseModel):
     source_id: str
     description: str
     excerpt: str | None = None
+    evidence_id: str | None = None
+    page: int | None = None
+    bbox: list[float] | None = None
 
 
 class EvidenceItem(BaseModel):
@@ -59,6 +62,8 @@ class EvidenceItem(BaseModel):
     section: str | None = None
     bbox: list[float] | None = None
     excerpt: str | None = None
+    source_context: str | None = Field(default=None, exclude=True, repr=False)
+    source_parent_id: str | None = Field(default=None, exclude=True, repr=False)
     as_of: str | None = None
     unavailable: bool = False
 

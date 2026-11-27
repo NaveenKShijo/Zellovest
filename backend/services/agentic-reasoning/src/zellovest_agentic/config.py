@@ -68,7 +68,7 @@ class AgenticReasoningSettings(BaseSettings):
     agent_max_plan_steps: int = Field(default=6, ge=1, le=10, alias="AGENT_MAX_PLAN_STEPS")
     agent_max_tool_calls: int = Field(default=8, ge=1, le=20, alias="AGENT_MAX_TOOL_CALLS")
     agent_history_turns: int = Field(default=6, ge=0, le=30, alias="AGENT_HISTORY_TURNS")
-    agent_evidence_chars: int = Field(default=6000, alias="AGENT_EVIDENCE_CHARS")
+    agent_evidence_chars: int = Field(default=16000, alias="AGENT_EVIDENCE_CHARS")
     agent_conversation_persistence: bool = Field(
         default=True, alias="AGENT_CONVERSATION_PERSISTENCE"
     )
