@@ -1,11 +1,9 @@
 'use client';
 
-import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import React, { Suspense, useEffect, useRef, useState, useCallback } from 'react';
 import type { FormEvent, KeyboardEvent } from 'react';
-import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import type {
-  AskAICitation,
-  EvidenceItem,
   ProposedAction,
   ToolCall,
   ConversationMessage,
@@ -28,20 +26,27 @@ import { TelemetryChips } from '@/components/assistant/TelemetryChips';
 import styles from './assistant.module.css';
 
 export default function AssistantPage() {
+  return (
+    <Suspense fallback={null}>
+      <AssistantContent />
+    </Suspense>
+  );
+}
+
+function AssistantContent() {
   const api = useApi();
-  const apiRef = useRef(api);
-  apiRef.current = api;
   const { notify } = useToast();
+  const searchParams = useSearchParams();
 
   // Scope & Vendor State
   const [vendors, setVendors] = useState<Vendor[]>([]);
-  const [vendorId, setVendorId] = useState('');
+  const [vendorId, setVendorId] = useState(() => searchParams.get('vendorId') ?? '');
 
   // Conversation & Chat State
   const [conversations, setConversations] = useState<ConversationHistory[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
-  const [question, setQuestion] = useState('');
+  const [question, setQuestion] = useState(() => searchParams.get('prompt') ?? '');
   const [isAsking, setIsAsking] = useState(false);
   const [isHistoryOpen, setIsHistoryOpen] = useState(true);
 
@@ -79,17 +84,8 @@ export default function AssistantPage() {
   useEffect(() => {
     let cancelled = false;
 
-    const params = new URLSearchParams(window.location.search);
-    const initialPrompt = params.get('prompt');
-    const initialVendor = params.get('vendorId');
-    // A renewal handoff populates the composer for review before sending.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (initialPrompt) setQuestion(initialPrompt);
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (initialVendor) setVendorId(initialVendor);
-
     // Load vendors
-    apiRef.current.vendors
+    api.vendors
       .list()
       .then((res) => {
         if (!cancelled) setVendors(res.vendors ?? []);
@@ -97,7 +93,7 @@ export default function AssistantPage() {
       .catch(() => {});
 
     // Load conversations
-    apiRef.current.askAi
+    api.askAi
       .listConversations()
       .then((res) => {
         if (!cancelled && res.conversations?.length) {
@@ -109,7 +105,7 @@ export default function AssistantPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [api]);
 
   // 2. Auto-scroll on new messages or streaming tokens
   useEffect(() => {
@@ -142,7 +138,7 @@ export default function AssistantPage() {
       setActiveConversationId(id);
 
       try {
-        const history = await apiRef.current.askAi.getConversation(id);
+        const history = await api.askAi.getConversation(id);
         if (history?.messages) {
           setMessages(history.messages);
         }
@@ -154,7 +150,7 @@ export default function AssistantPage() {
         }
       }
     },
-    [activeConversationId, isAsking, conversations]
+    [activeConversationId, api, isAsking, conversations]
   );
 
   // 5. Ask Question via Real-Time SSE Streaming

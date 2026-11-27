@@ -148,17 +148,6 @@ export function DocumentExplorer() {
     const [deletingId, setDeletingId] = useState<string | null>(null);
     const [optimisticDeletedIds, setOptimisticDeletedIds] = useState<Set<string>>(new Set());
 
-    // Clean up optimistic IDs when fresh server payload arrives
-    useEffect(() => {
-        if (result.done && result.data?.documents) {
-            const serverIds = new Set(result.data.documents.map((d) => d.id));
-            setOptimisticDeletedIds((prev) => {
-                const next = new Set(Array.from(prev).filter((id) => serverIds.has(id)));
-                return next.size === prev.size ? prev : next;
-            });
-        }
-    }, [result]);
-
     // Invalidation subscriber: automatically refresh when an upload, delete, or review commits
     useEffect(() => {
         return subscribeDocumentLists(() => {
@@ -183,6 +172,14 @@ export function DocumentExplorer() {
 
     useEffect(() => {
         const requestId = ++requestIdRef.current;
+        const applyFreshResult = (data: DocumentListResponse) => {
+            const serverIds = new Set(data.documents.map((document) => document.id));
+            setOptimisticDeletedIds((previous) => {
+                const next = new Set(Array.from(previous).filter((id) => serverIds.has(id)));
+                return next.size === previous.size ? previous : next;
+            });
+            setResult({ key: viewKey, data, error: null, done: true });
+        };
         readDocumentList(
             documentCacheScopeId,
             viewKey,
@@ -199,13 +196,13 @@ export function DocumentExplorer() {
             {
                 onRevalidate: (fresh) => {
                     if (requestId !== requestIdRef.current) return;
-                    setResult({ key: viewKey, data: fresh, error: null, done: true });
+                    applyFreshResult(fresh);
                 },
             }
         )
             .then((response) => {
                 if (requestId !== requestIdRef.current) return; // stale response
-                setResult({ key: viewKey, data: response, error: null, done: true });
+                applyFreshResult(response);
             })
             .catch((err: unknown) => {
                 if (requestId !== requestIdRef.current) return;

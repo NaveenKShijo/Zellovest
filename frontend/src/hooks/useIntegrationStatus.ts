@@ -116,18 +116,10 @@ export function useIntegrationStatus(
   tenantId: string = 'default-org',
   pollIntervalMs: number = 5 * 60 * 1000
 ): IntegrationStatusResult {
-  const initialCache = getCachedIntegrationStatuses(tenantId);
-  const initialNow = Date.now();
-  const [ramp, setRamp] = useState<ProviderState | null>(
-    initialCache ? toProviderState(initialCache.ramp, 'ramp', tenantId, initialNow) : null
-  );
-  const [okta, setOkta] = useState<ProviderState | null>(
-    initialCache ? toProviderState(initialCache.okta, 'okta', tenantId, initialNow) : null
-  );
-  const [drive, setDrive] = useState<ProviderState | null>(
-    initialCache ? toProviderState(initialCache.drive, 'drive', tenantId, initialNow) : null
-  );
-  const [isLoading, setIsLoading] = useState<boolean>(!initialCache);
+  const [ramp, setRamp] = useState<ProviderState | null>(null);
+  const [okta, setOkta] = useState<ProviderState | null>(null);
+  const [drive, setDrive] = useState<ProviderState | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
   const refresh = useCallback(async () => {
     try {
@@ -152,19 +144,39 @@ export function useIntegrationStatus(
     } finally {
       setIsLoading(false);
     }
-  }, [tenantId]);
+  }, [setDrive, setIsLoading, setOkta, setRamp, tenantId]);
 
   useEffect(() => {
-    // Mount + interval fetch legitimately writes fetched state; the polling
-    // subscription below is the external-system sync this effect owns.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void refresh();
-    if (pollIntervalMs <= 0) return;
+    let active = true;
+    const cached = getCachedIntegrationStatuses(tenantId);
+    if (cached) {
+      queueMicrotask(() => {
+        if (!active) return;
+        const now = Date.now();
+        setRamp(toProviderState(cached.ramp, 'ramp', tenantId, now));
+        setOkta(toProviderState(cached.okta, 'okta', tenantId, now));
+        setDrive(toProviderState(cached.drive, 'drive', tenantId, now));
+        setIsLoading(false);
+        void refresh();
+      });
+    } else {
+      queueMicrotask(() => {
+        if (active) void refresh();
+      });
+    }
+    if (pollIntervalMs <= 0) {
+      return () => {
+        active = false;
+      };
+    }
     const timer = setInterval(() => {
       void refresh();
     }, pollIntervalMs);
-    return () => clearInterval(timer);
-  }, [refresh, pollIntervalMs]);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [refresh, pollIntervalMs, tenantId, setDrive, setIsLoading, setOkta, setRamp]);
 
   const needsReconnectProviders = (
     [

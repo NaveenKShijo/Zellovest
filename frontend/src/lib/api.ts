@@ -92,7 +92,7 @@ async function handleResponse<T>(response: Response): Promise<T> {
 }
 
 export function useApi() {
-  const { user, getValidAccessToken } = useAuth();
+  const { getValidAccessToken } = useAuth();
 
   /**
    * Fetch with automatic access-token refresh on 401.
@@ -321,7 +321,7 @@ export function useApi() {
         return request<ConversationHistory>(`/agentic/ask-ai/conversations/${encodeURIComponent(conversationId)}`);
       },
 
-      previewAction: async (toolName: string, arguments_: Record<string, any>): Promise<ActionPreviewResponse> => {
+      previewAction: async (toolName: string, arguments_: Record<string, unknown>): Promise<ActionPreviewResponse> => {
         try {
           return await request<ActionPreviewResponse>('/agentic/ask-ai/actions/preview', {
             method: 'POST',
@@ -334,7 +334,7 @@ export function useApi() {
 
       confirmAction: async (
         toolName: string,
-        arguments_: Record<string, any>,
+        arguments_: Record<string, unknown>,
         options?: { idempotencyKey?: string; conversationId?: string; note?: string }
       ): Promise<ActionConfirmResponse> => {
         try {
@@ -614,11 +614,6 @@ export function useApi() {
       },
       get: (uploadId: string) => {
         return (async () => {
-          const token = await getValidAccessToken();
-          const headers: HeadersInit = {
-            'Content-Type': 'application/json',
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          };
           return request<UploadLease>(`/v1/uploads/${uploadId}`);
         })();
       },

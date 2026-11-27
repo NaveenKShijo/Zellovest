@@ -975,31 +975,37 @@ Synthesizing verified records for **${vendorName}** across procurement contracts
 /**
  * Perform a mock dry-run preview for high-risk actions.
  */
-export function getMockActionPreview(toolName: string, arguments_: Record<string, any>): ActionPreviewResponse {
+export function getMockActionPreview(toolName: string, arguments_: Record<string, unknown>): ActionPreviewResponse {
   let summary = `Execute ${toolName} with supplied parameters`;
   let impact = 'Modifies system state or sends external communications.';
-  let financialImpact: number | null = null;
+  let financialImpact: number | string | null = null;
   const warnings: string[] = ['This operation requires explicit human authorization.'];
 
   if (toolName === 'approve_invoice') {
-    summary = `Override 3-way match exceptions and release payment for Invoice ${arguments_.invoice_id ?? 'INV-UNKNOWN'}`;
+    summary = `Override 3-way match exceptions and release payment for Invoice ${String(arguments_.invoice_id ?? 'INV-UNKNOWN')}`;
     impact = 'Authorizes disbursement of funds. Waives contractual price creep dispute rights.';
-    financialImpact = arguments_.amount ?? 145000;
+    financialImpact = typeof arguments_.amount === 'string' || typeof arguments_.amount === 'number'
+      ? arguments_.amount
+      : 145000;
     warnings.push('Discrepancy exceeds standard 5% variance threshold.', 'Payment cannot be clawed back automatically.');
   } else if (toolName === 'cancel_contract') {
-    summary = `Issue formal contract termination notice for ${arguments_.contract_number ?? 'Contract'}`;
+    summary = `Issue formal contract termination notice for ${String(arguments_.contract_number ?? 'Contract')}`;
     impact = 'Terminates vendor relationship on effective date. Cancels all associated software licenses.';
-    financialImpact = arguments_.annual_spend ?? 184000;
+    financialImpact = typeof arguments_.annual_spend === 'string' || typeof arguments_.annual_spend === 'number'
+      ? arguments_.annual_spend
+      : 184000;
     warnings.push('Irreversible written notice to vendor legal department.', 'Requires replacement solution before cutover date.');
   } else if (toolName === 'remove_licenses') {
-    summary = `Deprovision and de-license ${arguments_.seat_count ?? 28} users from ${arguments_.target_app ?? 'SaaS Application'}`;
+    summary = `Deprovision and de-license ${String(arguments_.seat_count ?? 28)} users from ${String(arguments_.target_app ?? 'SaaS Application')}`;
     impact = 'Users will lose application access on next SSO session refresh.';
     financialImpact = 34720;
     warnings.push('May interrupt active workflows for employees.');
   } else if (toolName === 'commit_financial_spend') {
-    summary = `Commit binding financial spend of $${Number(arguments_.annual_spend ?? 1351500).toLocaleString()} for ${arguments_.committed_seats ?? 850} seats`;
+    summary = `Commit binding financial spend of $${Number(arguments_.annual_spend ?? 1351500).toLocaleString()} for ${String(arguments_.committed_seats ?? 850)} seats`;
     impact = 'Executes annual commercial order with supplier under fixed terms.';
-    financialImpact = arguments_.annual_spend ?? 1351500;
+    financialImpact = typeof arguments_.annual_spend === 'string' || typeof arguments_.annual_spend === 'number'
+      ? arguments_.annual_spend
+      : 1351500;
     warnings.push('Legally binding enterprise order.', 'Early reduction incurs 100% liquidated damages.');
   }
 
@@ -1027,7 +1033,7 @@ export function getMockActionPreview(toolName: string, arguments_: Record<string
 /**
  * Perform a mock confirmation of a high-risk action.
  */
-export function getMockActionConfirm(toolName: string, arguments_: Record<string, any>, note?: string): ActionConfirmResponse {
+export function getMockActionConfirm(toolName: string, arguments_: Record<string, unknown>, note?: string): ActionConfirmResponse {
   return {
     tool: toolName,
     server: 'mcp-3-external',

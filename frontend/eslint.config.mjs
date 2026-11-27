@@ -15,6 +15,7 @@ const eslintConfig = defineConfig([
     // Third-party bundles with pre-existing lint issues:
     "node_modules/react-pdf/**",
     "node_modules/pdfjs-dist/**",
+    "public/pdf.worker.min.mjs",
   ]),
 ]);
 

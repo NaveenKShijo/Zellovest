@@ -12,14 +12,14 @@ interface AnswerSectionsViewProps {
  * per PRD Requirements (Module M8 Evidence First Architecture)
  */
 export const AnswerSectionsView: React.FC<AnswerSectionsViewProps> = ({ sections }) => {
+  const [activeTab, setActiveTab] = useState<'all' | 'facts' | 'calculations' | 'hypotheses' | 'needs_review'>('all');
+
   if (!sections) return null;
 
   const { facts = [], calculations = [], hypotheses = [], needs_review = [] } = sections;
   const totalItems = facts.length + calculations.length + hypotheses.length + needs_review.length;
 
   if (totalItems === 0) return null;
-
-  const [activeTab, setActiveTab] = useState<'all' | 'facts' | 'calculations' | 'hypotheses' | 'needs_review'>('all');
 
   return (
     <div

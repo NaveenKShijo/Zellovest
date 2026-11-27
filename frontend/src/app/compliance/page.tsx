@@ -25,6 +25,14 @@ const EMPTY_KPIS: APAuditKPIs = {
   cleanRatePct: 0,
 };
 
+type UnknownRecord = Record<string, unknown>;
+
+function asRecord(value: unknown): UnknownRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as UnknownRecord
+    : {};
+}
+
 export default function CompliancePage() {
   const router = useRouter();
   const api = useApi();
@@ -34,7 +42,6 @@ export default function CompliancePage() {
   const [items, setItems] = useState<ReconciliationItem[]>([]);
   const [selectedItem, setSelectedItem] = useState<ReconciliationItem | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
 
   // Filters state
   const [searchQuery, setSearchQuery] = useState('');
@@ -43,7 +50,6 @@ export default function CompliancePage() {
 
   // Load real data from FastAPI backend
   const fetchData = useCallback(async () => {
-    setIsLoading(true);
     try {
       const statusParam = selectedStatus !== 'all' ? selectedStatus : 'all';
       const [kpiRes, excRes] = await Promise.allSettled([
@@ -54,7 +60,7 @@ export default function CompliancePage() {
       ]);
 
       if (kpiRes.status === 'fulfilled' && kpiRes.value) {
-        const raw = kpiRes.value as any;
+        const raw = asRecord(kpiRes.value);
         setKpis({
           totalInvoicedAmount: Number(raw.total_invoiced_amount ?? raw.totalInvoicedAmount ?? 0),
           flaggedDiscrepancyAmount: Number(raw.flagged_discrepancy_amount ?? raw.flaggedDiscrepancyAmount ?? 0),
@@ -69,8 +75,35 @@ export default function CompliancePage() {
       }
 
       if (excRes.status === 'fulfilled' && excRes.value) {
-        const rawList = Array.isArray(excRes.value.items) ? excRes.value.items : [];
-        const mappedItems: ReconciliationItem[] = rawList.map((raw: any) => ({
+        const response = asRecord(excRes.value);
+        const rawList: unknown[] = Array.isArray(response.items) ? response.items : [];
+        const mappedItems: ReconciliationItem[] = rawList.map((entry) => {
+          const raw = asRecord(entry);
+          const lineItems = raw.line_items_comparison ?? raw.lineItemsComparison;
+          const mappedLineItems = (Array.isArray(lineItems) ? lineItems : []).map((lineItem) => {
+            const li = asRecord(lineItem);
+            return {
+              id: String(li.id),
+              lineNumber: Number(li.line_number ?? li.lineNumber ?? 1),
+              productCode: li.product_code ?? li.productCode ?? '',
+              description: li.description ?? '',
+              billedUnitPrice: Number(li.billed_unit_price ?? li.billedUnitPrice ?? 0),
+              contractedUnitPrice: Number(li.contracted_unit_price ?? li.contractedUnitPrice ?? 0),
+              billedQuantity: Number(li.billed_quantity ?? li.billedQuantity ?? 1),
+              tierMinQuantity: li.tier_min_quantity ?? li.tierMinQuantity ?? null,
+              tierMaxQuantity: li.tier_max_quantity ?? li.tierMaxQuantity ?? null,
+              varianceAmount: Number(li.variance_amount ?? li.varianceAmount ?? 0),
+              extendedVarianceAmount: li.extended_variance_amount != null
+                ? Number(li.extended_variance_amount)
+                : li.extendedVarianceAmount != null
+                  ? Number(li.extendedVarianceAmount)
+                  : undefined,
+              variancePct: Number(li.variance_pct ?? li.variancePct ?? 0),
+              rule: li.rule ?? 'price',
+              explanation: li.explanation ?? 'Line item discrepancy.',
+            };
+          });
+          return ({
           id: String(raw.id),
           invoiceId: String(raw.invoice_id ?? raw.invoiceId),
           invoiceNumber: raw.invoice_number ?? raw.invoiceNumber ?? 'INV-UNKNOWN',
@@ -91,23 +124,9 @@ export default function CompliancePage() {
           poNumber: raw.po_number ?? raw.poNumber ?? null,
           detectedAt: raw.detected_at ?? raw.detectedAt ?? new Date().toISOString(),
           investigationReason: raw.investigation_reason ?? raw.investigationReason ?? 'Audit exception flagged.',
-          lineItemsComparison: (raw.line_items_comparison ?? raw.lineItemsComparison ?? []).map((li: any) => ({
-            id: String(li.id),
-            lineNumber: Number(li.line_number ?? li.lineNumber ?? 1),
-            productCode: li.product_code ?? li.productCode ?? '',
-            description: li.description ?? '',
-            billedUnitPrice: Number(li.billed_unit_price ?? li.billedUnitPrice ?? 0),
-            contractedUnitPrice: Number(li.contracted_unit_price ?? li.contractedUnitPrice ?? 0),
-            billedQuantity: Number(li.billed_quantity ?? li.billedQuantity ?? 1),
-            tierMinQuantity: li.tier_min_quantity ?? li.tierMinQuantity ?? null,
-            tierMaxQuantity: li.tier_max_quantity ?? li.tierMaxQuantity ?? null,
-            varianceAmount: Number(li.variance_amount ?? li.varianceAmount ?? 0),
-            extendedVarianceAmount: li.extended_variance_amount != null ? Number(li.extended_variance_amount) : (li.extendedVarianceAmount != null ? Number(li.extendedVarianceAmount) : undefined),
-            variancePct: Number(li.variance_pct ?? li.variancePct ?? 0),
-            rule: li.rule ?? 'price',
-            explanation: li.explanation ?? 'Line item discrepancy.',
-          })),
-        }));
+          lineItemsComparison: mappedLineItems,
+          } as unknown as ReconciliationItem);
+        });
         setItems(mappedItems);
       } else {
         setItems([]);
@@ -115,13 +134,14 @@ export default function CompliancePage() {
     } catch {
       setKpis(EMPTY_KPIS);
       setItems([]);
-    } finally {
-      setIsLoading(false);
     }
   }, [api, selectedStatus]);
 
   useEffect(() => {
-    fetchData();
+    let active = true;
+    const initialFetch = window.setTimeout(() => {
+      if (active) void fetchData();
+    }, 0);
 
     // Refetch when the user refocuses the window (e.g. after uploading or deleting documents)
     const handleFocus = () => {
@@ -129,6 +149,8 @@ export default function CompliancePage() {
     };
     window.addEventListener('focus', handleFocus);
     return () => {
+      active = false;
+      window.clearTimeout(initialFetch);
       window.removeEventListener('focus', handleFocus);
     };
   }, [fetchData]);
@@ -199,7 +221,7 @@ export default function CompliancePage() {
       const count = Object.values(res.purged).reduce((a, b) => a + b, 0);
       notify.success('Orphan Records Purged', `Cleaned up ${count} stale ledger records not tied to active documents.`);
       fetchData();
-    } catch (err) {
+    } catch {
       notify.error('Purge Failed', 'Could not purge orphaned records.');
     }
   };

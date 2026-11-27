@@ -34,12 +34,14 @@ export default function VendorsPage() {
   }, []);
 
   const handleSort = (key: string, order: 'asc' | 'desc') => {
+    setLoading(true);
     setSortBy(key as VendorListParams['sortBy']);
     setSortOrder(order);
     setPage(1);
   };
 
   const handleFiltersChange = useCallback((params: VendorListParams) => {
+    setLoading(true);
     setSearchParams((prev) => {
       if (JSON.stringify(prev) === JSON.stringify(params)) return prev;
       setPage(1);
@@ -48,6 +50,7 @@ export default function VendorsPage() {
   }, []);
 
   const refetch = () => {
+    setLoading(true);
     setRefreshKey((k) => k + 1);
   };
 
@@ -55,10 +58,6 @@ export default function VendorsPage() {
     async (isBackground = false) => {
       if (isFetchingRef.current) return;
       isFetchingRef.current = true;
-
-      if (!isBackground) {
-        setLoading(true);
-      }
 
       const queryParams: VendorListParams = {
         page,
@@ -93,7 +92,10 @@ export default function VendorsPage() {
 
   // Trigger foreground load on initial mount, filter/sort/pagination changes, or manual refetch
   useEffect(() => {
-    void fetchVendors(false);
+    const initialFetch = window.setTimeout(() => {
+      void fetchVendors(false);
+    }, 0);
+    return () => window.clearTimeout(initialFetch);
   }, [fetchVendors, refreshKey]);
 
   // Smart polling: silent background sync every 60s while the tab is active

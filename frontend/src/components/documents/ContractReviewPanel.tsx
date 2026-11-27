@@ -1,6 +1,6 @@
 'use client';
 
-import React, { FormEvent, useEffect, useRef, useState } from 'react';
+import React, { FormEvent, useEffect, useState } from 'react';
 import { ContractCandidate, ContractReviewCommitRequest, ContractReviewRecord, DocumentDetail } from '@/types';
 import { useApi } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
@@ -272,11 +272,17 @@ export function ContractReviewPanel({
     const [form, setForm] = useState<ReviewForm>(() =>
         initializeForm(review, document.vendor_name, document.structured_data, document.document_type)
     );
-    const apiRef = useRef(api);
-    apiRef.current = api;
-    const [candidates, setCandidates] = useState<ContractCandidate[]>([]);
-    const [candidateError, setCandidateError] = useState<string | null>(null);
-    const [candidateLoading, setCandidateLoading] = useState(false);
+    const isCommercial = document.document_type === 'contract' || document.document_type === 'amendment';
+    const [candidateResult, setCandidateResult] = useState<{
+        documentId: string;
+        candidates: ContractCandidate[];
+        error: string | null;
+        loading: boolean;
+    }>(() => ({ documentId: document.id, candidates: [], error: null, loading: isCommercial }));
+    const candidateState = candidateResult.documentId === document.id
+        ? candidateResult
+        : { documentId: document.id, candidates: [], error: null, loading: isCommercial };
+    const { candidates, error: candidateError, loading: candidateLoading } = candidateState;
     const [drawerOpen, setDrawerOpen] = useState(false);
     const [drawerDismissed, setDrawerDismissed] = useState(false);
     const [saving, setSaving] = useState(false);
@@ -297,35 +303,39 @@ export function ContractReviewPanel({
         setDrawerDismissed(true);
     };
 
-    const isCommercial = document.document_type === 'contract' || document.document_type === 'amendment';
     const parentSelectionRequired = review?.parent_contract_required === true;
-    const selectedCandidate = candidates.find((candidate) => candidate.contract_id === form.parent_contract_id);
+    const matchingCandidates = form.change_type === 'original' || form.parent_contract_id
+        ? []
+        : candidates.filter((candidate) =>
+            candidate.contract_number.trim().toLowerCase() === form.contract_number.trim().toLowerCase()
+            && candidate.vendor_name.trim().toLowerCase() === form.vendor_name.trim().toLowerCase()
+        );
+    const parentContractId = form.parent_contract_id || (matchingCandidates.length === 1
+        ? matchingCandidates[0].contract_id
+        : '');
+    const selectedCandidate = candidates.find((candidate) => candidate.contract_id === parentContractId);
 
     useEffect(() => {
         if (!isCommercial) return;
         let active = true;
-        setCandidateLoading(true);
         readContractCandidates(
             documentCacheScopeId,
             document.id,
-            () => apiRef.current.documents.contractCandidates(document.id)
+            () => api.documents.contractCandidates(document.id)
         )
-            .then((response) => { if (active) setCandidates(response.candidates); })
-            .catch((caught) => { if (active) setCandidateError(caught instanceof Error ? caught.message : 'Unable to load parent contracts.'); })
-            .finally(() => { if (active) setCandidateLoading(false); });
+            .then((response) => {
+                if (active) setCandidateResult({ documentId: document.id, candidates: response.candidates, error: null, loading: false });
+            })
+            .catch((caught) => {
+                if (active) setCandidateResult({
+                    documentId: document.id,
+                    candidates: [],
+                    error: caught instanceof Error ? caught.message : 'Unable to load parent contracts.',
+                    loading: false,
+                });
+            });
         return () => { active = false; };
-    }, [document.id, documentCacheScopeId, isCommercial]);
-
-    useEffect(() => {
-        if (form.parent_contract_id || form.change_type === 'original') return;
-        const matches = candidates.filter((candidate) =>
-            candidate.contract_number.trim().toLowerCase() === form.contract_number.trim().toLowerCase()
-            && candidate.vendor_name.trim().toLowerCase() === form.vendor_name.trim().toLowerCase()
-        );
-        if (matches.length === 1) {
-            setForm((current) => ({ ...current, parent_contract_id: matches[0].contract_id }));
-        }
-    }, [candidates, form.parent_contract_id, form.change_type, form.contract_number, form.vendor_name]);
+    }, [api, document.id, documentCacheScopeId, isCommercial]);
     if (!isCommercial) return null;
 
     if (review?.status === 'committed' || committed) {
@@ -398,7 +408,7 @@ export function ContractReviewPanel({
         }
         setSaving(true);
         try {
-            await api.documents.commitReview(document.id, toRequest(form));
+            await api.documents.commitReview(document.id, toRequest({ ...form, parent_contract_id: parentContractId }));
             invalidateDocumentDetail(user?.id || 'default-org', document.id);
             invalidateDocumentLists();
             setCommitted(true);
@@ -543,7 +553,7 @@ export function ContractReviewPanel({
                             <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', minWidth: 0 }}>
                                 <span style={{ color: 'var(--text-secondary)', fontSize: '12px', fontWeight: 600 }}>Parent contract</span>
                                 <select
-                                    value={form.parent_contract_id}
+                                    value={parentContractId}
                                     required={parentSelectionRequired}
                                     onChange={(event) => {
                                         const candidate = candidates.find((item) => item.contract_id === event.target.value);

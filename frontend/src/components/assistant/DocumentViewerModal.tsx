@@ -29,12 +29,19 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
   documentTitle = 'Procurement Document',
   excerpt,
 }) => {
-  const [currentPage, setCurrentPage] = useState(initialPage);
+  const [pageState, setPageState] = useState({ documentId, page: initialPage });
+  const currentPage = pageState.documentId === documentId ? pageState.page : initialPage;
   const [zoom, setZoom] = useState(1.0);
 
-  useEffect(() => {
-    setCurrentPage(initialPage);
-  }, [initialPage, documentId]);
+  const setCurrentPage = (update: number | ((page: number) => number)) => {
+    setPageState((current) => {
+      const currentPage = current.documentId === documentId ? current.page : initialPage;
+      return {
+        documentId,
+        page: typeof update === 'function' ? update(currentPage) : update,
+      };
+    });
+  };
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {

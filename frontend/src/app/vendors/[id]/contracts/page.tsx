@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { Contract, ContractHistory, VendorContractLine } from '@/types';
 import { useApi } from '@/lib/api';
@@ -40,8 +40,6 @@ export default function VendorContractsPage() {
   const params = useParams();
   const vendorId = params.id as string;
   const api = useApi();
-  const apiRef = useRef(api);
-  apiRef.current = api;
   const [contracts, setContracts] = useState<Contract[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -50,13 +48,12 @@ export default function VendorContractsPage() {
 
   useEffect(() => {
     let active = true;
-    setLoading(true);
-    apiRef.current.contracts.listByVendor(vendorId)
+    api.contracts.listByVendor(vendorId)
       .then((rows) => { if (active) setContracts(rows.map(toContract)); })
       .catch((caught) => { if (active) setError(caught instanceof Error ? caught.message : 'Unable to load contracts.'); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [vendorId]);
+  }, [api, vendorId]);
 
   const openHistory = async (contract: Contract) => {
     if (!contract.contractId) return;
@@ -64,7 +61,7 @@ export default function VendorContractsPage() {
     setHistory(null);
     setError(null);
     try {
-      setHistory(await apiRef.current.contracts.history(contract.contractId));
+      setHistory(await api.contracts.history(contract.contractId));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Unable to load contract history.');
     } finally {

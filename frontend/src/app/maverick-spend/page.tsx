@@ -53,13 +53,6 @@ export default function MaverickSpendPage() {
   const loadData = useCallback(async (force: boolean = false) => {
     const requestId = ++requestIdRef.current;
     const cached = peekMaverickFeed(cacheScopeId, viewKey);
-    if (cached && !force) {
-      setAlerts(cached.alerts || []);
-      setKpis(cached.kpis || DEFAULT_KPIS);
-      setIsLoading(false);
-    } else {
-      setIsLoading(true);
-    }
 
     try {
       const res = await readMaverickFeed(
@@ -138,7 +131,7 @@ export default function MaverickSpendPage() {
     }
   };
 
-  const pollContractProductIndex = useCallback(async (taskId: string, attempt = 0) => {
+  const pollContractProductIndex = useCallback(async function pollContractProductIndex(taskId: string, attempt = 0) {
     try {
       const result = await api.maverick.getContractProductReindexStatus(taskId);
       if (result.status === 'SUCCESS') {

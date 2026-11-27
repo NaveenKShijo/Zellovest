@@ -52,20 +52,20 @@ export interface ProposedAction {
   server: string;
   risk_class: 'low_risk' | 'high_risk' | string;
   description: string;
-  arguments: Record<string, any>;
+  arguments: Record<string, unknown>;
   idempotency_key: string;
   requires_confirmation: boolean;
   dry_run_by_default?: boolean;
   executed: boolean;
-  result?: Record<string, any> | null;
-  preview?: Record<string, any> | null;
+  result?: Record<string, unknown> | null;
+  preview?: Record<string, unknown> | null;
   error?: string | null;
 }
 
 export interface ToolCall {
   tool: string;
-  arguments?: Record<string, any>;
-  result?: Record<string, any> | null;
+  arguments?: Record<string, unknown>;
+  result?: Record<string, unknown> | null;
   error?: string | null;
   server?: string | null;
   risk_class?: string | null;
@@ -129,7 +129,7 @@ export interface ConversationListResponse {
 
 export interface ActionPreviewRequest {
   tool_name: string;
-  arguments: Record<string, any>;
+  arguments: Record<string, unknown>;
 }
 
 export interface ActionPreviewResponse {
@@ -137,22 +137,22 @@ export interface ActionPreviewResponse {
   server: string;
   risk_class: string;
   requires_confirmation: boolean;
-  arguments: Record<string, any>;
+  arguments: Record<string, unknown>;
   preview: {
     summary: string;
     impact: string;
     target_entity?: string;
     financial_impact?: number | string | null;
     reversible: boolean;
-    parameters_diff?: Record<string, { before: any; after: any }>;
+    parameters_diff?: Record<string, { before: unknown; after: unknown }>;
     warnings?: string[];
-    [key: string]: any;
+    [key: string]: unknown;
   };
 }
 
 export interface ActionConfirmRequest {
   tool_name: string;
-  arguments: Record<string, any>;
+  arguments: Record<string, unknown>;
   idempotency_key?: string;
   conversation_id?: string;
   confirmation_note?: string;
@@ -163,7 +163,7 @@ export interface ActionConfirmResponse {
   server: string;
   risk_class: string;
   success: boolean;
-  result?: Record<string, any> | null;
+  result?: Record<string, unknown> | null;
   error?: string | null;
   expires_at?: string | null;
   conversation_id?: string | null;
