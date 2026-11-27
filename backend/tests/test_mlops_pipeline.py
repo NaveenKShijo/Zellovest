@@ -428,7 +428,7 @@ def test_mlops_drift_task_registered_and_persists_report(monkeypatch: pytest.Mon
                 live_frame=live_df,
                 tenant_id="default_org",
                 model_version="v_1",
-                reference_date=date.today() if False else None,
+                reference_date=None,
             ),
         )
         assert session.scalar(select(func.count()).select_from(MLDriftReport)) == 2
