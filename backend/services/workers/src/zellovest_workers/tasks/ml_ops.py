@@ -81,7 +81,8 @@ def _fetch_live_inference_slice(tenant_id: str, settings: Any) -> pd.DataFrame:
 )
 def run_drift_monitoring(tenant_id: str | None = None) -> dict[str, Any]:
     """Check feature/score drift against the champion baseline and evaluate CT triggers."""
-    resolved_tenant = (tenant_id or os.getenv("TENANT_ID", "")).strip()
+    configured_tenant = os.getenv("TENANT_ID")
+    resolved_tenant = (tenant_id or configured_tenant or "").strip()
     if not resolved_tenant:
         raise ValueError("tenant_id or TENANT_ID is required for drift monitoring")
 

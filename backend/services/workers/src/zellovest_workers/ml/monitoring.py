@@ -7,7 +7,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -291,4 +291,4 @@ def persist_drift_report(
     )
     session.add(row)
     session.commit()
-    return row.id
+    return cast(uuid.UUID, row.id)
