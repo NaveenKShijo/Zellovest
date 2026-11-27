@@ -86,12 +86,12 @@ And if things went wrong instead:
 ##### Why not avoid it
 Without it, the UI has two bad options after complete: freeze on “Processing…” forever (user has no idea if extraction worked), or blindly declare “Done” the moment bytes land in GCS (declaring victory before extraction even starts — which is what the old simulated UI did).
 
-# Full local stack (Docker Compose)
+# Full local development stack (Docker Compose)
 
 One command starts everything: PostgreSQL, Redis, Qdrant, schema migrations,
 the three FastAPI services (procurement-core `:8001`, agentic-reasoning
 `:8002`, ingestion-api `:8003`), the three MCP servers (`:8101`–`:8103`), the
-Celery workers + beat, and the Next.js frontend (`:3000`).
+Celery workers + beat, and the Next.js frontend (`:3001`).
 
 Prerequisites: Docker Desktop, and a `backend/.env` (copy
 `backend/.env.example`). Set at least `JWT_SECRET_KEY`,
@@ -101,25 +101,26 @@ JSON — it is mounted read-only at `/run/secrets/gcp-sa.json`).
 
 ```powershell
 cd backend
-docker compose up --build -d
-docker compose logs -f          # follow all logs
-docker compose down             # stop everything (keeps data volumes)
+docker compose --parallel 1 -f docker-compose.develop.yml up --build -d
+docker compose -f docker-compose.develop.yml logs -f   # follow all logs
+docker compose -f docker-compose.develop.yml down      # keep data volumes
 ```
 
-`docker compose -f docker-compose.microservices.yml up --build -d` is kept as
-a backwards-compatible alias for the same stack. Alembic migrations run
-automatically through the one-shot `migrate` service before the apps start.
+The development Compose file bind-mounts application source and reloads services
+when code changes. The production `docker-compose.yml` uses CI-published images
+and is intended for the cloud VM. Alembic migrations run automatically through
+the one-shot `migrate` service before the apps start.
 
 Create the first (invite-only) member once the stack is healthy:
 
 ```powershell
-docker compose run --rm -v ./scripts:/app/scripts:ro migrate `
+docker compose -f docker-compose.develop.yml run --rm -v ./scripts:/app/scripts:ro migrate `
   python scripts/seed_user.py --name "Your Name" --email you@company.com
 ```
 
-Then open `http://localhost:3000`; the demo account is created on first click
-of “Explore the live demo”. Qdrant is available on `http://localhost:6333`
-(dashboard at `http://localhost:6333/dashboard`). The agentic service and document worker use
+Then open `http://localhost:3001`; the demo account is created on first click
+of “Explore the live demo”. Qdrant is available on `http://localhost:6335`
+(dashboard at `http://localhost:6335/dashboard`). The agentic service and document worker use
 the Compose service URL (`http://qdrant:6333`). FastEmbed downloads its BM42
 model on first indexing/search, so the first operation can take longer.
 The `worker-documents` service is required for uploads to reach Qdrant; Qdrant
@@ -127,6 +128,30 @@ alone only runs the database. Uploads stay in `processing` until indexing
 finishes, then move to `completed`; exhausted indexing retries mark them
 `failed`. The worker logs `rag_index_enqueued` and
 `rag_index_task_completed` with the document id and passage count.
+
+## Deploying to the GCP VM
+
+Pull requests run application checks and build all runtime images. A successful
+push to `main` publishes immutable commit-SHA image tags to Artifact Registry;
+the separate `CD production` workflow then waits for approval in the GitHub
+`production` environment before updating the VM over IAP and OS Login. The deployment runs migrations, updates the
+Compose services, and waits for their configured health checks. Database
+migrations remain forward-only: keep schema changes compatible with the
+previous app release because an app-image rollback does not downgrade data.
+To redeploy an earlier release, run the `CD production` workflow manually
+with its 40-character image commit SHA.
+
+Configure repository variables `GCP_PROJECT_ID`,
+`GCP_ARTIFACT_REGISTRY_LOCATION`, `GCP_ARTIFACT_REGISTRY_REPOSITORY`,
+`GCP_VM_NAME`, `GCP_VM_ZONE`, and `GCP_DEPLOY_DIR`; configure
+`GCP_WIF_PROVIDER` and `GCP_SERVICE_ACCOUNT` as variables or secrets. Add a
+required reviewer to the `production` GitHub environment. The GitHub service
+account needs Artifact Registry Writer and IAP/OS Login access. The VM needs
+Docker Compose and `gcloud`, its production `backend/.env`, the GCP credential
+file used by the app services, and an attached service account with Artifact
+Registry Reader access. Set the registry values in the VM's `.env`
+as shown in `backend/.env.example`; the workflow maintains `.env.release` with
+the active image SHA.
 
 ## Ask AI document research UI
 

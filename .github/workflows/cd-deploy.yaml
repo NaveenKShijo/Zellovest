@@ -1,0 +1,147 @@
+name: CD production
+
+on:
+  workflow_run:
+    workflows: [CI application]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Existing 40-character commit SHA image tag to deploy or roll back to
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zellovest-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to production VM
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT || secrets.GCP_SERVICE_ACCOUNT }}
+      GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER || secrets.GCP_WIF_PROVIDER }}
+      GCP_VM_NAME: ${{ vars.GCP_VM_NAME }}
+      GCP_VM_ZONE: ${{ vars.GCP_VM_ZONE }}
+      GCP_DEPLOY_DIR: ${{ vars.GCP_DEPLOY_DIR }}
+      GCP_ARTIFACT_REGISTRY_LOCATION: ${{ vars.GCP_ARTIFACT_REGISTRY_LOCATION }}
+      APP_IMAGE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.image_tag || github.event.workflow_run.head_sha }}
+    steps:
+      - name: Check out the exact release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.image_tag || github.event.workflow_run.head_sha }}
+
+      - name: Validate deployment configuration
+        run: |
+          set -euo pipefail
+          for value in GCP_PROJECT_ID GCP_SERVICE_ACCOUNT GCP_WIF_PROVIDER GCP_VM_NAME GCP_VM_ZONE GCP_DEPLOY_DIR GCP_ARTIFACT_REGISTRY_LOCATION APP_IMAGE_TAG; do
+            if [[ -z "${!value}" ]]; then
+              echo "Missing GitHub variable or secret: $value" >&2
+              exit 1
+            fi
+          done
+          if [[ ! "$APP_IMAGE_TAG" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "APP_IMAGE_TAG must be a 40-character commit SHA." >&2
+            exit 1
+          fi
+          if [[ "$GCP_DEPLOY_DIR" != /* || "$GCP_DEPLOY_DIR" =~ [[:space:]] ]]; then
+            echo "GCP_DEPLOY_DIR must be an absolute path without spaces, writable by the OS Login user." >&2
+            exit 1
+          fi
+
+      - name: Authenticate to Google Cloud with Workload Identity Federation
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.GCP_WIF_PROVIDER }}
+          service_account: ${{ env.GCP_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+
+      - name: Configure Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Prepare VM deployment directory and copy Compose configuration
+        run: |
+          set -euo pipefail
+          gcloud compute ssh "$GCP_VM_NAME" \
+            --project "$GCP_PROJECT_ID" \
+            --zone "$GCP_VM_ZONE" \
+            --tunnel-through-iap \
+            --command "mkdir -p '$GCP_DEPLOY_DIR'"
+          gcloud compute scp backend/docker-compose.yml \
+            "$GCP_VM_NAME:$GCP_DEPLOY_DIR/docker-compose.yml" \
+            --project "$GCP_PROJECT_ID" \
+            --zone "$GCP_VM_ZONE" \
+            --tunnel-through-iap
+
+      - name: Pull, migrate, restart, and verify the release
+        run: |
+          set -euo pipefail
+          remote_command=$(cat <<EOF
+          set -euo pipefail
+          cd '$GCP_DEPLOY_DIR'
+          if [[ ! -f .env ]]; then
+            echo 'Production .env is missing from the deployment directory.' >&2
+            exit 1
+          fi
+          command -v docker >/dev/null
+          command -v gcloud >/dev/null
+          sudo gcloud auth configure-docker '$GCP_ARTIFACT_REGISTRY_LOCATION-docker.pkg.dev' --quiet
+          if [[ -f .env.release ]]; then cp .env.release .env.release.previous; fi
+          printf 'APP_IMAGE_TAG=%s\\n' '$APP_IMAGE_TAG' > .env.release.tmp
+          mv .env.release.tmp .env.release
+          compose=(sudo docker compose --env-file .env --env-file .env.release -f docker-compose.yml)
+          if ! "\${compose[@]}" pull || ! "\${compose[@]}" up -d --remove-orphans; then
+            if [[ -f .env.release.previous ]]; then
+              mv .env.release.previous .env.release
+              "\${compose[@]}" up -d --remove-orphans || true
+            fi
+            exit 1
+          fi
+          healthy=false
+          for attempt in {1..36}; do
+            healthy=true
+            for service in postgres redis procurement-core ingestion-api agentic-reasoning mcp-procurement mcp-documents mcp-external frontend; do
+              container_id=$("\${compose[@]}" ps -q "$service")
+              status=$(sudo docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container_id" 2>/dev/null || true)
+              if [[ "$status" != healthy ]]; then healthy=false; break; fi
+            done
+            if [[ "$healthy" == true ]]; then break; fi
+            sleep 5
+          done
+          if [[ "$healthy" != true ]]; then
+            "\${compose[@]}" ps
+            if [[ -f .env.release.previous ]]; then
+              mv .env.release.previous .env.release
+              "\${compose[@]}" up -d --remove-orphans || true
+            fi
+            echo 'Release did not become healthy; deployment failed.' >&2
+            exit 1
+          fi
+          rm -f .env.release.previous
+          "\${compose[@]}" ps
+          EOF
+          )
+          gcloud compute ssh "$GCP_VM_NAME" \
+            --project "$GCP_PROJECT_ID" \
+            --zone "$GCP_VM_ZONE" \
+            --tunnel-through-iap \
+            --command "$remote_command"

@@ -1,28 +1,31 @@
-name: Backend CI and worker image
+name: CI application
 
 on:
   pull_request:
     paths:
       - "backend/**"
+      - "frontend/**"
       - "data/telemetry/**"
-      - ".github/workflows/ci.yaml"
+      - ".github/workflows/**"
+      - "README.md"
   push:
     branches: [main]
     paths:
       - "backend/**"
+      - "frontend/**"
       - "data/telemetry/**"
-      - ".github/workflows/ci.yaml"
-
+      - ".github/workflows/**"
+      - "README.md"
 permissions:
   contents: read
 
 concurrency:
-  group: backend-ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: zellovest-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   checks:
-    name: Forecasting checks
+    name: Application checks
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -34,7 +37,7 @@ jobs:
       - name: Install Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.11"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -69,66 +72,142 @@ jobs:
           src/zellovest_workers/ml
           src/zellovest_workers/tasks/seat_forecasting.py
 
-      - name: Verify worker container builds
-        working-directory: backend
-        run: docker build --file services/workers/Dockerfile --tag zellovest-workers:ci .
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
 
-  publish-worker-image:
-    name: Publish worker image
+      - name: Lint frontend
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Run frontend tests
+        working-directory: frontend
+        run: node --test tests/*.test.mjs
+
+  build_images:
+    name: Build application images for pull requests
+    if: github.event_name == 'pull_request'
+    needs: checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Build all runtime images without publishing
+        run: |
+          set -euo pipefail
+          docker build --file backend/Dockerfile --tag zellovest-ci/zellovest-migrate:pr backend
+          docker build --file backend/services/procurement-core/Dockerfile --tag zellovest-ci/zellovest-procurement-core:pr backend
+          docker build --file backend/services/ingestion-api/Dockerfile --tag zellovest-ci/zellovest-ingestion-api:pr backend
+          docker build --file backend/services/agentic-reasoning/Dockerfile --tag zellovest-ci/zellovest-agentic-reasoning:pr backend
+          docker build --file backend/services/mcp-servers/Dockerfile --tag zellovest-ci/zellovest-mcp-servers:pr backend
+          docker build --file backend/services/workers/Dockerfile --tag zellovest-ci/zellovest-workers:pr backend
+          docker build --file frontend/Dockerfile \
+            --build-arg INGESTION_API_URL=http://ingestion-api:8003 \
+            --build-arg AGENTIC_API_URL=http://agentic-reasoning:8002 \
+            --build-arg NEXT_PUBLIC_ORGANIZATION_NAME="${{ vars.NEXT_PUBLIC_ORGANIZATION_NAME || 'Zellovest' }}" \
+            --tag zellovest-ci/zellovest-frontend:pr frontend
+
+  publish_images:
+    name: Publish application images
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: checks
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_ARTIFACT_REGISTRY_LOCATION: ${{ vars.GCP_ARTIFACT_REGISTRY_LOCATION }}
+      GCP_ARTIFACT_REGISTRY_REPOSITORY: ${{ vars.GCP_ARTIFACT_REGISTRY_REPOSITORY }}
+      GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT || secrets.GCP_SERVICE_ACCOUNT }}
+      GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER || secrets.GCP_WIF_PROVIDER }}
+      NEXT_PUBLIC_ORGANIZATION_NAME: ${{ vars.NEXT_PUBLIC_ORGANIZATION_NAME || 'Zellovest' }}
     steps:
       - name: Check out source
         uses: actions/checkout@v4
 
-      - name: Validate Workload Identity Federation settings
-        env:
-          GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER || secrets.GCP_WIF_PROVIDER }}
-          GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT || secrets.GCP_SERVICE_ACCOUNT }}
-          GCP_ARTIFACT_REGISTRY_LOCATION: ${{ vars.GCP_ARTIFACT_REGISTRY_LOCATION }}
+      - name: Validate publishing configuration
+        if: github.event_name == 'push'
         run: |
-          if [[ -z "$GCP_WIF_PROVIDER" || -z "$GCP_SERVICE_ACCOUNT" ]]; then
-            echo "Set GCP_WIF_PROVIDER and GCP_SERVICE_ACCOUNT in repository variables or secrets." >&2
-            exit 1
-          fi
-          if [[ -z "$GCP_ARTIFACT_REGISTRY_LOCATION" ]]; then
-            echo "Set GCP_ARTIFACT_REGISTRY_LOCATION to the Artifact Registry location, such as us-central1." >&2
-            exit 1
-          fi
+          set -euo pipefail
+          for value in GCP_PROJECT_ID GCP_ARTIFACT_REGISTRY_LOCATION GCP_ARTIFACT_REGISTRY_REPOSITORY GCP_SERVICE_ACCOUNT GCP_WIF_PROVIDER; do
+            if [[ -z "${!value}" ]]; then
+              echo "Missing GitHub variable or secret: $value" >&2
+              exit 1
+            fi
+          done
           if [[ "$GCP_ARTIFACT_REGISTRY_LOCATION" == *-docker.pkg.dev ]]; then
-            echo "GCP_ARTIFACT_REGISTRY_LOCATION must be a location only (for example us-central1), not a registry hostname." >&2
+            echo "GCP_ARTIFACT_REGISTRY_LOCATION must be a location only, such as us-central1." >&2
             exit 1
           fi
 
       - name: Authenticate to Google Cloud with Workload Identity Federation
+        if: github.event_name == 'push'
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER || secrets.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_SERVICE_ACCOUNT || secrets.GCP_SERVICE_ACCOUNT }}
+          workload_identity_provider: ${{ env.GCP_WIF_PROVIDER }}
+          service_account: ${{ env.GCP_SERVICE_ACCOUNT }}
           create_credentials_file: true
 
       - name: Configure Google Cloud CLI
+        if: github.event_name == 'push'
         uses: google-github-actions/setup-gcloud@v2
         with:
-          project_id: ${{ vars.GCP_PROJECT_ID }}
+          project_id: ${{ env.GCP_PROJECT_ID }}
 
       - name: Configure Artifact Registry Docker access
+        if: github.event_name == 'push'
         env:
-          GAR_HOST: ${{ vars.GCP_ARTIFACT_REGISTRY_LOCATION }}-docker.pkg.dev
+          GAR_HOST: ${{ env.GCP_ARTIFACT_REGISTRY_LOCATION }}-docker.pkg.dev
         run: gcloud auth configure-docker "$GAR_HOST" --quiet
 
-      - name: Build and publish worker image if this commit is not already present
+      - name: Build all runtime images and publish commit-SHA tags on main
         env:
-          IMAGE_URI: ${{ vars.GCP_ARTIFACT_REGISTRY_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GCP_ARTIFACT_REGISTRY_REPOSITORY }}/zellovest-workers:${{ github.sha }}
+          PUBLISH_IMAGES: "true"
+          IMAGE_TAG: ${{ github.sha }}
+          GAR_HOST: ${{ env.GCP_ARTIFACT_REGISTRY_LOCATION }}-docker.pkg.dev
         run: |
-          if gcloud artifacts docker images describe "$IMAGE_URI" --format="value(image_summary.digest)" >/dev/null 2>&1; then
-            echo "Image already exists for this commit: $IMAGE_URI"
-            exit 0
-          fi
-          docker build --file backend/services/workers/Dockerfile --tag "$IMAGE_URI" backend
-          docker push "$IMAGE_URI"
-          echo "Published $IMAGE_URI"
+          set -euo pipefail
+
+          build_image() {
+            local name="$1"
+            local dockerfile="$2"
+            local context="$3"
+            local image
+
+            if [[ "$PUBLISH_IMAGES" == "true" ]]; then
+              image="$GAR_HOST/$GCP_PROJECT_ID/$GCP_ARTIFACT_REGISTRY_REPOSITORY/$name:$IMAGE_TAG"
+              if gcloud artifacts docker images describe "$image" --format="value(image_summary.digest)" >/dev/null 2>&1; then
+                echo "Image already exists for this commit: $image"
+                return
+              fi
+            else
+              image="zellovest-ci/$name:$IMAGE_TAG"
+            fi
+
+            if [[ "$name" == "zellovest-frontend" ]]; then
+              docker build --file "$dockerfile" \
+                --build-arg INGESTION_API_URL=http://ingestion-api:8003 \
+                --build-arg AGENTIC_API_URL=http://agentic-reasoning:8002 \
+                --build-arg NEXT_PUBLIC_ORGANIZATION_NAME="$NEXT_PUBLIC_ORGANIZATION_NAME" \
+                --tag "$image" "$context"
+            else
+              docker build --file "$dockerfile" --tag "$image" "$context"
+            fi
+
+            if [[ "$PUBLISH_IMAGES" == "true" ]]; then
+              docker push "$image"
+              echo "Published $image"
+            fi
+          }
+
+          build_image zellovest-migrate backend/Dockerfile backend
+          build_image zellovest-procurement-core backend/services/procurement-core/Dockerfile backend
+          build_image zellovest-ingestion-api backend/services/ingestion-api/Dockerfile backend
+          build_image zellovest-agentic-reasoning backend/services/agentic-reasoning/Dockerfile backend
+          build_image zellovest-mcp-servers backend/services/mcp-servers/Dockerfile backend
+          build_image zellovest-workers backend/services/workers/Dockerfile backend
+          build_image zellovest-frontend frontend/Dockerfile frontend

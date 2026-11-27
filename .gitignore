@@ -18,3 +18,23 @@ backend/.env
 .pytest_cache
 
 backend/scripts/
+
+# Python tooling and test output
+.mypy_cache/
+.ruff_cache/
+.uv-cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Local credentials
+/backend/secrets/
+*.key
+*.p12
+*.pfx
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+

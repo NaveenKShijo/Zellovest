@@ -15,7 +15,7 @@ Set `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CLOUD_PROJECT`, `GCS_ML_BUCKET`, `
 
 ### GitHub Actions
 
-`.github/workflows/ci.yaml` runs forecasting and frontend checks, builds all runtime images on pull requests, and publishes commit-SHA images to Artifact Registry after a successful push to `main`. The deployment job waits for approval in the GitHub `production` environment, then updates the configured Compose VM over IAP/OS Login. Run the workflow manually with an existing 40-character commit SHA to redeploy or roll back to that image set. `.github/workflows/ml-train.yaml` remains manually dispatched when training data is ready; it refreshes BigQuery features and submits training to Vertex AI. No performance-triggered retraining is configured.
+`.github/workflows/ci.yaml` runs forecasting and frontend checks, builds all runtime images on pull requests, and publishes commit-SHA images to Artifact Registry after a successful push to `main`. `.github/workflows/cd-deploy.yaml` waits for approval in the GitHub `production` environment, then updates the configured Compose VM over IAP/OS Login. Run `CD production` manually with an existing 40-character commit SHA to redeploy or roll back to that image set. `.github/workflows/ml-train.yaml` remains manually dispatched when training data is ready; it refreshes BigQuery features and submits training to Vertex AI. No performance-triggered retraining is configured.
 
 Configure these GitHub repository **variables** (or secrets) before enabling the workflows. `GCP_WIF_PROVIDER` is an identifier, so a repository variable is the usual choice.
 
