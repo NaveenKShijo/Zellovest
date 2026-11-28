@@ -23,6 +23,7 @@ const plusJakarta = localFont({
 export const metadata: Metadata = {
   title: "Zellovest | Procurement Intelligence Platform",
   description: "AI-Native Procurement Intelligence Platform for Contract Compliance, Maverick Spend, and Vendor 360",
+  icons: {icon: "/zellovest-favicon.png"},
 };
 
 /**
