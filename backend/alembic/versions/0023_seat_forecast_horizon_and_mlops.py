@@ -1,6 +1,6 @@
 """Add horizon uniqueness to seat_forecasts and create MLOps tables.
 
-Revision ID: 0023_seat_forecast_horizon_and_mlops
+Revision ID: 0023_seat_forecast_mlops
 Revises: 0022_savings_ledger_idempotency
 Create Date: 2026-11-27
 """
@@ -10,7 +10,7 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-revision = "0023_seat_forecast_horizon_and_mlops"
+revision = "0023_seat_forecast_mlops"
 down_revision = "0022_savings_ledger_idempotency"
 branch_labels = None
 depends_on = None
